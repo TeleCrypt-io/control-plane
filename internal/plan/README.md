@@ -1,5 +1,8 @@
 # Plan service boundary
 
+Current public project facts and component responsibilities are authoritative in
+[`llms.txt`](https://telecrypt.io/llms.txt); this document describes the Plan package implementation.
+
 `internal/plan` is the deployed public, browser-facing owner of `/plan`. It owns MAS OIDC,
 browser sessions, origin/CSRF protection, rendering, and the user-facing plan, seat, checkout,
 and billing-portal actions. MAS embeds this stable URL in its account-management iframe through
