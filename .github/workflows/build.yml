@@ -10,6 +10,9 @@ permissions:
   contents: read
 
 env:
+  GIT_CONFIG_COUNT: "1"
+  GIT_CONFIG_KEY_0: init.defaultBranch
+  GIT_CONFIG_VALUE_0: main
   GO_VERSION: "1.26.4"
   PYTHON_VERSION: "3.12.14"
   SYNAPSE_VERSION: "1.159.0"
