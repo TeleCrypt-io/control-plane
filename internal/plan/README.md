@@ -9,10 +9,11 @@ It must not receive Dodo credentials, Dodo webhook secrets, Synapse-admin creden
 billing database URL.  It calls the private Cashier only through `CashierClient`.
 
 Plan's browser API is rooted at `/api/plan`; `/api/team*` routes are not exposed. The
-current public boundary must preserve this contract: every successful mutation at
-`/api/plan*` returns HTTP 204 with an empty body; structured plan and payment-link reads remain
-HTTP 200 JSON. The MAS callback remains `/plan/callback`, but malformed, expired, and foreign-server
-sessions are rejected rather than being migrated implicitly.
+current public boundary must preserve this contract: successful plan and seat-state mutations at
+`/api/plan*` return HTTP 204 with an empty body; checkout and portal actions return HTTP 200 JSON
+containing their payment or portal link; structured plan reads also remain HTTP 200 JSON. The MAS
+callback remains `/plan/callback`, but malformed, expired, and foreign-server sessions are rejected
+rather than being migrated implicitly.
 
 ## Intended private protocol
 
