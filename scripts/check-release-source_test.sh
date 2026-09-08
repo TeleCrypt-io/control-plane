@@ -301,8 +301,7 @@ status=$?
 set -e
 test "$status" -eq 17
 test "$(cat "$temporary/failure-stdout")" = partial
-test "$(grep -Fc partial "$temporary/failure-stdout.stderr")" -eq 1
-grep -Fq failure "$temporary/failure-stdout.stderr"
+test "$(cat "$temporary/failure-stdout.stderr")" = failure
 
 set +e
 (
