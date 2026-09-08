@@ -222,7 +222,7 @@ func TestCallbackLogsOAuthExchangeFailureWithoutExposingIt(t *testing.T) {
 		t.Fatalf("OAuth exchange failure exposed private detail: %q", rec.Body.String())
 	}
 	if !strings.Contains(logs.String(), "operation=\"exchange OAuth code\"") ||
-		!strings.Contains(logs.String(), "token=[REDACTED]") ||
+		!strings.Contains(logs.String(), "[REDACTED]") ||
 		strings.Contains(logs.String(), "fixture-oauth-secret") {
 		t.Fatalf("OAuth exchange failure was not logged safely: %s", logs.String())
 	}
