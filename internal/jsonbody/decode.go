@@ -1,4 +1,4 @@
-// Package jsonbody decodes one bounded JSON value from an upstream response.
+// Package jsonbody decodes one JSON value from an upstream response.
 package jsonbody
 
 import (
@@ -7,40 +7,66 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strconv"
+	"strings"
+
+	"github.com/TeleCrypt-io/controlplane/internal/httpdiag"
 )
 
 var (
-	// ErrBodyTooLarge means the response exceeded the caller's byte limit.
-	ErrBodyTooLarge = errors.New("JSON body too large")
 	// ErrTrailingData means the response contained more than one JSON value or
 	// non-whitespace data after the first value.
 	ErrTrailingData = errors.New("JSON body contains trailing data")
 )
 
-// Decode reads at most maxBytes+1 bytes, decodes exactly one JSON value into
-// dst, and rejects both oversized responses and any trailing JSON or data.
-func Decode(r io.Reader, maxBytes int, dst any) error {
-	if maxBytes < 1 {
-		return fmt.Errorf("invalid JSON body limit %d", maxBytes)
+// DecodeError retains the complete sanitized response input and the underlying read or JSON
+// error. Body is never truncated; callers choose the redactions for values they already know
+// must not appear in diagnostics.
+type DecodeError struct {
+	Body      string
+	cause     error
+	causeText string
+}
+
+func (e *DecodeError) Error() string {
+	parts := []string{"decode JSON body"}
+	if e.Body != "" {
+		parts = append(parts, "body="+strconv.Quote(e.Body))
 	}
-	body, err := io.ReadAll(io.LimitReader(r, int64(maxBytes)+1))
+	if e.causeText != "" {
+		parts = append(parts, "cause="+e.causeText)
+	}
+	return strings.Join(parts, ": ")
+}
+
+func (e *DecodeError) Unwrap() error { return e.cause }
+
+func newDecodeError(body []byte, cause error, redactions ...string) error {
+	return &DecodeError{
+		Body:      httpdiag.Sanitize(string(body), redactions...),
+		cause:     cause,
+		causeText: httpdiag.Sanitize(cause.Error(), redactions...),
+	}
+}
+
+// Decode reads the complete response, decodes exactly one JSON value into dst,
+// and rejects any trailing JSON or data.
+func Decode(r io.Reader, dst any, redactions ...string) error {
+	body, err := io.ReadAll(r)
 	if err != nil {
-		return fmt.Errorf("read JSON body: %w", err)
-	}
-	if len(body) > maxBytes {
-		return ErrBodyTooLarge
+		return newDecodeError(body, err, redactions...)
 	}
 
 	decoder := json.NewDecoder(bytes.NewReader(body))
 	if err := decoder.Decode(dst); err != nil {
-		return err
+		return newDecodeError(body, err, redactions...)
 	}
 	var trailing any
 	if err := decoder.Decode(&trailing); err != io.EOF {
 		if err == nil {
-			return ErrTrailingData
+			return newDecodeError(body, ErrTrailingData, redactions...)
 		}
-		return fmt.Errorf("%w: %v", ErrTrailingData, err)
+		return newDecodeError(body, fmt.Errorf("%w: %v", ErrTrailingData, err), redactions...)
 	}
 	return nil
 }

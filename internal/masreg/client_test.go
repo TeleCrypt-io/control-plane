@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/TeleCrypt-io/controlplane/internal/httpdiag"
 	"github.com/TeleCrypt-io/controlplane/internal/registrationfailure"
 )
 
@@ -463,7 +464,7 @@ func TestApproveDeviceAuthorizationRejectsUnexpectedSameOriginLanding(t *testing
 	if err != nil {
 		t.Fatalf("parse test base: %v", err)
 	}
-	s := &session{baseURL: base.String(), httpClient: &http.Client{CheckRedirect: registrationRedirectPolicy(base)}}
+	s := &session{baseURL: base.String(), baseURLParsed: base, httpClient: &http.Client{CheckRedirect: registrationRedirectPolicy(base)}}
 	err = s.approveDeviceAuthorization(context.Background(), "user-123")
 	if err == nil || registrationfailure.Code(err) != "device_consent/protocol" {
 		t.Fatalf("approveDeviceAuthorization error = %v, want unexpected same-origin landing rejection", err)
@@ -518,8 +519,8 @@ func TestPublicOAuthClientDoesNotUseAmbientProxy(t *testing.T) {
 	if !ok {
 		t.Fatalf("public OAuth transport = %T, want *http.Transport", client.Transport)
 	}
-	if transport.Proxy != nil || transport.MaxResponseHeaderBytes != maxMASResponseHeaderBytes {
-		t.Fatalf("public OAuth transport proxy/response-header bound = %t/%d", transport.Proxy != nil, transport.MaxResponseHeaderBytes)
+	if transport.Proxy != nil {
+		t.Fatalf("public OAuth transport proxy is enabled")
 	}
 }
 
@@ -609,6 +610,11 @@ type flakyTransport struct {
 	body  string
 }
 
+type eventuallyReadyIdentityTransport struct {
+	calls    int
+	transient int
+}
+
 type errorTransport struct{ err error }
 
 func (t errorTransport) RoundTrip(*http.Request) (*http.Response, error) { return nil, t.err }
@@ -653,6 +659,31 @@ func (b *trackingBody) Close() error {
 	return nil
 }
 
+type responseBody struct {
+	reader  io.Reader
+	readErr error
+	closeErr error
+}
+
+func (b *responseBody) Read(p []byte) (int, error) {
+	if b.readErr != nil {
+		return 0, b.readErr
+	}
+	return b.reader.Read(p)
+}
+
+func (b *responseBody) Close() error { return b.closeErr }
+
+type responseTransport struct {
+	response *http.Response
+	calls    int
+}
+
+func (t *responseTransport) RoundTrip(*http.Request) (*http.Response, error) {
+	t.calls++
+	return t.response, nil
+}
+
 type unexpectedStatusTransport struct{ body *trackingBody }
 
 func (t unexpectedStatusTransport) RoundTrip(*http.Request) (*http.Response, error) {
@@ -675,6 +706,21 @@ func (t *flakyTransport) RoundTrip(*http.Request) (*http.Response, error) {
 	}, nil
 }
 
+func (t *eventuallyReadyIdentityTransport) RoundTrip(*http.Request) (*http.Response, error) {
+	t.calls++
+	status := http.StatusOK
+	body := `{"user_id":"@agent:telecrypt.io","device_id":"DEVICE-12345"}`
+	if t.calls <= t.transient {
+		status = http.StatusNotFound
+		body = "identity is not ready"
+	}
+	return &http.Response{
+		StatusCode: status,
+		Header:     make(http.Header),
+		Body:       io.NopCloser(strings.NewReader(body)),
+	}, nil
+}
+
 func TestOAuthRetriesTransientTransportErrors(t *testing.T) {
 	tokenTransport := &flakyTransport{body: `{"access_token":"access","refresh_token":"refresh","expires_in":60}`}
 	s := &session{baseURL: "https://mas.example", publicHTTPClient: &http.Client{Transport: tokenTransport}}
@@ -688,6 +734,80 @@ func TestOAuthRetriesTransientTransportErrors(t *testing.T) {
 	userID, deviceID, err := s.whoAmI(context.Background(), "https://mas.example", "access")
 	if err != nil || userID != "@agent:telecrypt.io" || deviceID != "DEVICE-12345" || whoamiTransport.calls != 2 {
 		t.Fatalf("whoami result = %q, %q, %v, calls = %d", userID, deviceID, err, whoamiTransport.calls)
+	}
+}
+
+func TestWhoAmIRetriesUntilProviderSuccess(t *testing.T) {
+	transport := &eventuallyReadyIdentityTransport{transient: 6}
+	s := &session{
+		baseURL:          "https://mas.example",
+		publicHTTPClient: &http.Client{Transport: transport},
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	userID, deviceID, err := s.whoAmI(ctx, "https://mas.example", "access")
+	if err != nil || userID != "@agent:telecrypt.io" || deviceID != "DEVICE-12345" || transport.calls != 7 {
+		t.Fatalf("whoami result = %q, %q, %v, calls = %d", userID, deviceID, err, transport.calls)
+	}
+}
+
+func TestPollDeviceTokenRejectsResponseDrainAndCloseFailures(t *testing.T) {
+	drainErr := errors.New("response drain failed")
+	closeErr := errors.New("response close failed")
+	transport := &responseTransport{response: &http.Response{
+		StatusCode: http.StatusBadGateway,
+		Header:     make(http.Header),
+		Body:       &responseBody{readErr: drainErr, closeErr: closeErr},
+	}}
+	s := &session{
+		baseURL:          "https://mas.example",
+		publicHTTPClient: &http.Client{Transport: transport},
+	}
+
+	_, err := s.pollDeviceToken(context.Background(), "client", &deviceAuthorization{
+		DeviceCode: "code", UserCode: "user", ExpiresIn: 60, Interval: 1,
+	})
+	if registrationfailure.Code(err) != "device_token/protocol" || !errors.Is(err, drainErr) || !errors.Is(err, closeErr) {
+		t.Fatalf("pollDeviceToken error = %v, want protocol with drain and close failures", err)
+	}
+	if transport.calls != 1 {
+		t.Fatalf("pollDeviceToken calls = %d, want one after response cleanup failure", transport.calls)
+	}
+}
+
+func TestUnexpectedStatusRetainsSanitizedCompleteBody(t *testing.T) {
+	secret := "device-token-secret"
+	userID := "@customer:telecrypt.io"
+	body := "provider detail " + secret + " " + userID + " tail"
+	resp := &http.Response{StatusCode: http.StatusBadGateway, Body: io.NopCloser(strings.NewReader(body))}
+	err := unexpectedStatus(resp, secret, userID)
+	var diagnostic *httpdiag.ResponseError
+	if !errors.As(err, &diagnostic) || diagnostic == nil || !strings.Contains(diagnostic.Body, "tail") || strings.Contains(diagnostic.Body, secret) || strings.Contains(diagnostic.Body, userID) {
+		t.Fatalf("unexpectedStatus error = %v, diagnostic = %#v, want complete sanitized body", err, diagnostic)
+	}
+}
+
+func TestPollDeviceTokenRejectsSuccessfulResponseCloseFailure(t *testing.T) {
+	closeErr := errors.New("response close failed")
+	transport := &responseTransport{response: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     make(http.Header),
+		Body: &responseBody{
+			reader:   strings.NewReader(`{"access_token":"access","refresh_token":"refresh","expires_in":60}`),
+			closeErr: closeErr,
+		},
+	}}
+	s := &session{
+		baseURL:          "https://mas.example",
+		publicHTTPClient: &http.Client{Transport: transport},
+	}
+
+	got, err := s.pollDeviceToken(context.Background(), "client", &deviceAuthorization{
+		DeviceCode: "code", UserCode: "user", ExpiresIn: 60, Interval: 1,
+	})
+	if got != nil || registrationfailure.Code(err) != "device_token/protocol" || !errors.Is(err, closeErr) {
+		t.Fatalf("pollDeviceToken result = %#v, error = %v, want protocol close failure", got, err)
 	}
 }
 
@@ -739,6 +859,22 @@ func TestWhoAmIClosesBodyBeforeUnexpectedStatusReturn(t *testing.T) {
 	}
 }
 
+func TestWhoAmIPreservesResponseCloseFailure(t *testing.T) {
+	closeErr := errors.New("identity response close failed")
+	s := &session{
+		baseURL: "https://mas.example",
+		publicHTTPClient: &http.Client{Transport: &responseTransport{response: &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       &responseBody{reader: strings.NewReader(`{"user_id":"@agent:telecrypt.io","device_id":"DEVICE-12345"}`), closeErr: closeErr},
+		}}},
+	}
+	_, _, err := s.whoAmI(context.Background(), "https://mas.example", "access")
+	if registrationfailure.Code(err) != "identity/protocol" || !errors.Is(err, closeErr) {
+		t.Fatalf("whoami error = %v, want identity/protocol with close failure", err)
+	}
+}
+
 func TestSessionReusesPublicHTTPClient(t *testing.T) {
 	s := &session{}
 	first := s.publicClient()
@@ -750,16 +886,23 @@ func TestSessionReusesPublicHTTPClient(t *testing.T) {
 	}
 }
 
-func TestMASRequestErrorsDoNotExposeTransportText(t *testing.T) {
-	const secret = "proxy-password=must-not-escape"
+func TestMASRequestErrorsPreserveSanitizedTransportText(t *testing.T) {
+	const secret = "must-not-escape"
+	detail := strings.Repeat("diagnostic-", 7000) + " password=" + secret + " final-detail"
 	s := &session{
 		baseURL: "https://mas.example",
 		publicHTTPClient: &http.Client{
-			Transport: errorTransport{err: errors.New(secret)},
+			Transport: errorTransport{err: errors.New(detail)},
 		},
 	}
 	_, err := s.registerPublicNativeClient(context.Background(), "https://mas.example")
-	if err == nil || strings.Contains(err.Error(), secret) {
-		t.Fatalf("registerPublicNativeClient error = %v, want bounded transport failure", err)
+	if err == nil {
+		t.Fatal("registerPublicNativeClient returned nil error")
+	}
+	if strings.Contains(err.Error(), secret) {
+		t.Fatalf("registerPublicNativeClient exposed credential: %v", err)
+	}
+	if !strings.Contains(err.Error(), strings.Repeat("diagnostic-", 7000)) || !strings.Contains(err.Error(), "final-detail") {
+		t.Fatalf("registerPublicNativeClient discarded transport diagnostic: %v", err)
 	}
 }

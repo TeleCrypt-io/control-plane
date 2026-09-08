@@ -1,13 +1,15 @@
 // Package registrationfailure defines the one bounded failure vocabulary shared by the
-// registration flow and its HTTP boundary. It deliberately does not expose the underlying
-// provider error: callers may unwrap it for internal control flow, but external diagnostics use
-// only Code.
+// registration flow and its HTTP boundary. Its Error text retains the complete sanitized
+// underlying diagnostic for internal logs and callers may unwrap it for control flow. External
+// responses use only Code.
 package registrationfailure
 
 import (
 	"context"
 	"errors"
 	"net"
+
+	"github.com/TeleCrypt-io/controlplane/internal/httpdiag"
 )
 
 type Stage string
@@ -49,7 +51,15 @@ func (e *Error) Error() string {
 	if e == nil || !valid(e.Stage, e.Kind) {
 		return string(StageInternal) + "/" + string(KindInternal)
 	}
-	return string(e.Stage) + "/" + string(e.Kind)
+	code := boundedCode(e.Stage, e.Kind)
+	if e.err == nil {
+		return code
+	}
+	detail := httpdiag.Sanitize(e.err.Error())
+	if detail == "" {
+		return code
+	}
+	return code + ": " + detail
 }
 
 func (e *Error) Unwrap() error {
@@ -81,9 +91,9 @@ func WithKind(stage Stage, kind Kind, err error) error {
 	return &Error{Stage: stage, Kind: kind, err: err}
 }
 
-// Protocol, Invariant, Upstream and Transport mark typed failures at their source. Their
-// external Error text is deliberately only the finite kind, even if the wrapped error contains
-// provider text, URLs, account names, or credentials.
+// Protocol, Invariant, Upstream and Transport mark typed failures at their source. Their Error
+// text retains a complete sanitized cause for internal diagnostics; callers crossing the HTTP
+// boundary must use Code instead.
 func Protocol(err error) error {
 	if err == nil {
 		return nil
@@ -117,7 +127,16 @@ type marked struct {
 	err  error
 }
 
-func (e marked) Error() string { return string(e.kind) }
+func (e marked) Error() string {
+	if e.err == nil {
+		return string(e.kind)
+	}
+	detail := httpdiag.Sanitize(e.err.Error())
+	if detail == "" {
+		return string(e.kind)
+	}
+	return string(e.kind) + ": " + detail
+}
 func (e marked) Unwrap() error { return e.err }
 
 // Classify maps only typed/context/network properties. It never parses error strings.
@@ -153,7 +172,11 @@ func Code(err error) string {
 	if !errors.As(err, &typed) || typed == nil || !valid(typed.Stage, typed.Kind) {
 		return string(StageInternal) + "/" + string(KindInternal)
 	}
-	return typed.Error()
+	return boundedCode(typed.Stage, typed.Kind)
+}
+
+func boundedCode(stage Stage, kind Kind) string {
+	return string(stage) + "/" + string(kind)
 }
 
 func valid(stage Stage, kind Kind) bool {

@@ -22,6 +22,7 @@ import (
 type countingBody struct {
 	reader io.Reader
 	read   int
+	err    error
 }
 
 type masadminRoundTripFunc func(*http.Request) (*http.Response, error)
@@ -29,12 +30,23 @@ type masadminRoundTripFunc func(*http.Request) (*http.Response, error)
 func (f masadminRoundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
 func (b *countingBody) Read(p []byte) (int, error) {
+	if b.err != nil {
+		return 0, b.err
+	}
 	n, err := b.reader.Read(p)
 	b.read += n
 	return n, err
 }
 
 func (b *countingBody) Close() error { return nil }
+
+type closeErrorBody struct {
+	reader  io.Reader
+	closeErr error
+}
+
+func (b *closeErrorBody) Read(p []byte) (int, error) { return b.reader.Read(p) }
+func (b *closeErrorBody) Close() error               { return b.closeErr }
 
 func testULID(seed string) string {
 	digest := sha256.Sum256([]byte(seed))
@@ -48,21 +60,35 @@ func canonicalTestULID(value string) string {
 	return testULID(value)
 }
 
-func TestDescribeErrorBoundsAndSanitizesUpstreamBody(t *testing.T) {
+func TestDescribeErrorDrainsAndSanitizesUpstreamBody(t *testing.T) {
 	secret := "mas-client-secret-should-never-escape"
-	body := bytes.Repeat([]byte(secret), maxErrorBodyBytes)
+	body := append([]byte("prefix "+secret+" "), bytes.Repeat([]byte("x"), 256<<10)...)
+	body = append(body, []byte(" tail")...)
 	resp := &http.Response{StatusCode: http.StatusBadGateway, Body: &countingBody{reader: bytes.NewReader(body)}}
 
-	got := describeError(resp)
-	if want := "status 502"; got != want {
-		t.Fatalf("describeError = %q, want %q", got, want)
+	got, err := describeError(resp, secret)
+	if err != nil {
+		t.Fatalf("describeError: %v", err)
+	}
+	if !strings.Contains(got, "prefix") || !strings.Contains(got, "tail") {
+		t.Fatalf("describeError = %q, want complete response body", got)
 	}
 	if strings.Contains(got, secret) {
 		t.Fatal("describeError returned sensitive upstream body")
 	}
 	reader := resp.Body.(*countingBody)
-	if reader.read > maxErrorBodyBytes {
-		t.Fatalf("describeError read %d bytes, max %d", reader.read, maxErrorBodyBytes)
+	if reader.read != len(body) {
+		t.Fatalf("describeError read %d bytes, want complete body of %d", reader.read, len(body))
+	}
+}
+
+func TestDescribeErrorPreservesDrainFailure(t *testing.T) {
+	readErr := errors.New("MAS error response drain failed")
+	resp := &http.Response{StatusCode: http.StatusBadGateway, Body: &countingBody{reader: strings.NewReader("error"), err: readErr}}
+
+	got, err := describeError(resp)
+	if !strings.HasPrefix(got, "status 502") || !errors.Is(err, readErr) || !strings.Contains(err.Error(), "MAS error response drain failed") {
+		t.Fatalf("describeError = %q, %v, want complete status and preserved drain failure", got, err)
 	}
 }
 
@@ -96,8 +122,48 @@ func TestClientDoesNotUseAmbientProxy(t *testing.T) {
 	if !ok {
 		t.Fatalf("client transport = %T, want *http.Transport", client.httpClient.Transport)
 	}
-	if transport.Proxy != nil || transport.MaxResponseHeaderBytes != maxMASResponseHeaderBytes {
-		t.Fatalf("MAS admin transport proxy/response-header bound = %t/%d", transport.Proxy != nil, transport.MaxResponseHeaderBytes)
+	if transport.Proxy != nil {
+		t.Fatalf("MAS admin transport proxy is enabled")
+	}
+}
+
+func TestClientPreservesResponseCloseFailure(t *testing.T) {
+	closeErr := errors.New("MAS response close failed")
+	client := NewClient("https://mas.example", "client", "secret")
+	client.cachedToken = "token"
+	client.tokenExpiry = time.Now().Add(time.Hour)
+	client.httpClient.Transport = masadminRoundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       &closeErrorBody{reader: strings.NewReader(`{"data":[]}`), closeErr: closeErr},
+		}, nil
+	})
+	var out paginatedResponse[User]
+	if err := client.get(context.Background(), "/api/admin/v1/users", &out); !errors.Is(err, closeErr) {
+		t.Fatalf("MAS admin response error = %v, want close failure", err)
+	}
+}
+
+func TestClientStatusDiagnosticRetainsSanitizedBodyAndCloseFailure(t *testing.T) {
+	secret := "mas-client-secret"
+	userID := testULID("diagnostic-user")
+	closeErr := errors.New("close response failed for " + userID)
+	client := NewClient("https://mas.example", "client", secret)
+	client.cachedToken = "bearer-token"
+	client.tokenExpiry = time.Now().Add(time.Hour)
+	client.httpClient.Transport = masadminRoundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusBadGateway,
+			Body: &closeErrorBody{
+				reader:   strings.NewReader("provider detail " + secret + " " + userID + " tail"),
+				closeErr: closeErr,
+			},
+		}, nil
+	})
+	var out paginatedResponse[User]
+	err := client.get(context.Background(), "/api/admin/v1/users/"+userID, &out)
+	if err == nil || !strings.Contains(err.Error(), "tail") || strings.Contains(err.Error(), secret) || strings.Contains(err.Error(), userID) || !errors.Is(err, closeErr) {
+		t.Fatalf("MAS admin status error = %v, want complete sanitized body and close failure", err)
 	}
 }
 
@@ -137,13 +203,14 @@ func TestClientDoesNotLeakCredentialsAcrossRedirect(t *testing.T) {
 func TestUserErrorsDoNotExposeMASIDs(t *testing.T) {
 	const userIDSeed = "01JMASUSERIDSHOULDNOTLEAK"
 	userID := testULID(userIDSeed)
+	transportErr := errors.New("dial failed for " + userID + " tail")
 	client := NewClient("https://mas.example", "client", "secret")
 	client.httpClient.Transport = masadminRoundTripFunc(func(r *http.Request) (*http.Response, error) {
-		return nil, errors.New("dial failed for " + userID)
+		return nil, transportErr
 	})
 	_, err := client.GetUser(context.Background(), userID)
-	if err == nil || strings.Contains(err.Error(), userID) {
-		t.Fatalf("GetUser error = %v, want sanitized error without MAS ID", err)
+	if err == nil || !strings.Contains(err.Error(), "tail") || strings.Contains(err.Error(), userID) || !errors.Is(err, transportErr) {
+		t.Fatalf("GetUser error = %v, want complete sanitized transport cause", err)
 	}
 	badURLClient := NewClient(":", "client", "secret")
 	_, err = badURLClient.GetUser(context.Background(), userID)

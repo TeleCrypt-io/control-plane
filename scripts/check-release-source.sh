@@ -30,13 +30,6 @@ readonly repo_url="https://github.com/${GITHUB_REPOSITORY}.git"
 readonly tag_ref="refs/tags/$RELEASE_TAG"
 readonly remote_tag_ref='refs/remotes/origin/release-tag'
 readonly remote_main_ref='refs/remotes/origin/main'
-readonly max_output_bytes=$((64 * 1024))
-temporary_root="$(mktemp -d "${TMPDIR:-/tmp}/controlplane-git.XXXXXX")"
-readonly temporary_root
-cleanup() { rm -rf -- "$temporary_root"; }
-trap cleanup EXIT
-trap 'cleanup; exit 143' HUP INT TERM
-
 # Keep Git independent of runner configuration and credentials.  The command uses the
 # canonical HTTPS URL below, so local remotes cannot redirect the source fetch.
 git=(
@@ -51,30 +44,19 @@ git=(
   -c core.sshCommand=false
 )
 
-bounded_git() {
-  local stdout_file stderr_file status
-  stdout_file="$(mktemp "$temporary_root/stdout.XXXXXX")"
-  stderr_file="$(mktemp "$temporary_root/stderr.XXXXXX")"
+git_command() {
+  local status
   set +e
-  /usr/bin/python3 "$script_dir/bounded-command.py" \
-    --stdout-limit "$max_output_bytes" --stderr-limit "$max_output_bytes" \
-    --stdout-path "$stdout_file" --stderr-path "$stderr_file" --timeout 30 -- \
-    "${git[@]}" "$@"
+  timeout --signal=TERM --kill-after=5s 30s "${git[@]}" "$@"
   status=$?
   set -e
-  if (( status != 0 )); then
-    rm -f -- "$stdout_file" "$stderr_file"
-    return 1
-  fi
-  cat -- "$stdout_file"
-  cat -- "$stderr_file" >&2
-  rm -f -- "$stdout_file" "$stderr_file"
+  return "$status"
 }
 
 die() { echo "$1" >&2; exit 1; }
 
-remote_fetch_urls="$(bounded_git remote get-url --all origin)" || die 'could not read the origin fetch URL'
-remote_push_urls="$(bounded_git remote get-url --all --push origin)" || die 'could not read the origin push URL'
+remote_fetch_urls="$(git_command remote get-url --all origin)" || die 'could not read the origin fetch URL'
+remote_push_urls="$(git_command remote get-url --all --push origin)" || die 'could not read the origin push URL'
 normalized_fetch_url="$(normalize_canonical_origin_url "$GITHUB_REPOSITORY" "$remote_fetch_urls")" ||
   die 'origin fetch URL is not exactly one canonical HTTPS repository URL'
 normalized_push_url="$(normalize_canonical_origin_url "$GITHUB_REPOSITORY" "$remote_push_urls")" ||
@@ -82,26 +64,25 @@ normalized_push_url="$(normalize_canonical_origin_url "$GITHUB_REPOSITORY" "$rem
 [[ "$normalized_fetch_url" == "$repo_url" && "$normalized_push_url" == "$repo_url" ]] ||
   die 'origin fetch and push URLs do not resolve to the canonical repository'
 
-checkout_tag_type="$(bounded_git cat-file -t "$tag_ref")" || die 'checked-out release tag cannot be read'
+checkout_tag_type="$(git_command cat-file -t "$tag_ref")" || die 'checked-out release tag cannot be read'
 [[ "$checkout_tag_type" == tag ]] || die 'release tag is not annotated'
-checkout_tag_sha="$(bounded_git rev-parse --verify --end-of-options "$tag_ref")" || die 'checked-out tag object cannot be read'
-checkout_commit="$(bounded_git rev-parse --verify --end-of-options HEAD)" || die 'checked-out commit cannot be read'
-checkout_peeled="$(bounded_git rev-parse --verify --end-of-options "$tag_ref^{}")" || die 'checked-out tag target cannot be read'
+checkout_tag_sha="$(git_command rev-parse --verify --end-of-options "$tag_ref")" || die 'checked-out tag object cannot be read'
+checkout_commit="$(git_command rev-parse --verify --end-of-options HEAD)" || die 'checked-out commit cannot be read'
+checkout_peeled="$(git_command rev-parse --verify --end-of-options "$tag_ref^{}")" || die 'checked-out tag target cannot be read'
 [[ "$checkout_tag_sha" =~ ^[0-9a-f]{40}$ && "$checkout_peeled" == "$RELEASE_SHA" && "$checkout_commit" == "$RELEASE_SHA" ]] ||
   die 'checked-out tag, peeled commit, HEAD, and RELEASE_SHA do not match'
 
-fetch_output="$(bounded_git fetch --quiet --force --no-tags "$repo_url" \
-  "refs/tags/$RELEASE_TAG:$remote_tag_ref" refs/heads/main:"$remote_main_ref")" ||
-  die 'release source fetch failed or exceeded its output bound'
-[[ -z "$fetch_output" ]] || die 'release source fetch emitted unexpected output'
+git_command fetch --force --no-tags "$repo_url" \
+  "refs/tags/$RELEASE_TAG:$remote_tag_ref" refs/heads/main:"$remote_main_ref" ||
+  die 'release source fetch failed or exceeded its timeout'
 
-remote_tag_type="$(bounded_git cat-file -t "$remote_tag_ref")" || die 'fetched release tag cannot be read'
-remote_tag_sha="$(bounded_git rev-parse --verify --end-of-options "$remote_tag_ref")" || die 'fetched tag object cannot be read'
-remote_peeled="$(bounded_git rev-parse --verify --end-of-options "$remote_tag_ref^{}")" || die 'fetched tag target cannot be read'
+remote_tag_type="$(git_command cat-file -t "$remote_tag_ref")" || die 'fetched release tag cannot be read'
+remote_tag_sha="$(git_command rev-parse --verify --end-of-options "$remote_tag_ref")" || die 'fetched tag object cannot be read'
+remote_peeled="$(git_command rev-parse --verify --end-of-options "$remote_tag_ref^{}")" || die 'fetched tag target cannot be read'
 [[ "$remote_tag_type" == tag && "$remote_tag_sha" == "$checkout_tag_sha" && "$remote_peeled" == "$RELEASE_SHA" ]] ||
   die 'remote tag object or peeled commit does not match the checked-out source'
 
-bounded_git merge-base --is-ancestor "$RELEASE_SHA" "$remote_main_ref" >/dev/null ||
+git_command merge-base --is-ancestor "$RELEASE_SHA" "$remote_main_ref" >/dev/null ||
   die 'release commit is not contained in refreshed main'
 
 if [[ -n "${GITHUB_ENV:-}" ]]; then

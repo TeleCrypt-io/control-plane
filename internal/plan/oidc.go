@@ -13,11 +13,11 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/TeleCrypt-io/controlplane/internal/httpdiag"
 	"github.com/TeleCrypt-io/controlplane/internal/jsonbody"
 )
 
 const (
-	maxOIDCJSONBodyBytes = 1 << 20
 	maxOIDCFieldBytes    = 8 << 10
 	maxOIDCUsernameBytes = 255
 )
@@ -49,7 +49,7 @@ func (c *OIDCClient) AuthorizeURL(state, challenge string) string {
 	return c.authorizeURL + "?" + v.Encode()
 }
 
-func (c *OIDCClient) ExchangeCode(ctx context.Context, code, verifier string) (string, error) {
+func (c *OIDCClient) ExchangeCode(ctx context.Context, code, verifier string) (accessToken string, resultErr error) {
 	if !validOIDCField(code, maxOIDCFieldBytes) || !validOIDCField(verifier, maxOIDCFieldBytes) {
 		return "", fmt.Errorf("token exchange: invalid code or verifier")
 	}
@@ -62,16 +62,21 @@ func (c *OIDCClient) ExchangeCode(ctx context.Context, code, verifier string) (s
 	req.SetBasicAuth(c.clientID, c.clientSecret)
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("token exchange: %w", err)
+		return "", httpdiag.WrapCause("token exchange", err, c.clientSecret, c.clientID, code, verifier, c.redirectURI)
 	}
-	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("token exchange: unexpected status %d", resp.StatusCode)
+		body, readErr, closeErr := httpdiag.ReadAndClose(resp.Body, c.clientSecret, c.clientID, code, verifier, c.redirectURI)
+		return "", httpdiag.NewResponseError("token exchange", resp.StatusCode, body, readErr, closeErr, c.clientSecret, c.clientID, code, verifier, c.redirectURI)
 	}
+	defer func() {
+		if closeErr := resp.Body.Close(); closeErr != nil {
+			resultErr = errors.Join(resultErr, httpdiag.WrapCause("token exchange response body close", closeErr, c.clientSecret, c.clientID, code, verifier, c.redirectURI))
+		}
+	}()
 	var out struct {
 		AccessToken string `json:"access_token"`
 	}
-	if err := jsonbody.Decode(resp.Body, maxOIDCJSONBodyBytes, &out); err != nil {
+	if err := jsonbody.Decode(resp.Body, &out, c.clientSecret, c.clientID, code, verifier, c.redirectURI); err != nil {
 		return "", fmt.Errorf("token exchange response: %w", err)
 	}
 	if !validOIDCField(out.AccessToken, maxOIDCFieldBytes) {
@@ -80,7 +85,7 @@ func (c *OIDCClient) ExchangeCode(ctx context.Context, code, verifier string) (s
 	return out.AccessToken, nil
 }
 
-func (c *OIDCClient) Username(ctx context.Context, token string) (string, error) {
+func (c *OIDCClient) Username(ctx context.Context, token string) (username string, resultErr error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.userinfoURL, nil)
 	if err != nil {
 		return "", err
@@ -88,16 +93,21 @@ func (c *OIDCClient) Username(ctx context.Context, token string) (string, error)
 	req.Header.Set("Authorization", "Bearer "+token)
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("userinfo: %w", err)
+		return "", httpdiag.WrapCause("userinfo", err, c.clientSecret, c.clientID, token)
 	}
-	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("userinfo: unexpected status %d", resp.StatusCode)
+		body, readErr, closeErr := httpdiag.ReadAndClose(resp.Body, c.clientSecret, c.clientID, token)
+		return "", httpdiag.NewResponseError("userinfo", resp.StatusCode, body, readErr, closeErr, c.clientSecret, c.clientID, token)
 	}
+	defer func() {
+		if closeErr := resp.Body.Close(); closeErr != nil {
+			resultErr = errors.Join(resultErr, httpdiag.WrapCause("userinfo response body close", closeErr, c.clientSecret, c.clientID, token))
+		}
+	}()
 	var out struct {
 		Username string `json:"username"`
 	}
-	if err := jsonbody.Decode(resp.Body, maxOIDCJSONBodyBytes, &out); err != nil {
+	if err := jsonbody.Decode(resp.Body, &out, c.clientSecret, c.clientID, token); err != nil {
 		return "", fmt.Errorf("userinfo response: %w", err)
 	}
 	if !validOIDCField(out.Username, maxOIDCUsernameBytes) {

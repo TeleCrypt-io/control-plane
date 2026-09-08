@@ -7,6 +7,7 @@ helper="$repo_root/scripts/check-release-source.sh"
 url_helper="$repo_root/scripts/check-release-source_helpers.sh"
 workflow="$repo_root/.github/workflows/build.yml"
 tier_controller_pyproject="$repo_root/synapse/tier_controller/pyproject.toml"
+image_contract_helper="$repo_root/scripts/validate-image-contract.sh"
 
 grep -Fqx '#!/usr/bin/env bash' "$helper"
 grep -Fqx '#!/usr/bin/env bash' "$url_helper"
@@ -25,9 +26,16 @@ grep -Fq 'normalize_canonical_origin_url' "$helper"
 grep -Fq 'refs/tags/$RELEASE_TAG:$remote_tag_ref' "$helper"
 grep -Fq 'refs/heads/main:"$remote_main_ref"' "$helper"
 grep -Fq 'merge-base --is-ancestor' "$helper"
-grep -Fq 'bounded_capture_deadline' "$repo_root/scripts/release-helpers.sh"
+grep -Fq 'capture_command' "$repo_root/scripts/release-helpers.sh"
+grep -Fq 'capture_value' "$image_contract_helper"
+grep -Fq 'cat -- "$output" >&2' "$image_contract_helper"
+grep -Fq 'cat -- "$stderr_file" >&2' "$image_contract_helper"
+if grep -Fq 'fetch --quiet' "$helper"; then
+  echo 'private repository source proof must retain complete Git fetch diagnostics' >&2
+  exit 1
+fi
 if grep -Eq '2>&1[[:space:]]*\|[[:space:]]*/usr/bin/head' "$repo_root/scripts/check-release-source.sh"; then
-  echo 'Git output must be bounded independently on stdout and stderr' >&2
+  echo 'Git output must remain complete on stdout and stderr' >&2
   exit 1
 fi
 grep -Fq -- '--draft' "$workflow"
@@ -92,9 +100,17 @@ grep -Fq 'ghcr_version_records' "$workflow"
 grep -Fq 'declare -A package_ids=() package_digests=()' "$workflow"
 grep -Fq 'GHCR package version pagination returned a duplicate ID or digest' "$workflow"
 grep -Fq 'GHCR package version response failed strict schema validation' "$workflow"
-grep -Fq -- "--jq '[.[] | {id,name,metadata}]'" "$workflow"
-grep -Fq '[[ "$page" -lt 100 ]]' "$workflow"
-grep -Fq 'for page in $(seq 1 100); do' "$workflow"
+if grep -Fq -- "--jq '[.[] | {id,name,metadata}]'" "$workflow"; then
+  echo 'GHCR API response diagnostics must not be filtered before retention' >&2
+  exit 1
+fi
+grep -Fq 'for (( page=1; ; page++ )); do' "$workflow"
+grep -Fq 'smoke diagnostic child wait failed during %s (status %s)' "$workflow"
+grep -Fq 'image contract child wait failed during %s (status %s)' "$repo_root/scripts/validate-image-contract.sh"
+if grep -Eq '\[\[ "\$page" -lt 100 \]\]|for page in \$\(seq 1 100\); do|reached its bound' "$workflow"; then
+  echo 'Release and package discovery must rely on pagination completion and workflow deadlines, not a total page ceiling' >&2
+  exit 1
+fi
 grep -Fq 'for attempt in $(seq 1 5); do' "$workflow"
 grep -Fq '[[ "$attempt" -lt 5 ]] && sleep 2' "$workflow"
 grep -Fq '(.id | type == "number" and . > 0 and . == floor)' "$workflow"
@@ -102,7 +118,7 @@ if grep -Fq '(.id | type) == "number" and .id > 0 and .id == floor' "$workflow";
   echo 'Release asset IDs must be validated while the jq input is the numeric ID' >&2
   exit 1
 fi
-if grep -Fq 'inspection="$(docker_bounded buildx imagetools inspect "$IMAGE:$RELEASE_TAG"' "$workflow"; then
+if grep -Fq 'inspection="$(docker_command buildx imagetools inspect "$IMAGE:$RELEASE_TAG"' "$workflow"; then
   echo 'immutable image-tag absence must use the authenticated Packages API, not human Docker text' >&2
   exit 1
 fi
@@ -127,19 +143,19 @@ if block:
 for block in blocks:
     invocations = [
         index for index, line in enumerate(block)
-        if 'docker_bounded' in line and not re.search(r'docker_bounded\s*\(\)\s*\{', line)
+        if 'docker_command' in line and not re.search(r'docker_command\s*\(\)\s*\{', line)
     ]
     if not invocations:
         continue
     definitions = [
         index for index, line in enumerate(block)
-        if re.search(r'docker_bounded\s*\(\)\s*\{', line)
+        if re.search(r'docker_command\s*\(\)\s*\{', line)
     ]
     assert definitions and min(definitions) < min(invocations), block[0]
 
     deadline_invocations = [
         index for index, line in enumerate(block)
-        if 'bounded_capture_deadline ' in line and 'grep' not in line
+        if 'capture_command ' in line and 'grep' not in line
     ]
     if deadline_invocations:
         helper_sources = [
@@ -149,17 +165,20 @@ for block in blocks:
         assert helper_sources and min(helper_sources) < min(deadline_invocations), block[0]
 
 create = next(index for index, line in enumerate(lines) if 'buildx imagetools create --prefer-index=false' in line)
-final = next(index for index, line in enumerate(lines) if 'final_digest="$(docker_bounded buildx imagetools inspect "$IMAGE:$RELEASE_TAG"' in line)
+final = next(index for index, line in enumerate(lines) if 'final_digest="$(docker_command buildx imagetools inspect "$IMAGE:$RELEASE_TAG"' in line)
 assert create < final
 PY
 if grep -Fq -- '--detach --rm --name "$registration_name"' "$workflow" || grep -Fq -- '--detach --rm --name "$plan_name"' "$workflow"; then
-  echo 'failed smoke containers must remain available for bounded diagnostics until cleanup' >&2
+  echo 'failed smoke containers must remain available for diagnostics until cleanup' >&2
   exit 1
 fi
-if grep -Fq 'curl --silent --show-error' "$workflow"; then
-  echo 'expected readiness retries must not emit transport errors before the final diagnosis' >&2
+if grep -Fq -- '--silent' "$workflow" || grep -Fq -- '--output /dev/null' "$workflow"; then
+  echo 'readiness retries must retain curl transport and response diagnostics' >&2
   exit 1
 fi
+grep -Fq -- '--no-progress-meter --show-error' "$workflow"
+grep -Fq 'registration_curl_status=$?' "$workflow"
+grep -Fq 'plan_curl_status=$?' "$workflow"
 PYTHONDONTWRITEBYTECODE=1 python3 - "$tier_controller_pyproject" <<'PY'
 import pathlib
 import sys
@@ -180,20 +199,17 @@ PY
 legacy_edit="$(printf '%s %s' gh 'release edit')"
 tag_release_path="$(printf '%s/%s/' releases tags)"
 if grep -Fq "$legacy_edit" "$workflow" || grep -Fq "$tag_release_path" "$workflow"; then
-  echo 'draft Release path must use bounded discovery and numeric release IDs' >&2
+  echo 'draft Release path must use paginated discovery and numeric release IDs' >&2
   exit 1
 fi
 grep -Fq 'cat-file -t' "$helper"
 grep -Fq 'tag_ref^{}' "$helper"
 grep -Fq 'checkout_commit" == "$RELEASE_SHA"' "$helper"
 grep -Fq 'ANNOTATED_TAG_SHA=' "$helper"
-grep -Fq 'bounded-command.py' "$helper"
-grep -Fq 'start_new_session=True' "$repo_root/scripts/bounded-command.py"
-grep -Fq 'bounded_capture 65536 "$image_pull_output" docker pull "$SYNAPSE_IMAGE"' "$workflow"
-grep -Fq 'bounded_capture 65536 "$image_test_output" docker run --rm --user 0:0' "$workflow"
-bounded_function_name="$(printf '%s_%s' docker bounded)"
-if grep -Eq "bounded_capture.*${bounded_function_name}" "$workflow"; then
-  echo 'bounded_capture must invoke an executable, not a shell function' >&2
+grep -Fq 'timeout --signal=TERM --kill-after=5s 120s docker pull "$SYNAPSE_IMAGE"' "$workflow"
+grep -Fq 'timeout --signal=TERM --kill-after=5s 120s docker run --rm --user 0:0' "$workflow"
+if grep -Eq 'bounded-command|stdout-limit|stderr-limit|process\.poll\(' "$workflow" "$helper" "$repo_root/scripts/release-helpers.sh"; then
+  echo 'release command capture must not impose diagnostic output limits or custom process polling' >&2
   exit 1
 fi
 grep -Fq 'license-files = ["LICENSE", "NOTICE"]' "$tier_controller_pyproject"
@@ -264,9 +280,9 @@ fi
 set +e
 (
   cd "$temporary"
-  # The child writes a legitimate work file larger than the diagnostic bound.
+  # The child writes a legitimate work file while its complete output is captured.
   source "$repo_root/scripts/release-helpers.sh"
-  bounded_capture 65536 "$temporary/stdout" /usr/bin/python3 -c \
+  capture_command "$temporary/stdout" 120 /usr/bin/python3 -c \
     'from pathlib import Path; Path("work.bin").write_bytes(b"x" * 131072); print("ok")'
 )
 status=$?
@@ -277,15 +293,40 @@ test "$(stat -c %s "$temporary/work.bin")" -eq 131072
 
 set +e
 (
-  cd "$temporary"
   source "$repo_root/scripts/release-helpers.sh"
-  bounded_capture 1024 "$temporary/descendant" /usr/bin/python3 -c \
-    'import subprocess,sys; subprocess.Popen([sys.executable,"-c","import time; time.sleep(60)"]); print("leader")'
+  capture_command "$temporary/failure-stdout" 120 /usr/bin/python3 -c \
+    'import sys; print("partial"); print("failure", file=sys.stderr); raise SystemExit(17)'
+)
+status=$?
+set -e
+test "$status" -eq 17
+test "$(cat "$temporary/failure-stdout")" = partial
+test "$(grep -Fc partial "$temporary/failure-stdout.stderr")" -eq 1
+grep -Fq failure "$temporary/failure-stdout.stderr"
+
+set +e
+(
+  source "$repo_root/scripts/release-helpers.sh"
+  capture_command "$temporary/success-stderr" 120 /usr/bin/python3 -c \
+    'import sys; print("ok"); print("warning", file=sys.stderr)'
 )
 status=$?
 set -e
 test "$status" -eq 0
-test "$(cat "$temporary/descendant")" = leader
+test "$(cat "$temporary/success-stderr")" = ok
+test "$(grep -Fc warning "$temporary/success-stderr.stderr")" -eq 1
+
+set +e
+(
+  source "$repo_root/scripts/release-helpers.sh"
+  capture_command "$temporary/large-stderr" 120 /usr/bin/python3 -c \
+    'import sys; sys.stderr.write("x" * 70000)'
+)
+status=$?
+set -e
+test "$status" -eq 0
+test ! -s "$temporary/large-stderr"
+test "$(stat -c %s "$temporary/large-stderr.stderr")" -eq 70000
 
 # shellcheck source=scripts/check-release-source_helpers.sh
 source "$url_helper"

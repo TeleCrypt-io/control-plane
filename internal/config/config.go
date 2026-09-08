@@ -106,7 +106,7 @@ func LoadJanitor() (*JanitorConfig, error) {
 	if (billingEnvironment == "test") != dryRun {
 		return nil, fmt.Errorf("JANITOR_DRY_RUN must be 1 for BILLING_ENVIRONMENT=test and 0 for BILLING_ENVIRONMENT=live")
 	}
-	cashierDBRole, err := expectedCashierDatabaseRole(serverName)
+	databaseIdentity, err := expectedDatabaseIdentity(serverName)
 	if err != nil {
 		return nil, err
 	}
@@ -117,7 +117,7 @@ func LoadJanitor() (*JanitorConfig, error) {
 		MASAdminClientID:     os.Getenv("MAS_ADMIN_CLIENT_ID"),
 		MASAdminClientSecret: os.Getenv("MAS_ADMIN_CLIENT_SECRET"),
 		JanitorDBURL:         os.Getenv("JANITOR_DB_URL"),
-		CashierDBRole:        cashierDBRole,
+		CashierDBRole:        databaseIdentity.cashierRole,
 		ServerName:           serverName,
 		OwnerEmail:           os.Getenv("OWNER_EMAIL"),
 		SMTPHost:             os.Getenv("SMTP_HOST"),
@@ -340,11 +340,8 @@ func loadBillingIdentity() (string, string, backendEndpoints, error) {
 	return serverName, billingEnvironment, endpoints, nil
 }
 
-func isProductionServerName(serverName string) bool { return serverName == "telecrypt.io" }
-
 func deriveBackendEndpoints(serverName string) (backendEndpoints, error) {
-	_, err := parseServerTopology(serverName)
-	if err != nil {
+	if err := validateServerName(serverName); err != nil {
 		return backendEndpoints{}, err
 	}
 	backendHost := "backend." + serverName
@@ -356,13 +353,11 @@ func deriveBackendEndpoints(serverName string) (backendEndpoints, error) {
 	}, nil
 }
 
-type serverTopology struct{}
-
-func parseServerTopology(serverName string) (serverTopology, error) {
+func validateServerName(serverName string) error {
 	if serverName == "telecrypt.io" || serverName == "stage.telecrypt.io" {
-		return serverTopology{}, nil
+		return nil
 	}
-	return serverTopology{}, fmt.Errorf("SERVER_NAME must be exactly telecrypt.io or stage.telecrypt.io")
+	return fmt.Errorf("SERVER_NAME must be exactly telecrypt.io or stage.telecrypt.io")
 }
 
 func requireNonEmptyNoSurroundingWhitespace(name, value string) error {
@@ -394,7 +389,7 @@ func validatePlanAssertionPrivateKey(value string) error {
 }
 
 func validateJanitorDBURL(raw, serverName string) error {
-	database, username, err := expectedJanitorDatabaseIdentity(serverName)
+	databaseIdentity, err := expectedDatabaseIdentity(serverName)
 	if err != nil {
 		return err
 	}
@@ -405,31 +400,34 @@ func validateJanitorDBURL(raw, serverName string) error {
 	if err != nil {
 		return fmt.Errorf("JANITOR_DB_URL must be an explicit Postgres URL")
 	}
-	if dbURL.Path != "/"+database || dbURL.User.Username() != username {
-		return fmt.Errorf("JANITOR_DB_URL must use database %q and user %q for SERVER_NAME %q", database, username, serverName)
+	if dbURL.Path != "/"+databaseIdentity.database || dbURL.User.Username() != databaseIdentity.janitorRole {
+		return fmt.Errorf("JANITOR_DB_URL must use database %q and user %q for SERVER_NAME %q", databaseIdentity.database, databaseIdentity.janitorRole, serverName)
 	}
 	return nil
 }
 
-func expectedJanitorDatabaseIdentity(serverName string) (string, string, error) {
-	switch serverName {
-	case "telecrypt.io":
-		return "telecrypt_billing", "telecrypt_janitor_user", nil
-	case "stage.telecrypt.io":
-		return "stage_telecrypt_billing", "stage_telecrypt_janitor_user", nil
-	default:
-		return "", "", fmt.Errorf("SERVER_NAME must be telecrypt.io or stage.telecrypt.io for Janitor")
-	}
+type databaseIdentity struct {
+	database    string
+	janitorRole string
+	cashierRole string
 }
 
-func expectedCashierDatabaseRole(serverName string) (string, error) {
+func expectedDatabaseIdentity(serverName string) (databaseIdentity, error) {
 	switch serverName {
 	case "telecrypt.io":
-		return "telecrypt_cashier_user", nil
+		return databaseIdentity{
+			database:    "telecrypt_billing",
+			janitorRole: "telecrypt_janitor_user",
+			cashierRole: "telecrypt_cashier_user",
+		}, nil
 	case "stage.telecrypt.io":
-		return "stage_telecrypt_cashier_user", nil
+		return databaseIdentity{
+			database:    "stage_telecrypt_billing",
+			janitorRole: "stage_telecrypt_janitor_user",
+			cashierRole: "stage_telecrypt_cashier_user",
+		}, nil
 	default:
-		return "", fmt.Errorf("SERVER_NAME must be telecrypt.io or stage.telecrypt.io for Janitor")
+		return databaseIdentity{}, fmt.Errorf("SERVER_NAME must be telecrypt.io or stage.telecrypt.io for Janitor")
 	}
 }
 

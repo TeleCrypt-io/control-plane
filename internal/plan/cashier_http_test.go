@@ -2,6 +2,7 @@ package plan
 
 import (
 	"bytes"
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
@@ -16,6 +17,18 @@ import (
 	"strings"
 	"testing"
 )
+
+type cashierResponseBody struct {
+	reader   io.Reader
+	closeErr error
+}
+
+func (b *cashierResponseBody) Read(p []byte) (int, error) { return b.reader.Read(p) }
+func (b *cashierResponseBody) Close() error               { return b.closeErr }
+
+type cashierRoundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f cashierRoundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
 func TestHTTPCashierClientPreservesPrivatePlanCreationProtocol(t *testing.T) {
 	public, private, err := ed25519.GenerateKey(rand.Reader)
@@ -156,8 +169,9 @@ func TestHTTPCashierClientReturnsBusinessStatus(t *testing.T) {
 	if err != nil {
 		t.Fatalf("generate Ed25519 key: %v", err)
 	}
+	const secret = "cashier-client-secret"
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		http.Error(w, "no paid seats available", http.StatusConflict)
+		http.Error(w, "provider detail access_token="+secret+" tail", http.StatusConflict)
 	}))
 	defer server.Close()
 	client, err := NewHTTPCashierClient(server.URL, base64.RawURLEncoding.EncodeToString(private), server.Client())
@@ -168,6 +182,32 @@ func TestHTTPCashierClientReturnsBusinessStatus(t *testing.T) {
 	var cashierError *CashierError
 	if !errors.As(err, &cashierError) || cashierError.StatusCode != http.StatusConflict {
 		t.Fatalf("AttachSeat error = %#v, want CashierError 409", err)
+	}
+	if !strings.Contains(cashierError.Message, "tail") || strings.Contains(cashierError.Message, secret) {
+		t.Fatalf("Cashier error message = %q, want complete sanitized body", cashierError.Message)
+	}
+}
+
+func TestHTTPCashierClientPreservesResponseCloseFailure(t *testing.T) {
+	_, private, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate Ed25519 key: %v", err)
+	}
+	closeErr := errors.New("Cashier response close failed")
+	client, err := NewHTTPCashierClient("http://cashier.example", base64.RawURLEncoding.EncodeToString(private), &http.Client{})
+	if err != nil {
+		t.Fatalf("new HTTP Cashier client: %v", err)
+	}
+	client.httpClient.Transport = cashierRoundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusConflict,
+			Body:       &cashierResponseBody{reader: strings.NewReader("no seats"), closeErr: closeErr},
+		}, nil
+	})
+	err = client.AttachSeat(context.Background(), Principal{MXID: "@alice:telecrypt.io"}, "b3987ed2-51a4-4b04-b5f5-b915683d0cf5", "@bot:telecrypt.io")
+	var cashierError *CashierError
+	if !errors.As(err, &cashierError) || !errors.Is(err, closeErr) {
+		t.Fatalf("Cashier response error = %v, want CashierError with close failure", err)
 	}
 }
 
@@ -282,8 +322,8 @@ func TestHTTPCashierClientDoesNotUseAmbientProxy(t *testing.T) {
 	if !ok {
 		t.Fatalf("Cashier transport = %T, want *http.Transport", client.httpClient.Transport)
 	}
-	if transport.Proxy != nil || transport.MaxResponseHeaderBytes != maxPlanResponseHeaderBytes {
-		t.Fatalf("Cashier transport proxy/response-header bound = %t/%d", transport.Proxy != nil, transport.MaxResponseHeaderBytes)
+	if transport.Proxy != nil {
+		t.Fatalf("Cashier transport proxy is enabled")
 	}
 }
 

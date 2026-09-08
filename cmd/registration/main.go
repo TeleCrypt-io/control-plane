@@ -5,6 +5,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 	"os"
@@ -14,22 +15,29 @@ import (
 
 	"github.com/TeleCrypt-io/controlplane/internal/agent"
 	"github.com/TeleCrypt-io/controlplane/internal/config"
+	"github.com/TeleCrypt-io/controlplane/internal/httpdiag"
 	"github.com/TeleCrypt-io/controlplane/internal/masreg"
 	"github.com/TeleCrypt-io/controlplane/internal/registrationhttp"
 )
 
 func main() {
+	if err := run(); err != nil {
+		os.Exit(1)
+	}
+}
+
+func run() error {
 	cfg, err := config.Load()
 	if err != nil {
-		slog.Error("config", "error", err)
-		os.Exit(1)
+		slog.Error("config", "error", httpdiag.Sanitize(err.Error()))
+		return err
 	}
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo})))
 
 	handler, err := build(cfg)
 	if err != nil {
-		slog.Error("startup", "error", err)
-		os.Exit(1)
+		slog.Error("startup", "error", httpdiag.Sanitize(err.Error()))
+		return err
 	}
 
 	srv := &http.Server{
@@ -42,23 +50,48 @@ func main() {
 		MaxHeaderBytes:    64 << 10,
 	}
 
+	serverErrors := make(chan error, 1)
 	go func() {
 		slog.Info("listening", "addr", registrationListenAddr)
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			slog.Error("server", "error", err)
-			os.Exit(1)
-		}
+		serverErrors <- srv.ListenAndServe()
 	}()
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
-	<-ctx.Done()
+	select {
+	case err := <-serverErrors:
+		if err == nil || errors.Is(err, http.ErrServerClosed) {
+			return nil
+		}
+		slog.Error("server", "error", httpdiag.Sanitize(err.Error()))
+		stop()
+		return shutdownRegistrationAfterFailure(srv, err)
+	case <-ctx.Done():
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := shutdownHTTPServer(shutdownCtx, srv); err != nil {
+			slog.Error("shutdown", "error", httpdiag.Sanitize(err.Error()))
+			return err
+		}
+		return nil
+	}
+}
 
+func shutdownRegistrationAfterFailure(server *http.Server, serveErr error) error {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if err := srv.Shutdown(shutdownCtx); err != nil {
-		slog.Error("shutdown", "error", err)
+	if err := shutdownHTTPServer(shutdownCtx, server); err != nil {
+		slog.Error("shutdown", "error", httpdiag.Sanitize(err.Error()))
+		return errors.Join(serveErr, err)
 	}
+	return serveErr
+}
+
+func shutdownHTTPServer(ctx context.Context, server *http.Server) error {
+	if err := server.Shutdown(ctx); err != nil {
+		return errors.Join(errors.New("registration HTTP shutdown failed"), err)
+	}
+	return nil
 }
 
 func build(cfg *config.Config) (http.Handler, error) {

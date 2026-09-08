@@ -325,8 +325,37 @@ func TestOIDCClientDoesNotUseAmbientProxy(t *testing.T) {
 	if !ok {
 		t.Fatalf("OIDC transport = %T, want *http.Transport", client.httpClient.Transport)
 	}
-	if transport.Proxy != nil || transport.MaxResponseHeaderBytes != maxPlanResponseHeaderBytes {
-		t.Fatalf("OIDC transport proxy/response-header bound = %t/%d", transport.Proxy != nil, transport.MaxResponseHeaderBytes)
+	if transport.Proxy != nil {
+		t.Fatalf("OIDC transport proxy is enabled")
+	}
+}
+
+func TestOIDCClientPreservesResponseCloseFailure(t *testing.T) {
+	closeErr := errors.New("OIDC response close failed")
+	client := NewOIDCClient("https://backend.example", "https://mas.example", "client", "secret", "https://plan.example/callback")
+	client.httpClient.Transport = roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       &cashierResponseBody{reader: strings.NewReader(`{"access_token":"access"}`), closeErr: closeErr},
+		}, nil
+	})
+	if _, err := client.ExchangeCode(context.Background(), "code", "verifier"); !errors.Is(err, closeErr) {
+		t.Fatalf("OIDC response error = %v, want close failure", err)
+	}
+}
+
+func TestOIDCClientStatusDiagnosticRetainsSanitizedBody(t *testing.T) {
+	const secret = "oidc-client-secret"
+	client := NewOIDCClient("https://backend.example", "https://mas.example", "client", secret, "https://plan.example/callback")
+	client.httpClient.Transport = roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusBadGateway,
+			Body:       io.NopCloser(strings.NewReader("provider detail " + secret + " tail")),
+		}, nil
+	})
+	_, err := client.ExchangeCode(context.Background(), "authorization-code", "verifier")
+	if err == nil || !strings.Contains(err.Error(), "tail") || strings.Contains(err.Error(), secret) {
+		t.Fatalf("OIDC status error = %v, want complete sanitized body", err)
 	}
 }
 

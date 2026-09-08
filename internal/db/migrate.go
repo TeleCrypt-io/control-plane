@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"embed"
+	"errors"
 	"fmt"
 	"io/fs"
 	"reflect"
@@ -45,7 +46,7 @@ var requiredJanitorRelations = [...]string{
 // Migrate applies the fresh Janitor schema in filename order. The database schema is deliberately
 // not a compatibility surface: an old history row or a required relation with the wrong kind or
 // owner fails closed and requires a manual reset before a new release can run.
-func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
+func Migrate(ctx context.Context, pool *pgxpool.Pool) (migrationErr error) {
 	conn, err := pool.Acquire(ctx)
 	if err != nil {
 		return fmt.Errorf("acquire migration connection: %w", err)
@@ -54,10 +55,17 @@ func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
 	// safe; Cashier uses its own private-schema migration history and lock.
 	const migrationLockID int64 = 0x54454c4543525950
 	if _, err := conn.Exec(ctx, `SELECT pg_catalog.pg_advisory_lock($1)`, migrationLockID); err != nil {
-		discardPoolConn(conn)
-		return fmt.Errorf("acquire migration lock: %w", err)
+		acquireErr := fmt.Errorf("acquire migration lock: %w", err)
+		if closeErr := discardPoolConn(conn); closeErr != nil {
+			return errors.Join(acquireErr, fmt.Errorf("close discarded migration connection: %w", closeErr))
+		}
+		return acquireErr
 	}
-	defer releaseAdvisoryLock(conn, migrationLockID)
+	defer func() {
+		if releaseErr := releaseAdvisoryLock(conn, migrationLockID); releaseErr != nil {
+			migrationErr = errors.Join(migrationErr, releaseErr)
+		}
+	}()
 
 	var schemaReady bool
 	if err := conn.QueryRow(ctx, `
@@ -86,7 +94,8 @@ func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
 	if err != nil {
 		return fmt.Errorf("begin migration transaction: %w", err)
 	}
-	defer rollbackMigration(tx)
+	committed := false
+	defer func() { rollbackMigration(tx, committed, &migrationErr) }()
 	if err := validateJanitorNamespaceObjects(ctx, tx); err != nil {
 		return err
 	}
@@ -161,6 +170,7 @@ func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("commit migrations: %w", err)
 	}
+	committed = true
 	return nil
 }
 
@@ -208,10 +218,12 @@ func validateJanitorNamespaceObjects(ctx context.Context, tx pgx.Tx) error {
 	return nil
 }
 
-func rollbackMigration(tx pgx.Tx) {
+func rollbackMigration(tx pgx.Tx, committed bool, result *error) {
 	rollbackCtx, cancel := boundedCleanupContext(context.Background())
 	defer cancel()
-	_ = tx.Rollback(rollbackCtx)
+	if rollbackErr := tx.Rollback(rollbackCtx); rollbackErr != nil && (!committed || !errors.Is(rollbackErr, pgx.ErrTxClosed)) {
+		*result = errors.Join(*result, fmt.Errorf("rollback migration transaction: %w", rollbackErr))
+	}
 }
 
 func loadMigrations() ([]migration, error) {

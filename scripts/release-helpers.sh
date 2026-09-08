@@ -1,44 +1,152 @@
 #!/usr/bin/env bash
 
-script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+capture_active_pid=""
+capture_active_output=""
+capture_active_stderr=""
+capture_active_replay_output=true
 
-_bounded_capture() {
-  local max_bytes="$1" output="$2" timeout_seconds="$3" stderr_file="${2}.stderr" status stderr_bytes
-  shift 3
-  [[ "$max_bytes" =~ ^[0-9]+$ && "$max_bytes" -gt 0 ]] || return 2
+capture_command_signal() {
+  local signal_name="$1" status=143 kill_status wait_status replay_status=0 failure_status=0
+  case "$signal_name" in
+    HUP) status=129 ;;
+    INT) status=130 ;;
+    TERM) status=143 ;;
+    *) status=143 ;;
+  esac
   set +e
-  /usr/bin/python3 "$script_dir/bounded-command.py" \
-    --stdout-limit "$max_bytes" --stderr-limit "$max_bytes" \
-    --stdout-path "$output" --stderr-path "$stderr_file" --timeout "$timeout_seconds" -- "$@"
-  status="$?"
-  set -e
-  stderr_bytes="$(wc -c <"$stderr_file")"
-  if (( status != 0 )); then
-    cat -- "$stderr_file" >&2
-    return "$status"
+  if [[ -n "$capture_active_pid" ]]; then
+    kill -0 "$capture_active_pid"
+    kill_status=$?
+    if [[ "$kill_status" -eq 0 ]]; then
+      kill -TERM "$capture_active_pid"
+      kill_status=$?
+      if [[ "$kill_status" -ne 0 ]]; then
+        printf 'captured command child termination failed during %s (status %s)\n' "$signal_name" "$kill_status" >&2
+        failure_status=1
+      fi
+    elif [[ "$kill_status" -ne 1 ]]; then
+      printf 'captured command child liveness check failed during %s (status %s)\n' "$signal_name" "$kill_status" >&2
+      failure_status=1
+    fi
+    wait "$capture_active_pid"
+    wait_status=$?
+    capture_active_pid=""
+    if [[ "$wait_status" -ne 0 && "$wait_status" -ne 143 ]]; then
+      printf 'captured command child wait failed during %s (status %s)\n' "$signal_name" "$wait_status" >&2
+      failure_status=1
+    fi
+    if [[ "$wait_status" -eq 0 ]]; then
+      printf 'captured command child exited successfully while handling %s\n' "$signal_name" >&2
+    fi
   fi
-  if (( stderr_bytes != 0 )); then
-    cat -- "$stderr_file" >&2
-    echo 'successful command emitted unexpected diagnostics' >&2
-    return 1
+  if [[ -n "$capture_active_output" && "$capture_active_replay_output" == true ]] && ! cat -- "$capture_active_output" >&2; then
+    replay_status=1
   fi
+  if [[ -n "$capture_active_stderr" ]] && ! cat -- "$capture_active_stderr" >&2; then
+    replay_status=1
+  fi
+  if (( replay_status != 0 )); then
+    printf 'captured command diagnostics could not be replayed after %s\n' "$signal_name" >&2
+    failure_status=1
+  fi
+  if (( failure_status != 0 )); then status=1; fi
+  exit "$status"
 }
 
-bounded_capture() { _bounded_capture "$1" "$2" 120 "${@:3}"; }
-
-# The original helper is retained for callers that already provide a bounded command. This
-# adapter supplies the missing hard deadline for network/API commands as well.
-bounded_capture_deadline() {
-  local max_bytes="$1" output="$2" timeout_seconds="$3"
-  shift 3
+capture_command() {
+  local replay_output=true
+  if [[ "${1:-}" == --binary-output ]]; then
+    replay_output=false
+    shift
+  fi
+  local output="$1" timeout_seconds="$2" stderr_file="${1}.stderr" status replay_status=0
+  shift 2
   [[ "$timeout_seconds" =~ ^[0-9]+$ && "$timeout_seconds" -gt 0 ]] || return 2
-  _bounded_capture "$max_bytes" "$output" "$timeout_seconds" "$@"
+  local previous_hup previous_int previous_term
+  previous_hup="$(trap -p HUP || true)"
+  previous_int="$(trap -p INT || true)"
+  previous_term="$(trap -p TERM || true)"
+  capture_active_output="$output"
+  capture_active_stderr="$stderr_file"
+  capture_active_replay_output="$replay_output"
+  trap 'capture_command_signal HUP' HUP
+  trap 'capture_command_signal INT' INT
+  trap 'capture_command_signal TERM' TERM
+  set +e
+  timeout --signal=TERM --kill-after=5s "${timeout_seconds}s" "$@" >"$output" 2>"$stderr_file" &
+  capture_active_pid="$!"
+  wait "$capture_active_pid"
+  status="$?"
+  set -e
+  capture_active_pid=""
+  capture_active_output=""
+  capture_active_stderr=""
+  capture_active_replay_output=true
+  if [[ -n "$previous_hup" ]]; then eval "$previous_hup"; else trap - HUP; fi
+  if [[ -n "$previous_int" ]]; then eval "$previous_int"; else trap - INT; fi
+  if [[ -n "$previous_term" ]]; then eval "$previous_term"; else trap - TERM; fi
+  if (( status != 0 )); then
+    if [[ "$replay_output" == true ]] && ! cat -- "$output" >&2; then
+      replay_status=1
+    fi
+    if ! cat -- "$stderr_file" >&2; then
+      replay_status=1
+    fi
+    if (( replay_status != 0 )); then
+      printf 'captured command diagnostics could not be replayed (command status %s)\n' "$status" >&2
+    fi
+    return "$status"
+  fi
+  if ! cat -- "$stderr_file" >&2; then
+    printf 'captured command stderr could not be emitted\n' >&2
+    return 1
+  fi
+  return 0
+}
+
+replay_capture() {
+  local output="$1" stderr_file="${2:-${1}.stderr}" status=0
+  if ! cat -- "$output" >&2; then status=1; fi
+  if ! cat -- "$stderr_file" >&2; then status=1; fi
+  return "$status"
+}
+
+capture_jq() {
+  local output="$1" status
+  shift
+  if jq -e "$@" "$output" >/dev/null; then
+    return 0
+  else
+    status="$?"
+  fi
+  replay_capture "$output" ||
+    printf 'captured response diagnostics could not be replayed\n' >&2
+  return "$status"
+}
+
+capture_extract() {
+  local variable="$1" output="$2" value status
+  shift 2
+  if value="$(jq -er "$@" "$output")"; then
+    printf -v "$variable" '%s' "$value"
+    return 0
+  else
+    status="$?"
+  fi
+  replay_capture "$output" ||
+    printf 'captured response diagnostics could not be replayed\n' >&2
+  return "$status"
 }
 
 redact_diagnostics() {
   sed -E \
     -e 's/(MAS_OIDC_CLIENT_SECRET|PLAN_SESSION_KEY|PLAN_ASSERTION_PRIVATE_KEY)([=:][[:space:]]*)[^[:space:]]+/\1\2[redacted]/g' \
     -e 's/((secret|token|password|private[[:space:]]+key))([=:][[:space:]]*)[^[:space:]]+/\1\3[redacted]/Ig' \
+    -e 's#(https?://)[^/@[:space:]]+@#\1[redacted]@#g' \
+    -e 's#(^|[^[:alnum:]_])(([[:alnum:]_.-]*(secret|token|password|private([_-]?key)?|credential|customer|email)[[:alnum:]_.-]*)[[:space:]]*"?[[:space:]]*[:=][[:space:]]*)("[^"]*"|[^[:space:],}]+)#\1\2[redacted]#Ig' \
+    -e 's#((Authorization|Proxy-Authorization|Cookie):[[:space:]]+)[^,[:cntrl:]]+#\1[redacted]#Ig' \
+    -e 's#[[:alnum:]_.%+-]+@[[:alnum:].-]+#[redacted]#g' \
+    -e 's#@[[:alnum:]_.=-]+:[[:alnum:].-]+#[redacted]#g' \
     "$@"
 }
 

@@ -6,15 +6,15 @@ the workflow does not attempt to query or mutate it. An exact annotated release 
 commit are revalidated against `main` immediately before every externally visible publication
 operation.
 
-Before any image build, the workflow enumerates bounded authenticated Releases-list pages and fully
+Before any image build, the workflow enumerates paginated authenticated Releases-list pages and fully
 verifies an exact final immutable Release, including its source binding, registry digest, and both
 downloaded assets; an exact match is reused without rebuilding. An exact matching draft is also
 recovered only after its complete asset set, API digests and sizes, and downloaded bytes are verified.
 Otherwise the workflow creates one exact `gh release create --verify-tag --draft` result, discovers
-exactly one matching draft through the bounded Releases-list pagination, verifies the draft, and
+exactly one matching draft through the paginated Releases-list response, verifies the draft, and
 promotes that same draft through its numeric Release ID. Tag-based draft lookup and tag-based edit
 are not used. If a later promotion step fails, a rerun can recover the exact draft or final release
-and repeat the bounded verification. Final verification requires the tag, peeled annotated-tag
+and repeat the complete verification. Final verification requires the tag, peeled annotated-tag
 commit, complete asset set, API asset digests and sizes, downloaded bytes, numeric Release ID, and
 `immutable: true` state. Any mismatch or ambiguous draft identity fails closed.
 

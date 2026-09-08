@@ -8,6 +8,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"errors"
 	"fmt"
 	"math/big"
 	"net"
@@ -27,6 +28,13 @@ type fakeSMTP struct {
 	gotMail    bool
 	gotMessage string
 }
+
+type closeErrorConn struct {
+	net.Conn
+	err error
+}
+
+func (c closeErrorConn) Close() error { return c.err }
 
 func newFakeSMTP(t *testing.T, advertiseSTARTTLS bool) *fakeSMTP {
 	t.Helper()
@@ -167,6 +175,13 @@ func TestSMTPMailer_SendSucceedsWithSTARTTLS(t *testing.T) {
 	}
 	if !strings.Contains(srv.gotMessage, "body") {
 		t.Errorf("server did not receive message body, got: %q", srv.gotMessage)
+	}
+}
+
+func TestCloseSMTPConnectionPreservesCloseFailure(t *testing.T) {
+	closeErr := errors.New("SMTP connection close failed")
+	if err := closeSMTPConnection(closeErrorConn{err: closeErr}); !errors.Is(err, closeErr) {
+		t.Fatalf("closeSMTPConnection error = %v, want close failure", err)
 	}
 }
 

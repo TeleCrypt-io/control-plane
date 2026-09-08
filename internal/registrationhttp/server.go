@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/TeleCrypt-io/controlplane/internal/agent"
+	"github.com/TeleCrypt-io/controlplane/internal/httpdiag"
 	"github.com/TeleCrypt-io/controlplane/internal/registrationfailure"
 )
 
@@ -85,11 +86,11 @@ func (s *Server) handleRegistration(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	result, err := s.provisioner.ProvisionAgent(ctx)
 	if err != nil {
-		// Provisioning errors may contain third-party form text or generated identifiers. The
-		// typed code is the sole diagnostic crossing this boundary; never log or return err.
+		// The typed error retains a complete sanitized diagnostic for internal logs. Only its
+		// finite code crosses the public boundary.
 		code := registrationfailure.Code(err)
 		w.Header().Set(registrationErrorHeader, code)
-		slog.Error("registration: provisioning failed", "code", code)
+		slog.Error("registration: provisioning failed", "code", code, "error", httpdiag.Sanitize(err.Error()))
 		http.Error(w, "provisioning failed", http.StatusInternalServerError)
 		return
 	}
@@ -110,6 +111,6 @@ func (s *Server) handleRegistration(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(resp); err != nil {
-		slog.Error("registration: failed to write response", "code", registrationfailure.Code(registrationfailure.WithKind(registrationfailure.StageInternal, registrationfailure.KindInternal, err)))
+		slog.Error("registration: failed to write response", "code", registrationfailure.Code(registrationfailure.WithKind(registrationfailure.StageInternal, registrationfailure.KindInternal, err)), "error", httpdiag.Sanitize(err.Error()))
 	}
 }

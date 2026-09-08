@@ -54,22 +54,32 @@ func TestJanitorInvocationLockIsSingleFlight(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first AcquireJanitorInvocationLock: %v", err)
 	}
-	defer first.Release(context.Background())
+	defer func() {
+		if err := first.Release(context.Background()); err != nil {
+			t.Errorf("first Release: %v", err)
+		}
+	}()
 
 	second, err := AcquireJanitorInvocationLock(ctx, pool)
 	if err == nil || !strings.Contains(err.Error(), ErrJanitorAlreadyRunning.Error()) {
 		if second != nil {
-			second.Release(context.Background())
+			if releaseErr := second.Release(context.Background()); releaseErr != nil {
+				t.Errorf("second Release: %v", releaseErr)
+			}
 		}
 		t.Fatalf("second AcquireJanitorInvocationLock = %v, want already-running error", err)
 	}
 
-	first.Release(context.Background())
+	if err := first.Release(context.Background()); err != nil {
+		t.Fatalf("first Release: %v", err)
+	}
 	third, err := AcquireJanitorInvocationLock(ctx, pool)
 	if err != nil {
 		t.Fatalf("third AcquireJanitorInvocationLock after release: %v", err)
 	}
-	third.Release(context.Background())
+	if err := third.Release(context.Background()); err != nil {
+		t.Fatalf("third Release: %v", err)
+	}
 }
 
 // TestJanitorInvocationLockTwoProcessesBlocksAllPostLockWork runs two independent test-binary
@@ -227,7 +237,11 @@ func TestJanitorInvocationLockChild(t *testing.T) {
 	if err != nil {
 		t.Fatalf("child AcquireJanitorInvocationLock: %v", err)
 	}
-	defer lock.Release(context.Background())
+	defer func() {
+		if err := lock.Release(context.Background()); err != nil {
+			t.Errorf("Release: %v", err)
+		}
+	}()
 
 	actionLog := os.Getenv("JANITOR_ACTION_LOG")
 	record := func(action string) {

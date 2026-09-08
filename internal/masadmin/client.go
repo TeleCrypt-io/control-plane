@@ -45,33 +45,30 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/TeleCrypt-io/controlplane/internal/httpdiag"
 	"github.com/TeleCrypt-io/controlplane/internal/jsonbody"
 )
 
 // ErrUserNotFound is returned by LockUser when MAS reports the ULID doesn't exist (404).
 var ErrUserNotFound = errors.New("masadmin: user not found")
 
+func appendResponseBodyCloseError(result *error, body io.ReadCloser, redactions ...string) {
+	if closeErr := body.Close(); closeErr != nil {
+		*result = errors.Join(*result, httpdiag.WrapCause("masadmin response body close", closeErr, redactions...))
+	}
+}
+
 // listPageSize is the page[first] value used for both ListUsers and ListUserEmails. MAS's own
 // default (10, per admin/params.rs) is fine correctness-wise but wasteful for a sweep that always
 // wants the full list — a larger page keeps the round-trip count low without guessing at prod
 // scale.
 const listPageSize = 100
-const (
-	maxListPages = 1000
-	maxListItems = 100_000
-)
 
 const (
-	// Error bodies are intentionally not surfaced: an upstream can echo credentials or other
-	// sensitive request material. We still drain a small bounded prefix so the connection can be
-	// reused without allowing an unbounded response to consume memory.
-	maxErrorBodyBytes         = 8 << 10
-	maxJSONBodyBytes          = 1 << 20
 	maxMASIdentifierBytes     = 255
 	maxMASEmailBytes          = 320
 	maxMASTokenBytes          = 8 << 10
 	maxMASTokenLifetime       = 24 * time.Hour
-	maxMASResponseHeaderBytes = 64 << 10
 )
 
 // tokenSafetyMargin keeps a cached token from being handed out so close to its ~300s expiry that
@@ -123,7 +120,7 @@ type UserEmail struct {
 // token returns a valid bearer token, fetching a fresh one via client_credentials if the cached
 // one is missing or within tokenSafetyMargin of expiry. A one-shot sweep normally fetches one
 // token; the cache also keeps retries within that sweep efficient.
-func (c *Client) token(ctx context.Context) (string, error) {
+func (c *Client) token(ctx context.Context) (token string, resultErr error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -145,19 +142,21 @@ func (c *Client) token(ctx context.Context) (string, error) {
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return "", masadminTransportError("masadmin: fetch token", err)
+		return "", masadminTransportError("masadmin: fetch token", err, c.clientSecret, c.clientID)
 	}
-	defer resp.Body.Close()
-
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("masadmin: fetch token: %s", describeError(resp))
+		description, drainErr := describeError(resp, c.clientSecret, c.clientID)
+		statusErr := fmt.Errorf("masadmin: fetch token: %s", description)
+		closeErr := httpdiag.WrapCause("masadmin response body close", resp.Body.Close(), c.clientSecret, c.clientID)
+		return "", errors.Join(statusErr, drainErr, closeErr)
 	}
+	defer func() { appendResponseBodyCloseError(&resultErr, resp.Body, c.clientSecret, c.clientID) }()
 
 	var out struct {
 		AccessToken string `json:"access_token"`
 		ExpiresIn   int    `json:"expires_in"`
 	}
-	if err := jsonbody.Decode(resp.Body, maxJSONBodyBytes, &out); err != nil {
+	if err := jsonbody.Decode(resp.Body, &out, c.clientSecret, c.clientID); err != nil {
 		return "", fmt.Errorf("masadmin: decode token response: %w", err)
 	}
 	if out.AccessToken == "" {
@@ -207,18 +206,10 @@ func (c *Client) ListUsers(ctx context.Context) ([]User, error) {
 	var out []User
 	after := ""
 	seenCursors := map[string]struct{}{}
-	pageCount := 0
 	for {
-		pageCount++
-		if pageCount > maxListPages {
-			return nil, fmt.Errorf("masadmin: list users exceeded page limit")
-		}
 		var page paginatedResponse[userAttrs]
 		if err := c.get(ctx, "/api/admin/v1/users?"+listQuery(after), &page); err != nil {
 			return nil, fmt.Errorf("masadmin: list users: %w", err)
-		}
-		if len(out)+len(page.Data) > maxListItems {
-			return nil, fmt.Errorf("masadmin: list users exceeded user limit")
 		}
 		for _, r := range page.Data {
 			if !validMASULID(r.ID) || !validMASUsername(r.Attributes.Username) || r.Attributes.CreatedAt.IsZero() {
@@ -258,18 +249,10 @@ func (c *Client) ListUserEmails(ctx context.Context) ([]UserEmail, error) {
 	var out []UserEmail
 	after := ""
 	seenCursors := map[string]struct{}{}
-	pageCount := 0
 	for {
-		pageCount++
-		if pageCount > maxListPages {
-			return nil, fmt.Errorf("masadmin: list user emails exceeded page limit")
-		}
 		var page paginatedResponse[emailAttrs]
 		if err := c.get(ctx, "/api/admin/v1/user-emails?"+listQuery(after), &page); err != nil {
 			return nil, fmt.Errorf("masadmin: list user emails: %w", err)
-		}
-		if len(out)+len(page.Data) > maxListItems {
-			return nil, fmt.Errorf("masadmin: list user emails exceeded email limit")
 		}
 		for _, r := range page.Data {
 			if !validMASULID(r.ID) || !validMASULID(r.Attributes.UserID) || !validMASField(r.Attributes.Email, maxMASEmailBytes) || r.Attributes.CreatedAt.IsZero() {
@@ -319,7 +302,7 @@ func (c *Client) GetUser(ctx context.Context, userID string) (User, error) {
 	var out struct {
 		Data resource[userAttrs] `json:"data"`
 	}
-	if err := c.get(ctx, "/api/admin/v1/users/"+url.PathEscape(userID), &out); err != nil {
+	if err := c.get(ctx, "/api/admin/v1/users/"+url.PathEscape(userID), &out, userID); err != nil {
 		return User{}, fmt.Errorf("masadmin: get user: %w", err)
 	}
 	if !validMASULID(userID) || out.Data.ID != userID || !validMASUsername(out.Data.Attributes.Username) || out.Data.Attributes.CreatedAt.IsZero() {
@@ -343,14 +326,10 @@ func (c *Client) HasUserEmail(ctx context.Context, userID string) (bool, error) 
 	query := url.Values{
 		"count":        {"false"},
 		"filter[user]": {userID},
-		"page[first]":  {"1"},
 	}
 	var page paginatedResponse[emailAttrs]
-	if err := c.get(ctx, "/api/admin/v1/user-emails?"+query.Encode(), &page); err != nil {
+	if err := c.get(ctx, "/api/admin/v1/user-emails?"+query.Encode(), &page, userID); err != nil {
 		return false, fmt.Errorf("masadmin: check user email: %w", err)
-	}
-	if len(page.Data) > 1 {
-		return false, fmt.Errorf("masadmin: email presence response exceeded item limit")
 	}
 	if len(page.Data) == 0 && page.Links.Next != "" {
 		return false, fmt.Errorf("masadmin: email presence response was not authoritative")
@@ -379,7 +358,7 @@ func (c *Client) LockUser(ctx context.Context, userID string) error {
 	return nil
 }
 
-func (c *Client) lockUser(ctx context.Context, userID string) (userAttrs, error) {
+func (c *Client) lockUser(ctx context.Context, userID string) (attrs userAttrs, resultErr error) {
 	token, err := c.token(ctx)
 	if err != nil {
 		return userAttrs{}, err
@@ -394,20 +373,23 @@ func (c *Client) lockUser(ctx context.Context, userID string) (userAttrs, error)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return userAttrs{}, masadminTransportError("masadmin: lock user", err)
+		return userAttrs{}, masadminTransportError("masadmin: lock user", err, c.clientSecret, token, userID)
 	}
-	defer resp.Body.Close()
-
 	if resp.StatusCode == http.StatusNotFound {
-		return userAttrs{}, fmt.Errorf("masadmin: lock user: %w", ErrUserNotFound)
+		body, readErr, closeErr := httpdiag.ReadAndClose(resp.Body, c.clientSecret, token, userID)
+		return userAttrs{}, errors.Join(fmt.Errorf("masadmin: lock user: %w", ErrUserNotFound), httpdiag.NewResponseError("masadmin: lock user not-found response", resp.StatusCode, body, readErr, closeErr, c.clientSecret, token, userID))
 	}
 	if resp.StatusCode != http.StatusOK {
-		return userAttrs{}, fmt.Errorf("masadmin: lock user: %s", describeError(resp))
+		description, drainErr := describeError(resp, c.clientSecret, token, userID)
+		statusErr := fmt.Errorf("masadmin: lock user: %s", description)
+		closeErr := httpdiag.WrapCause("masadmin response body close", resp.Body.Close(), c.clientSecret, token, userID)
+		return userAttrs{}, errors.Join(statusErr, drainErr, closeErr)
 	}
+	defer func() { appendResponseBodyCloseError(&resultErr, resp.Body, c.clientSecret, token, userID) }()
 	var out struct {
 		Data resource[userAttrs] `json:"data"`
 	}
-	if err := jsonbody.Decode(resp.Body, maxJSONBodyBytes, &out); err != nil {
+	if err := jsonbody.Decode(resp.Body, &out, c.clientSecret, token, userID); err != nil {
 		return userAttrs{}, fmt.Errorf("masadmin: decode lock user: %w", err)
 	}
 	if out.Data.ID != userID || !validMASUsername(out.Data.Attributes.Username) || out.Data.Attributes.CreatedAt.IsZero() {
@@ -460,7 +442,7 @@ func ValidMXID(username, serverName string) bool {
 
 // get issues an authenticated GET against path (relative to baseURL) and decodes a 200 JSON body
 // into out.
-func (c *Client) get(ctx context.Context, path string, out any) error {
+func (c *Client) get(ctx context.Context, path string, out any, redactions ...string) (resultErr error) {
 	token, err := c.token(ctx)
 	if err != nil {
 		return err
@@ -471,20 +453,23 @@ func (c *Client) get(ctx context.Context, path string, out any) error {
 		return errors.New("masadmin: create request failed")
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
+	allRedactions := append([]string{c.clientSecret, token, path}, redactions...)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return masadminTransportError("masadmin: request", err)
+		return masadminTransportError("masadmin: request", err, allRedactions...)
 	}
-	defer resp.Body.Close()
-
 	if resp.StatusCode == http.StatusNotFound {
-		return ErrUserNotFound
+		body, readErr, closeErr := httpdiag.ReadAndClose(resp.Body, allRedactions...)
+		return errors.Join(ErrUserNotFound, httpdiag.NewResponseError("masadmin not-found response", resp.StatusCode, body, readErr, closeErr, allRedactions...))
 	}
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("%s", describeError(resp))
+		description, drainErr := describeError(resp, allRedactions...)
+		closeErr := httpdiag.WrapCause("masadmin response body close", resp.Body.Close(), allRedactions...)
+		return errors.Join(fmt.Errorf("%s", description), drainErr, closeErr)
 	}
-	return jsonbody.Decode(resp.Body, maxJSONBodyBytes, out)
+	defer func() { appendResponseBodyCloseError(&resultErr, resp.Body, allRedactions...) }()
+	return jsonbody.Decode(resp.Body, out, allRedactions...)
 }
 
 func rejectRedirects(*http.Request, []*http.Request) error {
@@ -498,22 +483,24 @@ func noProxyTransport() http.RoundTripper {
 	}
 	transport = transport.Clone()
 	transport.Proxy = nil
-	transport.MaxResponseHeaderBytes = maxMASResponseHeaderBytes
 	return transport
 }
 
-func masadminTransportError(prefix string, err error) error {
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-		return fmt.Errorf("%s: %w", prefix, err)
-	}
-	return errors.New(prefix + " failed")
+func masadminTransportError(prefix string, err error, redactions ...string) error {
+	return httpdiag.WrapCause(prefix, err, redactions...)
 }
 
-// describeError returns only a stable status. MAS error envelopes and fallback bodies are not
-// trusted diagnostic data: they may echo a client secret, bearer token, or user-provided value.
-// Drain only a bounded prefix to preserve keep-alive reuse without permitting an oversized error
-// response to consume memory.
-func describeError(resp *http.Response) string {
-	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxErrorBodyBytes))
-	return fmt.Sprintf("status %d", resp.StatusCode)
+// describeError reads the complete untrusted body and returns a sanitized diagnostic. The
+// caller remains responsible for closing the response, so close failures can be joined with the
+// status and read failures at that boundary.
+func describeError(resp *http.Response, redactions ...string) (string, error) {
+	body, readErr := httpdiag.ReadBody(resp.Body, redactions...)
+	diagnostic := fmt.Sprintf("status %d", resp.StatusCode)
+	if body != "" {
+		diagnostic += ": body=" + strconv.Quote(body)
+	}
+	if readErr != nil {
+		return diagnostic, httpdiag.WrapCause("masadmin error response read", readErr, redactions...)
+	}
+	return diagnostic, nil
 }

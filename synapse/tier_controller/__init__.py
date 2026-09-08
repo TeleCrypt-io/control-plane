@@ -45,7 +45,7 @@ _MAX_SIGNED_INTEGER = (1 << 63) - 1
 _DENIAL_MESSAGE = (
     "This account is unverified. Uploads/room creation/encryption require a verified account "
     "— sign in at https://telecrypt.io with an email address to request verification. "
-    "See https://telecrypt-io.github.io/llms-authority/llms.txt"
+    "See https://telecrypt.io/llms.txt"
 )
 
 

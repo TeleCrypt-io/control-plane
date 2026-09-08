@@ -7,13 +7,14 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
 
+	"github.com/TeleCrypt-io/controlplane/internal/httpdiag"
 	"github.com/TeleCrypt-io/controlplane/internal/jsonbody"
 	"github.com/google/uuid"
 )
@@ -129,7 +130,7 @@ func (c *HTTPCashierClient) ChangeSeatCount(ctx context.Context, p Principal, re
 	return c.do(ctx, p, http.MethodPost, "/internal/v1/team/seat-count", requestID, body, nil, http.StatusNoContent)
 }
 
-func (c *HTTPCashierClient) do(ctx context.Context, principal Principal, method, path, requestID string, body []byte, result any, expectedStatuses ...int) error {
+func (c *HTTPCashierClient) do(ctx context.Context, principal Principal, method, path, requestID string, body []byte, result any, expectedStatuses ...int) (resultErr error) {
 	if principal.MXID == "" {
 		return fmt.Errorf("missing Plan principal")
 	}
@@ -154,24 +155,30 @@ func (c *HTTPCashierClient) do(ctx context.Context, principal Principal, method,
 
 	response, err := c.httpClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("call cashier: %w", err)
+		return httpdiag.WrapCause("call cashier", err, assertion, principal.MXID, requestID, path)
 	}
-	defer response.Body.Close()
+	redactions := []string{assertion, principal.MXID, requestID, path}
 	if !acceptsCashierStatus(response.StatusCode, expectedStatuses) {
-		body, _ := io.ReadAll(io.LimitReader(response.Body, 8<<10))
-		return &CashierError{StatusCode: response.StatusCode, Message: strings.TrimSpace(string(body))}
+		body, readErr, closeErr := httpdiag.ReadAndClose(response.Body, redactions...)
+		statusErr := &CashierError{StatusCode: response.StatusCode, Message: body}
+		return errors.Join(statusErr, httpdiag.NewResponseError("Cashier error response", response.StatusCode, body, readErr, closeErr, redactions...))
 	}
 	if result == nil {
-		body, err := io.ReadAll(io.LimitReader(response.Body, 1))
-		if err != nil {
-			return fmt.Errorf("read cashier response: %w", err)
+		body, readErr, closeErr := httpdiag.ReadAndClose(response.Body, redactions...)
+		if readErr != nil || closeErr != nil {
+			return httpdiag.NewResponseError("read Cashier response", response.StatusCode, body, readErr, closeErr, redactions...)
 		}
-		if len(body) != 0 {
-			return fmt.Errorf("cashier returned unexpected response body")
+		if body != "" {
+			return httpdiag.NewResponseError("cashier returned unexpected response body", response.StatusCode, body, nil, nil, redactions...)
 		}
 		return nil
 	}
-	if err := jsonbody.Decode(response.Body, 1<<20, result); err != nil {
+	defer func() {
+		if closeErr := response.Body.Close(); closeErr != nil {
+			resultErr = errors.Join(resultErr, httpdiag.WrapCause("close Cashier response body", closeErr, redactions...))
+		}
+	}()
+	if err := jsonbody.Decode(response.Body, result, redactions...); err != nil {
 		return fmt.Errorf("decode cashier response: %w", err)
 	}
 	return nil

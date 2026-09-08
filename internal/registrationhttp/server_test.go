@@ -39,17 +39,20 @@ func TestHandleRegistration_BoundsProvisioningTime(t *testing.T) {
 	}
 }
 
-func TestHandleRegistration_DoesNotLogProvisioningError(t *testing.T) {
+func TestHandleRegistration_LogsSanitizedProvisioningError(t *testing.T) {
 	var logs bytes.Buffer
 	previous := slog.Default()
 	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
 	t.Cleanup(func() { slog.SetDefault(previous) })
-	secret := "generated-password-must-not-appear"
-	s := New(&fakeProvisioner{err: registrationfailure.WithKind(registrationfailure.StageDeviceConsent, registrationfailure.KindUpstream, errors.New(secret))}, NewRateLimiter(60, time.Minute), "https://telecrypt.io/plan")
+	secret := "password=generated-password-must-not-appear"
+	s := New(&fakeProvisioner{err: registrationfailure.WithKind(registrationfailure.StageDeviceConsent, registrationfailure.KindUpstream, errors.New(secret+" tail"))}, NewRateLimiter(60, time.Minute), "https://telecrypt.io/plan")
 	w := httptest.NewRecorder()
 	s.ServeHTTP(w, httptest.NewRequest("POST", "/agents", nil))
 	if strings.Contains(logs.String(), secret) {
 		t.Fatalf("provisioning log leaked secret: %s", logs.String())
+	}
+	if !strings.Contains(logs.String(), "tail") {
+		t.Fatalf("provisioning log omitted sanitized diagnostic: %s", logs.String())
 	}
 	if got, want := w.Header().Get(registrationErrorHeader), "device_consent/upstream"; got != want {
 		t.Fatalf("registration error header = %q, want %q", got, want)

@@ -172,7 +172,7 @@ def test_upload_limits_are_explicit():
     assert MAX_MEDIA_BYTES == 128 * 1024 * 1024
     assert MAX_USER_MEDIA_BYTES == 50 * 1024 * 1024 * 1024
     assert STAGING_FREE_RESERVE_BYTES == 10 * 1024 * 1024 * 1024
-    assert "https://telecrypt-io.github.io/llms-authority/llms.txt" in _DENIAL_MESSAGE
+    assert "https://telecrypt.io/llms.txt" in _DENIAL_MESSAGE
 
 
 def test_parse_config_validates_media_store_path():

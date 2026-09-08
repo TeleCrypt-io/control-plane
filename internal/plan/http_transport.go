@@ -2,8 +2,6 @@ package plan
 
 import "net/http"
 
-const maxPlanResponseHeaderBytes = 64 << 10
-
 func noProxyTransport() http.RoundTripper {
 	return noProxyRoundTripper(http.DefaultTransport)
 }
@@ -18,6 +16,5 @@ func noProxyRoundTripper(roundTripper http.RoundTripper) http.RoundTripper {
 	}
 	transport = transport.Clone()
 	transport.Proxy = nil
-	transport.MaxResponseHeaderBytes = maxPlanResponseHeaderBytes
 	return transport
 }

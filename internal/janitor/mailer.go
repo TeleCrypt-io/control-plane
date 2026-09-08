@@ -31,7 +31,7 @@ type SMTPMailer struct {
 	tlsConfig *tls.Config
 }
 
-func (m *SMTPMailer) Send(ctx context.Context, to, subject, body string) error {
+func (m *SMTPMailer) Send(ctx context.Context, to, subject, body string) (resultErr error) {
 	if err := validateSMTPMessage(m.From, to, subject, body); err != nil {
 		return err
 	}
@@ -52,18 +52,23 @@ func (m *SMTPMailer) Send(ctx context.Context, to, subject, body string) error {
 		return fmt.Errorf("smtp dial %s: %w", addr, err)
 	}
 	if err := conn.SetDeadline(deadline); err != nil {
-		conn.Close()
-		return errors.New("smtp: set connection deadline")
+		return errors.Join(fmt.Errorf("smtp: set connection deadline: %w", err), closeSMTPConnection(conn))
 	}
 	stopClose := context.AfterFunc(ctx, func() { _ = conn.Close() })
 	defer stopClose()
 
 	client, err := smtp.NewClient(conn, m.Host)
 	if err != nil {
-		conn.Close()
-		return fmt.Errorf("smtp new client: %w", err)
+		return errors.Join(fmt.Errorf("smtp new client: %w", err), closeSMTPConnection(conn))
 	}
-	defer client.Close()
+	clientClosed := false
+	defer func() {
+		if !clientClosed {
+			if closeErr := client.Close(); closeErr != nil {
+				resultErr = errors.Join(resultErr, fmt.Errorf("smtp close client: %w", closeErr))
+			}
+		}
+	}()
 
 	if err := client.Hello("telecrypt.io"); err != nil {
 		return fmt.Errorf("smtp hello: %w", err)
@@ -105,7 +110,18 @@ func (m *SMTPMailer) Send(ctx context.Context, to, subject, body string) error {
 		return fmt.Errorf("smtp close body: %w", err)
 	}
 
-	return client.Quit()
+	quitErr := client.Quit()
+	if quitErr == nil {
+		clientClosed = true
+	}
+	return quitErr
+}
+
+func closeSMTPConnection(conn net.Conn) error {
+	if closeErr := conn.Close(); closeErr != nil {
+		return fmt.Errorf("smtp close connection: %w", closeErr)
+	}
+	return nil
 }
 
 func validateSMTPMessage(from, to, subject, body string) error {
