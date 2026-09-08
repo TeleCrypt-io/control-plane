@@ -711,17 +711,6 @@ func (s *session) pollDeviceToken(ctx context.Context, clientID string, device *
 	}
 }
 
-// drainAndCloseMASResponse is retained for callers that only need an explicit connection-reuse
-// drain. Status-aware paths use readAndCloseMASResponse so a retry response's sanitized body is
-// retained when the operation ultimately fails.
-func drainAndCloseMASResponse(body io.ReadCloser, redactions ...string) error {
-	diagnostic, readErr, closeErr := readAndCloseMASResponse(0, body, redactions...)
-	if readErr == nil && closeErr == nil {
-		return nil
-	}
-	return diagnostic
-}
-
 func readAndCloseMASResponse(status int, body io.ReadCloser, redactions ...string) (diagnostic error, readErr, closeErr error) {
 	bodyText, readErr, closeErr := httpdiag.ReadAndClose(body, redactions...)
 	diagnostic = httpdiag.NewResponseError("MAS retry response", status, bodyText, readErr, closeErr, redactions...)

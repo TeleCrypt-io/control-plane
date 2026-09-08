@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/smtp"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -54,12 +55,15 @@ func (m *SMTPMailer) Send(ctx context.Context, to, subject, body string) (result
 	if err := conn.SetDeadline(deadline); err != nil {
 		return errors.Join(fmt.Errorf("smtp: set connection deadline: %w", err), closeSMTPConnection(conn))
 	}
-	stopClose := context.AfterFunc(ctx, func() { _ = conn.Close() })
-	defer stopClose()
+	managedConn := &smtpConnection{Conn: conn}
+	finishContextClose := startSMTPContextClose(ctx, managedConn)
+	defer func() {
+		resultErr = errors.Join(resultErr, finishContextClose())
+	}()
 
-	client, err := smtp.NewClient(conn, m.Host)
+	client, err := smtp.NewClient(managedConn, m.Host)
 	if err != nil {
-		return errors.Join(fmt.Errorf("smtp new client: %w", err), closeSMTPConnection(conn))
+		return errors.Join(fmt.Errorf("smtp new client: %w", err), closeSMTPConnection(managedConn))
 	}
 	clientClosed := false
 	defer func() {
@@ -122,6 +126,43 @@ func closeSMTPConnection(conn net.Conn) error {
 		return fmt.Errorf("smtp close connection: %w", closeErr)
 	}
 	return nil
+}
+
+// smtpConnection makes the raw connection's close operation one-owner and idempotent. The
+// cancellation callback and smtp.Client both need a close boundary, but only the first caller
+// may close the underlying socket; the first close result remains visible to that caller.
+type smtpConnection struct {
+	net.Conn
+	closeOnce sync.Once
+	closeErr  error
+}
+
+func (c *smtpConnection) Close() error {
+	first := false
+	c.closeOnce.Do(func() {
+		first = true
+		c.closeErr = c.Conn.Close()
+	})
+	if !first {
+		return nil
+	}
+	return c.closeErr
+}
+
+// startSMTPContextClose arranges for context cancellation to unblock the SMTP operation and
+// returns a wait function that stops or observes the callback before Send returns. The managed
+// connection owns repeated-close handling; this callback's close result remains visible.
+func startSMTPContextClose(ctx context.Context, conn net.Conn) func() error {
+	result := make(chan error, 1)
+	stop := context.AfterFunc(ctx, func() {
+		result <- closeSMTPConnection(conn)
+	})
+	return func() error {
+		if stop() {
+			return nil
+		}
+		return <-result
+	}
 }
 
 func validateSMTPMessage(from, to, subject, body string) error {

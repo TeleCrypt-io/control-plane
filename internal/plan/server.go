@@ -6,12 +6,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
 
+	"github.com/TeleCrypt-io/controlplane/internal/httpdiag"
 	"github.com/google/uuid"
 )
 
@@ -126,11 +128,13 @@ func (s *Server) handlePlan(w http.ResponseWriter, r *http.Request) {
 	if data.LoggedIn {
 		client, err := s.client()
 		if err != nil {
+			logPlanFailure("load Cashier client for plan view", err)
 			http.Error(w, "Plan is temporarily unavailable", http.StatusServiceUnavailable)
 			return
 		}
 		state, err := client.PlanState(r.Context(), Principal{MXID: mxid})
 		if err != nil {
+			logPlanFailure("load Cashier plan state", err)
 			http.Error(w, "Plan is temporarily unavailable", http.StatusServiceUnavailable)
 			return
 		}
@@ -148,6 +152,7 @@ func (s *Server) handlePlan(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := planTmpl.Execute(w, data); err != nil {
+		logPlanFailure("render plan page", err)
 		http.Error(w, "Plan is temporarily unavailable", http.StatusInternalServerError)
 	}
 }
@@ -158,25 +163,33 @@ func (s *Server) handlePlan(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handlePlanLogo(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "image/png")
 	w.Header().Set("Cache-Control", "no-store")
-	_, _ = w.Write(planLogoPNG)
+	if _, err := w.Write(planLogoPNG); err != nil {
+		logPlanFailure("write plan logo", err)
+	}
 }
 
 func (s *Server) handlePlanProductCSS(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/css; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
-	_, _ = w.Write(planProductCSS)
+	if _, err := w.Write(planProductCSS); err != nil {
+		logPlanFailure("write plan product stylesheet", err)
+	}
 }
 
 func (s *Server) handlePlanCSS(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/css; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
-	_, _ = w.Write(planCSS)
+	if _, err := w.Write(planCSS); err != nil {
+		logPlanFailure("write plan stylesheet", err)
+	}
 }
 
 func (s *Server) handlePlanJS(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
-	_, _ = w.Write(planJS)
+	if _, err := w.Write(planJS); err != nil {
+		logPlanFailure("write plan JavaScript", err)
+	}
 }
 
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
@@ -225,11 +238,13 @@ func (s *Server) handleCallback(w http.ResponseWriter, r *http.Request) {
 	}
 	token, err := s.oidc.ExchangeCode(r.Context(), params.code, verifier)
 	if err != nil {
+		logPlanFailure("exchange OAuth code", err)
 		http.Error(w, "login failed", http.StatusBadGateway)
 		return
 	}
 	username, err := s.oidc.Username(r.Context(), token)
 	if err != nil {
+		logPlanFailure("load OAuth username", err)
 		http.Error(w, "login failed", http.StatusBadGateway)
 		return
 	}
@@ -331,6 +346,7 @@ func singleOAuthParam(values url.Values, name string) (string, bool) {
 func (s *Server) command(r *http.Request) (CashierClient, Principal, string, bool) {
 	client, err := s.client()
 	if err != nil {
+		logPlanFailure("load Cashier client for command", err)
 		return nil, Principal{}, "", false
 	}
 	p, ok := principalFromContext(r.Context())
@@ -354,6 +370,7 @@ func (s *Server) handleCreatePlan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := client.CreatePlan(r.Context(), p, id); err != nil {
+		logPlanFailure("create plan", err)
 		http.Error(w, "set up plan failed", http.StatusBadGateway)
 		return
 	}
@@ -457,6 +474,7 @@ func (s *Server) handleCheckout(w http.ResponseWriter, r *http.Request) {
 	}
 	link, err := client.StartCheckout(r.Context(), p, id, q)
 	if err != nil {
+		logPlanFailure("start checkout", err)
 		http.Error(w, "checkout failed", http.StatusBadGateway)
 		return
 	}
@@ -475,6 +493,7 @@ func (s *Server) handlePortal(w http.ResponseWriter, r *http.Request) {
 	}
 	link, err := client.OpenCustomerPortal(r.Context(), p, id)
 	if err != nil {
+		logPlanFailure("open customer portal", err)
 		http.Error(w, "portal unavailable", http.StatusBadGateway)
 		return
 	}
@@ -505,6 +524,7 @@ func (s *Server) handleChangeSeatCount(w http.ResponseWriter, r *http.Request) {
 // narrowly defined capacity rejection is rewritten locally so the browser can explain the
 // required downgrade action without exposing arbitrary provider or database text.
 func writeCashierActionError(w http.ResponseWriter, err error, fallback string) {
+	logPlanFailure("Cashier action", err)
 	var cashierErr *CashierError
 	if errors.As(err, &cashierErr) && cashierErr.StatusCode == http.StatusConflict {
 		matches := cashierCapacityMessage.FindStringSubmatch(strings.TrimSpace(cashierErr.Message))
@@ -559,7 +579,16 @@ func (s *Server) validPortalLink(raw string) bool {
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(v)
+	if err := json.NewEncoder(w).Encode(v); err != nil {
+		logPlanFailure("write JSON response", err)
+	}
+}
+
+func logPlanFailure(operation string, err error) {
+	if err == nil {
+		return
+	}
+	slog.Error("plan operation failed", "operation", operation, "detail", httpdiag.Sanitize(err.Error()))
 }
 
 type pageData struct {

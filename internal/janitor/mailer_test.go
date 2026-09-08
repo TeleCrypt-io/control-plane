@@ -31,10 +31,20 @@ type fakeSMTP struct {
 
 type closeErrorConn struct {
 	net.Conn
-	err error
+	err        error
+	started    chan struct{}
+	closeCalls *int
 }
 
-func (c closeErrorConn) Close() error { return c.err }
+func (c closeErrorConn) Close() error {
+	if c.started != nil {
+		close(c.started)
+	}
+	if c.closeCalls != nil {
+		(*c.closeCalls)++
+	}
+	return c.err
+}
 
 func newFakeSMTP(t *testing.T, advertiseSTARTTLS bool) *fakeSMTP {
 	t.Helper()
@@ -182,6 +192,37 @@ func TestCloseSMTPConnectionPreservesCloseFailure(t *testing.T) {
 	closeErr := errors.New("SMTP connection close failed")
 	if err := closeSMTPConnection(closeErrorConn{err: closeErr}); !errors.Is(err, closeErr) {
 		t.Fatalf("closeSMTPConnection error = %v, want close failure", err)
+	}
+}
+
+func TestStartSMTPContextClosePreservesCallbackFailure(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	closeErr := errors.New("SMTP cancellation close failed")
+	conn := closeErrorConn{err: closeErr, started: make(chan struct{})}
+	finish := startSMTPContextClose(ctx, conn)
+	cancel()
+	select {
+	case <-conn.started:
+	case <-time.After(time.Second):
+		t.Fatal("SMTP cancellation close callback did not start")
+	}
+	if err := finish(); !errors.Is(err, closeErr) {
+		t.Fatalf("context close error = %v, want callback close failure", err)
+	}
+}
+
+func TestSMTPConnectionClosesUnderlyingSocketOnce(t *testing.T) {
+	closeCalls := 0
+	closeErr := errors.New("SMTP connection close failed")
+	conn := &smtpConnection{Conn: closeErrorConn{err: closeErr, closeCalls: &closeCalls}}
+	if err := conn.Close(); !errors.Is(err, closeErr) {
+		t.Fatalf("first SMTP connection close = %v, want close failure", err)
+	}
+	if err := conn.Close(); err != nil {
+		t.Fatalf("repeated SMTP connection close = %v, want nil", err)
+	}
+	if closeCalls != 1 {
+		t.Fatalf("underlying close calls = %d, want 1", closeCalls)
 	}
 }
 

@@ -1,6 +1,7 @@
 package plan
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	_ "embed"
@@ -8,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -25,13 +27,16 @@ type fakeCashier struct {
 	principal Principal
 	requestID string
 	state     PlanState
+	planErr   error
 }
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
-func (f *fakeCashier) PlanState(context.Context, Principal) (PlanState, error) { return f.state, nil }
+func (f *fakeCashier) PlanState(context.Context, Principal) (PlanState, error) {
+	return f.state, f.planErr
+}
 func (f *fakeCashier) CreatePlan(_ context.Context, p Principal, requestID string) error {
 	f.principal, f.requestID = p, requestID
 	return nil
@@ -108,6 +113,34 @@ func TestServerRendersPersistentSandboxBanner(t *testing.T) {
 	}
 }
 
+func TestPlanLogsPrivateCashierFailureWithoutExposingIt(t *testing.T) {
+	const privateDetail = "token=fixture-plan-secret"
+	previous := slog.Default()
+	var logs bytes.Buffer
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	defer slog.SetDefault(previous)
+
+	srv := testServer()
+	srv.cashier = &fakeCashier{planErr: errors.New(privateDetail)}
+	req := authenticatedPlanRequest(t, srv, http.MethodGet, "/plan", "")
+	rec := httptest.NewRecorder()
+
+	srv.ServeHTTP(rec, req)
+
+	if got, want := rec.Code, http.StatusServiceUnavailable; got != want {
+		t.Fatalf("GET /plan failure status = %d, want %d", got, want)
+	}
+	if strings.Contains(rec.Body.String(), privateDetail) {
+		t.Fatalf("GET /plan exposed private Cashier detail: %q", rec.Body.String())
+	}
+	if !strings.Contains(logs.String(), "operation=\"load Cashier plan state\"") {
+		t.Fatalf("Cashier operation was not logged: %s", logs.String())
+	}
+	if !strings.Contains(logs.String(), "token=[REDACTED]") || strings.Contains(logs.String(), "fixture-plan-secret") {
+		t.Fatalf("Cashier failure was not sanitized in logs: %s", logs.String())
+	}
+}
+
 func TestValidateLocalpartMatchesMatrixUserLocalpartRules(t *testing.T) {
 	for _, tt := range []struct {
 		localpart string
@@ -159,6 +192,39 @@ func TestCallbackRejectsInvalidProviderUsername(t *testing.T) {
 		if cookie.Name == sessionCookieName {
 			t.Fatal("callback issued a session for an invalid provider username")
 		}
+	}
+}
+
+func TestCallbackLogsOAuthExchangeFailureWithoutExposingIt(t *testing.T) {
+	previous := slog.Default()
+	var logs bytes.Buffer
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	defer slog.SetDefault(previous)
+
+	srv := testServer()
+	srv.oidc.httpClient.Transport = roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return nil, errors.New("token=fixture-oauth-secret")
+	})
+	cookies := httptest.NewRecorder()
+	setOAuthCookies(cookies, "state", "verifier")
+	req := httptest.NewRequest(http.MethodGet, "/plan/callback?state=state&code=code", nil)
+	for _, cookie := range cookies.Result().Cookies() {
+		req.AddCookie(cookie)
+	}
+	rec := httptest.NewRecorder()
+
+	srv.ServeHTTP(rec, req)
+
+	if got, want := rec.Code, http.StatusBadGateway; got != want {
+		t.Fatalf("OAuth exchange failure status = %d, want %d", got, want)
+	}
+	if strings.Contains(rec.Body.String(), "fixture-oauth-secret") {
+		t.Fatalf("OAuth exchange failure exposed private detail: %q", rec.Body.String())
+	}
+	if !strings.Contains(logs.String(), "operation=\"exchange OAuth code\"") ||
+		!strings.Contains(logs.String(), "token=[REDACTED]") ||
+		strings.Contains(logs.String(), "fixture-oauth-secret") {
+		t.Fatalf("OAuth exchange failure was not logged safely: %s", logs.String())
 	}
 }
 
@@ -729,6 +795,40 @@ func TestCashierArbitraryErrorBodyIsNeverForwarded(t *testing.T) {
 				t.Fatalf("%s forwarded private Cashier body: %q", tt.name, rec.Body.String())
 			}
 		})
+	}
+}
+
+type planWriteFailureResponseWriter struct {
+	header http.Header
+	err    error
+}
+
+func (w *planWriteFailureResponseWriter) Header() http.Header {
+	if w.header == nil {
+		w.header = make(http.Header)
+	}
+	return w.header
+}
+
+func (w *planWriteFailureResponseWriter) WriteHeader(int) {}
+
+func (w *planWriteFailureResponseWriter) Write([]byte) (int, error) {
+	return 0, w.err
+}
+
+func TestPlanWriteJSONLogsResponseWriteFailure(t *testing.T) {
+	previous := slog.Default()
+	var logs bytes.Buffer
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	defer slog.SetDefault(previous)
+
+	writeJSON(&planWriteFailureResponseWriter{err: errors.New("fixture Plan client disconnected")}, http.StatusOK, map[string]string{"status": "ok"})
+
+	if !strings.Contains(logs.String(), "operation=\"write JSON response\"") {
+		t.Fatalf("response write failure was not logged: %s", logs.String())
+	}
+	if !strings.Contains(logs.String(), "fixture Plan client disconnected") {
+		t.Fatalf("response write failure detail was not logged: %s", logs.String())
 	}
 }
 
