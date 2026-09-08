@@ -18,28 +18,10 @@ containing their payment or portal link; structured plan reads also remain HTTP 
 callback remains `/plan/callback`, but malformed, expired, and foreign-server sessions are rejected
 rather than being migrated implicitly.
 
-## Intended private protocol
+## Cashier integration
 
-Cashier exposes an internal-only versioned API corresponding exactly to `CashierClient`. The
-internal team-domain paths are private protocol names and are not public Plan terminology:
-
-- `GET /internal/v1/plan-state`
-- `POST /internal/v1/teams`
-- `POST /internal/v1/team/seats`
-- `DELETE /internal/v1/team/seats/{mxid}`
-- `POST /internal/v1/team/checkout`
-- `POST /internal/v1/team/portal`
-- `POST /internal/v1/team/seat-count`
-
-Plan signs a short-lived EdDSA compact JWS with exactly `sub`, `aud`, `exp`, `method`, `path`,
-`request_id`, and `body_sha256` claims. `path` is the exact escaped request path sent on the wire
-(including percent-encoding for a seat MXID); `body_sha256` is the raw URL-safe-base64 SHA-256 of
-the exact request bytes. Plan serializes once, signs those bytes, and sends those same bytes.
-Commands additionally send `X-TeleCrypt-Request-ID` equal to `request_id`; plan-state uses a
-generated request identifier but needs no header. Cashier verifies the assertion, uses its own
-plan ownership lookup, and persists idempotency for money-affecting commands. The endpoint is
-reachable only on the private Plan-to-Cashier Compose network; Caddy publishes only Cashier's
-signed Dodo webhook endpoint.
+`CashierClient` implements the [Cashier-owned private Plan API contract](https://github.com/TeleCrypt-io/cashier/blob/main/README.md#private-plan-api).
+Keep its protocol documentation with Cashier rather than maintaining a second contract here.
 
 The package owns the public browser flow, MAS OIDC, session cookies, exact-origin protection, and
 rendering. An unavailable Cashier client fails closed for authenticated billing views and commands;
