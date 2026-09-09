@@ -176,10 +176,15 @@ jobs:
       - uses: actions/setup-python@v7.0.0
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-      - uses: actions/download-artifact@v8.0.1
-        with:
-          name: controlplane-wheel-${{ github.run_id }}-${{ github.sha }}
-          path: dist/tier-controller
+      - name: Download the exact tested wheel
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download "$GITHUB_RUN_ID" \
+            --repo "$GITHUB_REPOSITORY" \
+            --name "controlplane-wheel-${GITHUB_RUN_ID}-${GITHUB_SHA}" \
+            --dir dist/tier-controller
       - name: Require the exact tested wheel
         run: |
           set -euo pipefail
@@ -495,7 +500,7 @@ jobs:
             registration_stderr="$diagnostics_dir/registration-readiness-$attempt.stderr"
             set +e
             registration_status="$(curl --no-progress-meter --show-error --connect-timeout 1 --max-time 3 \
-              --request HEAD --output "$registration_body" --write-out '%{http_code}' \
+              --head --output "$registration_body" --write-out '%{http_code}' \
               http://127.0.0.1:19009/agents 2>"$registration_stderr")"
             registration_curl_status=$?
             set -e
