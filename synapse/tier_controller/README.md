@@ -26,10 +26,8 @@ all of these checks pass:
 - The user's current original local-media usage plus the proposed size is at most 50 GiB. The
   parameterized query counts only `local_media_repository` rows with `url_cache IS NULL`; it does
   not count thumbnails, remote media, deleted rows, or disposable staging files.
-- The configured media-store/staging filesystem has enough available space for the proposed file
-  while retaining a 10 GiB reserve.
 
-Malformed, negative, overflowing, missing, or failed database/filesystem values deny the upload.
+Malformed, negative, overflowing, missing, or failed database values deny the upload.
 The callback performs no Dodo, Cashier HTTP, or other provider call; Cashier owns the entitlement
 projection that Synapse exposes as `user_type=verified`. The callback is an admission check only;
 the one-process Synapse upload path must retain the per-user serialization and commit boundary.
@@ -55,13 +53,9 @@ modules:
   - module: tier_controller.TierController
     config:
       restricted_room_cap: 3
-      media_store_path: /staging/media
 ```
 
 `user_types.extra_user_types` must include `verified` in the Synapse configuration.
-`media_store_path` must identify the same disposable staging mount used by Synapse. The module
-uses its unprivileged available-space value (`statvfs.f_bavail * f_frsize`) and fails closed when
-that path or value cannot be read.
 
 ## Tests
 

@@ -5,7 +5,6 @@ import pathlib
 import site
 import sys
 from types import SimpleNamespace
-from unittest.mock import patch
 
 # Running this file from the source checkout would otherwise put the source package ahead of the
 # wheel under test. CI mounts this file separately and installs the wheel into site-packages.
@@ -20,7 +19,6 @@ import tier_controller
 from tier_controller import (
     MAX_MEDIA_BYTES,
     MAX_USER_MEDIA_BYTES,
-    STAGING_FREE_RESERVE_BYTES,
     TierController,
     TierControllerConfig,
     _DENIAL_MESSAGE,
@@ -129,30 +127,16 @@ def make_module(
     media_usage=None,
     db_error=False,
     restricted_room_cap=3,
-    media_store_path="/staging/media",
 ):
     api = FakeModuleApi(
         user_types or {}, room_counts or {}, media_usage or {}, db_error=db_error
     )
-    module = TierController(
-        TierControllerConfig(restricted_room_cap, media_store_path), api
-    )
+    module = TierController(TierControllerConfig(restricted_room_cap), api)
     return module, api
 
 
-def _statvfs_for_free_bytes(free_bytes):
-    return SimpleNamespace(f_bavail=free_bytes, f_frsize=1)
-
-
-async def upload_decision(module, user_id, size, free_bytes=None):
-    if free_bytes is None:
-        free_bytes = STAGING_FREE_RESERVE_BYTES + MAX_MEDIA_BYTES
-    with patch.object(
-        tier_controller.os,
-        "statvfs",
-        return_value=_statvfs_for_free_bytes(free_bytes),
-    ):
-        return await module.is_user_allowed_to_upload_media_of_size(user_id, size)
+async def upload_decision(module, user_id, size):
+    return await module.is_user_allowed_to_upload_media_of_size(user_id, size)
 
 
 def test_parse_config_rejects_negative_room_cap():
@@ -171,23 +155,7 @@ def test_parse_config_accepts_zero_room_cap():
 def test_upload_limits_are_explicit():
     assert MAX_MEDIA_BYTES == 128 * 1024 * 1024
     assert MAX_USER_MEDIA_BYTES == 50 * 1024 * 1024 * 1024
-    assert STAGING_FREE_RESERVE_BYTES == 10 * 1024 * 1024 * 1024
     assert "https://telecrypt.io/llms.txt" in _DENIAL_MESSAGE
-
-
-def test_parse_config_validates_media_store_path():
-    assert TierController.parse_config({}).media_store_path == "/staging/media"
-    assert (
-        TierController.parse_config({"media_store_path": "/staging/media"}).media_store_path
-        == "/staging/media"
-    )
-    for value in (None, "", "relative/media", "\x00"):
-        try:
-            TierController.parse_config({"media_store_path": value})
-        except ConfigError:
-            pass
-        else:
-            raise AssertionError(f"invalid media_store_path unexpectedly accepted: {value!r}")
 
 
 def test_controller_does_not_retain_unused_module_api():
@@ -219,20 +187,14 @@ async def test_unknown_legacy_type_denied_upload():
     assert await upload_decision(module, "@a:x", 100) is False
 
 
-async def test_upload_boundaries_and_staging_reserve():
+async def test_upload_boundaries():
     module, _ = make_module(user_types={"@a:x": "verified"})
-    assert await upload_decision(module, "@a:x", 0, STAGING_FREE_RESERVE_BYTES) is True
+    assert await upload_decision(module, "@a:x", 0) is True
     assert await upload_decision(
         module, "@a:x", MAX_MEDIA_BYTES - 1
     ) is True
     assert await upload_decision(module, "@a:x", MAX_MEDIA_BYTES) is True
     assert await upload_decision(module, "@a:x", MAX_MEDIA_BYTES + 1) is False
-    assert await upload_decision(
-        module, "@a:x", 100, STAGING_FREE_RESERVE_BYTES + 99
-    ) is False
-    assert await upload_decision(
-        module, "@a:x", 100, STAGING_FREE_RESERVE_BYTES + 100
-    ) is True
 
 
 async def test_upload_quota_boundaries():
@@ -279,19 +241,6 @@ async def test_upload_rejects_malformed_or_overflowing_values():
     assert await upload_decision(module, "@a:x", -1) is False
     assert await upload_decision(module, "@a:x", True) is False
     assert await upload_decision(module, "@a:x", 1.0) is False
-
-
-async def test_upload_rejects_staging_errors_and_free_space_overflow():
-    module, _ = make_module(user_types={"@a:x": "verified"})
-    with patch.object(tier_controller.os, "statvfs", side_effect=OSError("gone")):
-        assert await module.is_user_allowed_to_upload_media_of_size("@a:x", 1) is False
-
-    with patch.object(
-        tier_controller.os,
-        "statvfs",
-        return_value=SimpleNamespace(f_bavail=2, f_frsize=(1 << 63) - 1),
-    ):
-        assert await module.is_user_allowed_to_upload_media_of_size("@a:x", 1) is False
 
 
 async def test_restricted_room_cap_denied_at_cap():

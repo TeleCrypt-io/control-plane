@@ -6,7 +6,7 @@
 # a capped number of created rooms, no m.room.encryption) unless user_type == 'verified'.
 # NULL/absent user_type (the default for a freshly registered account, agent or human) is
 # restricted; only an explicit 'verified' user_type lifts the restriction. Verified uploads also
-# obey the fixed per-user original-media quota and disposable staging reserve below.
+# obey the fixed per-file and per-user original-media limits below.
 #
 # Callback signatures + return-value handling verified against the exact Synapse 1.159.0 package:
 #   - media_repository_callbacks.is_user_allowed_to_upload_media_of_size(user_id, size) -> bool.
@@ -17,7 +17,6 @@
 from __future__ import annotations
 
 import logging
-import os
 from typing import Any
 
 from synapse.api.errors import Codes
@@ -35,8 +34,6 @@ BYTES_PER_GIB = 1024**3
 # callback cannot admit a request that the surrounding media path is not meant to process.
 MAX_MEDIA_BYTES = 128 * BYTES_PER_MIB
 MAX_USER_MEDIA_BYTES = 50 * BYTES_PER_GIB
-STAGING_FREE_RESERVE_BYTES = 10 * BYTES_PER_GIB
-DEFAULT_MEDIA_STORE_PATH = "/staging/media"
 
 # PostgreSQL's SUM(integer) returns a signed BIGINT. Values outside that range are malformed for
 # this policy even though Python itself can represent arbitrarily large integers.
@@ -50,13 +47,8 @@ _DENIAL_MESSAGE = (
 
 
 class TierControllerConfig:
-    def __init__(
-        self,
-        restricted_room_cap: int,
-        media_store_path: str = DEFAULT_MEDIA_STORE_PATH,
-    ) -> None:
+    def __init__(self, restricted_room_cap: int) -> None:
         self.restricted_room_cap = restricted_room_cap
-        self.media_store_path = media_store_path
 
 
 class TierController:
@@ -81,15 +73,7 @@ class TierController:
         if restricted_room_cap < 0:
             raise ConfigError("restricted_room_cap must not be negative")
 
-        media_store_path = config.get("media_store_path", DEFAULT_MEDIA_STORE_PATH)
-        if (
-            not isinstance(media_store_path, str)
-            or not media_store_path
-            or not os.path.isabs(media_store_path)
-            or "\x00" in media_store_path
-        ):
-            raise ConfigError("media_store_path must be a non-empty absolute path")
-        return TierControllerConfig(restricted_room_cap, media_store_path)
+        return TierControllerConfig(restricted_room_cap)
 
     async def _get_user_type(self, user_id: str) -> str | None:
         def txn(cursor: Any) -> str | None:
@@ -174,26 +158,6 @@ class TierController:
             return None
         return value
 
-    def _staging_free_bytes(self) -> int | None:
-        try:
-            stats = os.statvfs(self.config.media_store_path)
-            available_blocks = self._bounded_nonnegative_integer(
-                getattr(stats, "f_bavail", None)
-            )
-            fragment_size = self._bounded_nonnegative_integer(
-                getattr(stats, "f_frsize", None)
-            )
-            if available_blocks is None or fragment_size is None or fragment_size == 0:
-                return None
-            if available_blocks > _MAX_SIGNED_INTEGER // fragment_size:
-                return None
-            return available_blocks * fragment_size
-        except Exception:
-            logger.exception(
-                "tier_controller: staging free-space lookup failed, failing closed"
-            )
-            return None
-
     async def is_user_allowed_to_upload_media_of_size(self, user_id: str, size: int) -> bool:
         proposed_size = self._bounded_nonnegative_integer(size)
         if proposed_size is None or proposed_size > MAX_MEDIA_BYTES:
@@ -207,17 +171,7 @@ class TierController:
             return False
         if usage > _MAX_SIGNED_INTEGER - proposed_size:
             return False
-        total_usage = usage + proposed_size
-        if total_usage > MAX_USER_MEDIA_BYTES:
-            return False
-
-        free_bytes = self._staging_free_bytes()
-        if free_bytes is None:
-            return False
-        if proposed_size > _MAX_SIGNED_INTEGER - STAGING_FREE_RESERVE_BYTES:
-            return False
-        required_free_bytes = proposed_size + STAGING_FREE_RESERVE_BYTES
-        return free_bytes >= required_free_bytes
+        return usage + proposed_size <= MAX_USER_MEDIA_BYTES
 
     async def user_may_create_room(self, user_id: str, room_config: dict) -> Any:
         if not await self._is_restricted(user_id):
