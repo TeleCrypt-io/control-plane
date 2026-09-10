@@ -1,16 +1,15 @@
 // Package registrationhttp is Registration's public HTTP API: a stateless registration shim exposing only
 // POST /agents. It holds no database connection, no admin credentials, no
-// stored sessions, and no edge token; it drives MAS's public registration/device-OAuth flow and
-// applies an in-memory rate limit.
+// stored sessions, and no edge token; it drives MAS's public registration/device-OAuth flow.
 package registrationhttp
 
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
-	"time"
 
 	"github.com/TeleCrypt-io/controlplane/internal/agent"
 	"github.com/TeleCrypt-io/controlplane/internal/httpdiag"
@@ -25,19 +24,15 @@ type provisioner interface {
 
 type Server struct {
 	provisioner provisioner
-	rateLimiter *RateLimiter
 	planURL     string
 	mux         *http.ServeMux
 }
 
-const maxRegistrationBodyBytes = 4096
-
 const registrationErrorHeader = "Telecrypt-Registration-Error"
 
-func New(p provisioner, rl *RateLimiter, planURL string) *Server {
+func New(p provisioner, planURL string) *Server {
 	s := &Server{
 		provisioner: p,
-		rateLimiter: rl,
 		planURL:     planURL,
 		mux:         http.NewServeMux(),
 	}
@@ -64,27 +59,18 @@ type registrationResponse struct {
 }
 
 // handleRegistration provisions a fresh agent account through MAS's public registration and OAuth
-// flow — no admin credential, password login, edge token, or database. Rate-limited by a global
-// in-memory backstop; client-facing fairness belongs at the network boundary.
+// flow — no admin credential, password login, edge token, or database.
 func (s *Server) handleRegistration(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Del(registrationErrorHeader)
 	if r.Body != nil {
-		body, err := io.ReadAll(io.LimitReader(r.Body, maxRegistrationBodyBytes+1))
-		if err != nil || len(body) != 0 {
+		n, err := io.CopyN(io.Discard, r.Body, 1)
+		if (err != nil && !errors.Is(err, io.EOF)) || n != 0 {
 			http.Error(w, "request body must be empty", http.StatusBadRequest)
 			return
 		}
 	}
-	allowed := s.rateLimiter.Allow()
-	if !allowed {
-		http.Error(w, "rate limit exceeded, try again later", http.StatusTooManyRequests)
-		return
-	}
-
-	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
-	defer cancel()
-	result, err := s.provisioner.ProvisionAgent(ctx)
+	result, err := s.provisioner.ProvisionAgent(r.Context())
 	if err != nil {
 		// The typed error retains a complete sanitized diagnostic for internal logs. Only its
 		// finite code crosses the public boundary.

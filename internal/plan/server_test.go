@@ -524,12 +524,6 @@ func TestPlanTemplateHasNoInlineScriptHandlers(t *testing.T) {
 	}
 }
 
-func TestPlanTemplateCapsSeatQuantity(t *testing.T) {
-	if got := strings.Count(planHTML, `max="1000"`); got != 2 {
-		t.Fatalf("Plan template has %d seat quantity caps, want 2", got)
-	}
-}
-
 func TestServerRendersPlanControlsForEachSubscriptionState(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -687,9 +681,6 @@ func TestPlanCommandsRejectUnsafeRequestBodies(t *testing.T) {
 	}{
 		{"unknown field", "/api/plan/seats", `{"mxid":"@member:stage.telecrypt.io","unexpected":true}`},
 		{"trailing JSON", "/api/plan/seat-count", `{"quantity":1}{"quantity":2}`},
-		{"seat-count quantity above cap", "/api/plan/seat-count", `{"quantity":1001}`},
-		{"checkout quantity above cap", "/api/plan/checkout", `{"quantity":1001}`},
-		{"oversized JSON", "/api/plan/seats", `{"mxid":"@` + strings.Repeat("a", maxPlanJSONBodyBytes) + `:stage.telecrypt.io"}`},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			srv := testServer()

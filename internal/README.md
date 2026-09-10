@@ -18,7 +18,7 @@ small `main` packages in `cmd/`:
 | `janitor` | Runs one database-locked sweep that finds stale unclaimed accounts, locks them through MAS, and sends the owner digest. It never unlocks an account; uncertain lock/readback outcomes fail the run. | No HTTP listener. |
 | `masadmin` | MAS admin OAuth client used only by Janitor. It retains complete upstream response diagnostics after credential and identity redaction. | Never used by Registration or Plan. |
 | `masreg` | MAS public registration, dynamic-client, and device-OAuth client used by Registration. It retains complete sanitized upstream response diagnostics internally. | Does not use MAS-admin authority or a client secret; public failures cross the HTTP boundary only as a finite stage/kind code. |
-| `registrationhttp` | Registration request parsing, response shaping, and global rate limiting. | Public surface is limited to the registration endpoint. |
+| `registrationhttp` | Registration request parsing and response shaping. | Public surface is limited to the registration endpoint. |
 | `plan` | MAS OIDC, browser sessions, CSRF/origin checks, rendering, and signed Cashier commands. | Has no Dodo, Synapse-admin, or Postgres credential. |
 
 Public topology, deployment-identity selection, and the Janitor database role contract are owned

@@ -33,9 +33,6 @@ type Config struct {
 var errCashierUnavailable = errors.New("cashier client is not configured")
 
 const (
-	maxPlanJSONBodyBytes      = 4096
-	maxPlanSeatQuantity       = 1000
-	maxOAuthCallbackValue     = 4096
 	planSeatPrice             = "15 EUR per seat"
 	planContentSecurityPolicy = "default-src 'self'; base-uri 'none'; connect-src 'self'; form-action 'self'; frame-ancestors 'self'; img-src 'self'; object-src 'none'; script-src 'self'; style-src 'self'"
 )
@@ -260,7 +257,7 @@ func (s *Server) handleCallback(w http.ResponseWriter, r *http.Request) {
 // callback. A stale callback from another tab must not erase the newer tab's attempt.
 func callbackMatchesOAuthState(r *http.Request) bool {
 	current, err := readOAuthCookie(r, oauthStateCookie)
-	if err != nil || len(r.URL.RawQuery) > 5*maxOAuthCallbackValue {
+	if err != nil {
 		return false
 	}
 	values, err := url.ParseQuery(r.URL.RawQuery)
@@ -278,9 +275,6 @@ type oauthCallbackParams struct {
 }
 
 func parseOAuthCallback(r *http.Request) (oauthCallbackParams, error) {
-	if len(r.URL.RawQuery) > 5*maxOAuthCallbackValue {
-		return oauthCallbackParams{}, errors.New("oauth callback query is too large")
-	}
 	values, err := url.ParseQuery(r.URL.RawQuery)
 	if err != nil {
 		return oauthCallbackParams{}, err
@@ -289,7 +283,7 @@ func parseOAuthCallback(r *http.Request) (oauthCallbackParams, error) {
 		"code": true, "state": true, "error": true, "error_description": true, "error_uri": true,
 	}
 	for name, entries := range values {
-		if !allowed[name] || len(entries) != 1 || len(entries[0]) > maxOAuthCallbackValue {
+		if !allowed[name] || len(entries) != 1 {
 			return oauthCallbackParams{}, errors.New("invalid oauth callback parameters")
 		}
 		if name != "error_description" && name != "error_uri" && !validOAuthCallbackToken(entries[0]) {
@@ -382,7 +376,7 @@ type seatRequest struct {
 }
 
 var matrixLocalpart = regexp.MustCompile(`^[0-9a-z=_+\-./]+$`)
-var cashierCapacityMessage = regexp.MustCompile(`^remove ([1-9][0-9]{0,5}) seat\(s\) before lowering to ([1-9][0-9]{0,5}) paid seats$`)
+var cashierCapacityMessage = regexp.MustCompile(`^remove ([1-9][0-9]*) seat\(s\) before lowering to ([1-9][0-9]*) paid seats$`)
 
 const maxMatrixIDBytes = 255
 
@@ -438,16 +432,15 @@ type quantityRequest struct {
 
 func decodeQuantity(w http.ResponseWriter, r *http.Request) (int, bool) {
 	var req quantityRequest
-	if err := decodePlanJSON(w, r, &req); err != nil || req.Quantity < 1 || req.Quantity > maxPlanSeatQuantity {
-		http.Error(w, fmt.Sprintf("quantity must be between 1 and %d", maxPlanSeatQuantity), http.StatusBadRequest)
+	if err := decodePlanJSON(w, r, &req); err != nil || req.Quantity < 1 {
+		http.Error(w, "quantity must be positive", http.StatusBadRequest)
 		return 0, false
 	}
 	return req.Quantity, true
 }
 
 func decodePlanJSON(w http.ResponseWriter, r *http.Request, dst any) error {
-	body := http.MaxBytesReader(w, r.Body, maxPlanJSONBodyBytes)
-	decoder := json.NewDecoder(body)
+	decoder := json.NewDecoder(r.Body)
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(dst); err != nil {
 		return err

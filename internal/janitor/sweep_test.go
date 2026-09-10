@@ -157,6 +157,25 @@ func TestSweepUsesOnlyCashierExclusionViewAndWritesExactDryRunAudit(t *testing.T
 	}
 }
 
+func TestSweepUsesExact48HourLockThreshold(t *testing.T) {
+	now := time.Now()
+	mas := &fakeMAS{users: []masadmin.User{
+		{ID: testID(1), Username: "older", CreatedAt: now.Add(-48*time.Hour - time.Minute)},
+		{ID: testID(2), Username: "younger", CreatedAt: now.Add(-48*time.Hour + time.Minute)},
+	}}
+	store := &fakeStore{exclusions: map[string]struct{}{}}
+
+	if err := NewSweeper(mas, store, &fakeMailer{}, testConfig()).Sweep(context.Background()); err != nil {
+		t.Fatalf("Sweep: %v", err)
+	}
+	if got := store.events[1].LockedOrWouldLock; got != 1 {
+		t.Fatalf("accounts eligible at the 48-hour threshold = %d, want 1", got)
+	}
+	if mas.getUserCalls != 1 || mas.emailChecks != 1 {
+		t.Fatalf("candidate checks = (user=%d, email=%d), want only the account older than 48 hours", mas.getUserCalls, mas.emailChecks)
+	}
+}
+
 func TestSweepLiveLocksEligibleUserWithoutUnlockSurface(t *testing.T) {
 	mas := &fakeMAS{users: []masadmin.User{staleUser(testID(3), "free")}}
 	store := &fakeStore{exclusions: map[string]struct{}{}}

@@ -63,12 +63,12 @@
             <div class="card-actions">
               {{if .CanCheckout}}
               <form id="checkout" class="quantity-action">
-                <label>Seats ({{.SeatPrice}}) <input name="quantity" type="number" min="1" max="1000" value="1" required></label>
+                <label>Seats ({{.SeatPrice}}) <input name="quantity" type="number" min="1" value="1" required></label>
                 <button class="btn btn-primary">Start {{if $.TestMode}}sandbox {{end}}checkout</button>
               </form>
               {{else if .CanChangeSeats}}
               <form id="seat-count" class="quantity-action">
-                <label>Paid seats ({{.SeatPrice}}) <input name="quantity" type="number" min="1" max="1000" value="{{.Plan.PaidSeats}}" required></label>
+                <label>Paid seats ({{.SeatPrice}}) <input name="quantity" type="number" min="1" value="{{.Plan.PaidSeats}}" required></label>
                 <button class="btn">Update paid seats</button>
               </form>
               {{end}}

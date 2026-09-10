@@ -10,7 +10,6 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/TeleCrypt-io/controlplane/internal/agent"
 	"github.com/TeleCrypt-io/controlplane/internal/registrationfailure"
@@ -22,30 +21,13 @@ type fakeProvisioner struct {
 	calls  int
 }
 
-type contextProvisioner struct{ hasDeadline bool }
-
-func (p *contextProvisioner) ProvisionAgent(ctx context.Context) (*agent.Provisioned, error) {
-	_, p.hasDeadline = ctx.Deadline()
-	return &agent.Provisioned{}, nil
-}
-
-func TestHandleRegistration_BoundsProvisioningTime(t *testing.T) {
-	p := &contextProvisioner{}
-	s := New(p, NewRateLimiter(60, time.Minute), "https://telecrypt.io/plan")
-	w := httptest.NewRecorder()
-	s.ServeHTTP(w, httptest.NewRequest("POST", "/agents", nil))
-	if !p.hasDeadline {
-		t.Fatal("ProvisionAgent did not receive a bounded context")
-	}
-}
-
 func TestHandleRegistration_LogsSanitizedProvisioningError(t *testing.T) {
 	var logs bytes.Buffer
 	previous := slog.Default()
 	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
 	t.Cleanup(func() { slog.SetDefault(previous) })
 	secret := "password=generated-password-must-not-appear"
-	s := New(&fakeProvisioner{err: registrationfailure.WithKind(registrationfailure.StageDeviceConsent, registrationfailure.KindUpstream, errors.New(secret+" tail"))}, NewRateLimiter(60, time.Minute), "https://telecrypt.io/plan")
+	s := New(&fakeProvisioner{err: registrationfailure.WithKind(registrationfailure.StageDeviceConsent, registrationfailure.KindUpstream, errors.New(secret+" tail"))}, "https://telecrypt.io/plan")
 	w := httptest.NewRecorder()
 	s.ServeHTTP(w, httptest.NewRequest("POST", "/agents", nil))
 	if strings.Contains(logs.String(), secret) {
@@ -83,7 +65,7 @@ func TestHandleRegistration_HappyPath(t *testing.T) {
 		OAuthClientID:      "dynamic-client",
 		OAuthTokenEndpoint: "https://telecrypt.io/auth/oauth2/token",
 	}}
-	s := New(p, NewRateLimiter(60, time.Minute), "https://backend.telecrypt.io/plan")
+	s := New(p, "https://backend.telecrypt.io/plan")
 
 	req := httptest.NewRequest("POST", "/agents", nil)
 	w := httptest.NewRecorder()
@@ -123,7 +105,7 @@ func TestHandleRegistration_HappyPath(t *testing.T) {
 
 func TestHandleRegistration_RejectsNonEmptyBody(t *testing.T) {
 	p := &fakeProvisioner{result: &agent.Provisioned{MXID: "@abc123:telecrypt.io"}}
-	s := New(p, NewRateLimiter(60, time.Minute), "https://backend.telecrypt.io/plan")
+	s := New(p, "https://backend.telecrypt.io/plan")
 	req := httptest.NewRequest("POST", "/agents", strings.NewReader("{}"))
 	w := httptest.NewRecorder()
 	s.ServeHTTP(w, req)
@@ -137,7 +119,7 @@ func TestHandleRegistration_RejectsNonEmptyBody(t *testing.T) {
 
 func TestHandleRegistration_ProvisioningFails(t *testing.T) {
 	p := &fakeProvisioner{err: registrationfailure.WithKind(registrationfailure.StageOAuthClient, registrationfailure.KindTransport, errors.New("mas unreachable"))}
-	s := New(p, NewRateLimiter(60, time.Minute), "https://backend.telecrypt.io/plan")
+	s := New(p, "https://backend.telecrypt.io/plan")
 
 	req := httptest.NewRequest("POST", "/agents", nil)
 	w := httptest.NewRecorder()
@@ -151,31 +133,6 @@ func TestHandleRegistration_ProvisioningFails(t *testing.T) {
 	}
 	if got, want := w.Header().Get(registrationErrorHeader), "oauth_client/transport"; got != want {
 		t.Errorf("registration error header = %q, want %q", got, want)
-	}
-}
-
-func TestHandleRegistration_RateLimited(t *testing.T) {
-	p := &fakeProvisioner{result: &agent.Provisioned{MXID: "@x:telecrypt.io"}}
-	s := New(p, NewRateLimiter(1, time.Minute), "https://telecrypt.io/plan")
-
-	req1 := httptest.NewRequest("POST", "/agents", nil)
-	w1 := httptest.NewRecorder()
-	s.ServeHTTP(w1, req1)
-	if w1.Code != 200 {
-		t.Fatalf("first call: status = %d, want 200", w1.Code)
-	}
-
-	req2 := httptest.NewRequest("POST", "/agents", nil)
-	w2 := httptest.NewRecorder()
-	s.ServeHTTP(w2, req2)
-	if w2.Code != 429 {
-		t.Errorf("second global call: status = %d, want 429", w2.Code)
-	}
-	if got := w2.Header().Get(registrationErrorHeader); got != "" {
-		t.Errorf("rate-limited response has registration error header %q", got)
-	}
-	if p.calls != 1 {
-		t.Errorf("provisioner should not be called once rate-limited, calls = %d", p.calls)
 	}
 }
 
@@ -206,7 +163,7 @@ func TestHandleRegistration_MapsEveryBoundedStageAndKind(t *testing.T) {
 			t.Run(string(stage)+"/"+string(kind), func(t *testing.T) {
 				const secret = "credential=must-not-escape"
 				p := &fakeProvisioner{err: registrationfailure.WithKind(stage, kind, errors.New(secret))}
-				s := New(p, NewRateLimiter(60, time.Minute), "https://telecrypt.io/plan")
+				s := New(p, "https://telecrypt.io/plan")
 				w := httptest.NewRecorder()
 				s.ServeHTTP(w, httptest.NewRequest("POST", "/agents", nil))
 				want := string(stage) + "/" + string(kind)

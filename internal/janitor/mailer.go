@@ -9,19 +9,13 @@ import (
 	"net/smtp"
 	"strings"
 	"sync"
-	"time"
-)
-
-const (
-	maxSMTPHeaderBytes = 16 << 10
-	maxSMTPBodyBytes   = 1 << 20
 )
 
 // SMTPMailer sends the owner digest as plain text over a TLS-required SMTP connection.
 // It negotiates STARTTLS explicitly and fails closed if the server does not advertise STARTTLS
 // or if the TLS handshake fails — it never authenticates or sends in plaintext. Authentication
-// uses smtp.PlainAuth only after a successful STARTTLS upgrade. Every SMTP operation is bounded
-// by the same hard deadline and canceled when the request context ends. Certificate verification
+// uses smtp.PlainAuth only after a successful STARTTLS upgrade. SMTP operations are canceled when
+// the request context ends. Certificate verification
 // requires a working CA trust store in the runtime environment — see the Dockerfile's
 // ca-certificates note (scratch has none by default).
 type SMTPMailer struct {
@@ -36,24 +30,11 @@ func (m *SMTPMailer) Send(ctx context.Context, to, subject, body string) (result
 	if err := validateSMTPMessage(m.From, to, subject, body); err != nil {
 		return err
 	}
-	const timeout = 30 * time.Second
 	addr := net.JoinHostPort(m.Host, m.Port)
-
-	deadline := time.Now().Add(timeout)
-	if ctxDeadline, ok := ctx.Deadline(); ok && ctxDeadline.Before(deadline) {
-		deadline = ctxDeadline
-	}
-	dialTimeout := time.Until(deadline)
-	if dialTimeout <= 0 {
-		return errors.New("smtp: deadline exceeded")
-	}
-	dialer := &net.Dialer{Timeout: dialTimeout}
+	dialer := &net.Dialer{}
 	conn, err := dialer.DialContext(ctx, "tcp", addr)
 	if err != nil {
 		return fmt.Errorf("smtp dial %s: %w", addr, err)
-	}
-	if err := conn.SetDeadline(deadline); err != nil {
-		return errors.Join(fmt.Errorf("smtp: set connection deadline: %w", err), closeSMTPConnection(conn))
 	}
 	managedConn := &smtpConnection{Conn: conn}
 	finishContextClose := startSMTPContextClose(ctx, managedConn)
@@ -171,13 +152,6 @@ func validateSMTPMessage(from, to, subject, body string) error {
 	}
 	if strings.ContainsAny(from, "\r\n") || strings.ContainsAny(to, "\r\n") || strings.ContainsAny(subject, "\r\n") {
 		return errors.New("smtp: message headers contain line breaks")
-	}
-	if len(body) > maxSMTPBodyBytes {
-		return errors.New("smtp: message body exceeds limit")
-	}
-	header := fmt.Sprintf("From: %s\r\nTo: %s\r\nSubject: %s\r\n\r\n", from, to, subject)
-	if len(header) > maxSMTPHeaderBytes {
-		return errors.New("smtp: message headers exceed limit")
 	}
 	return nil
 }

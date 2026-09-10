@@ -108,14 +108,7 @@ func build(cfg *config.Config) (http.Handler, error) {
 		return nil, err
 	}
 
-	rateLimiter := registrationhttp.NewRateLimiter(
-		registrationRateLimitGlobal, registrationRateLimitWindow)
-
-	return registrationhttp.New(provisioner, rateLimiter, cfg.PlanPublicURL), nil
+	return registrationhttp.New(provisioner, cfg.PlanPublicURL), nil
 }
 
-const (
-	registrationListenAddr      = ":9009"
-	registrationRateLimitGlobal = 60
-	registrationRateLimitWindow = time.Minute
-)
+const registrationListenAddr = ":9009"

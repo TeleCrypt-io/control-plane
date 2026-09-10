@@ -18,8 +18,6 @@ import (
 const (
 	lockAfter             = 48 * time.Hour
 	cashierAdminLocalpart = "cashier-admin"
-	maxDigestCandidates   = 10_000
-	maxDigestBodyBytes    = 1 << 20
 	auditCleanupTimeout   = 2 * time.Second
 )
 
@@ -401,9 +399,6 @@ func (s *Sweeper) sweepDigest(ctx context.Context, users []masadmin.User, emails
 		}
 		candidates = append(candidates, candidate{mxid: mxid, userCreatedAt: user.CreatedAt, email: email})
 	}
-	if len(candidates) > maxDigestCandidates {
-		return &operationError{reason: "mas", err: fmt.Errorf("digest candidate count exceeds limit")}
-	}
 	if len(candidates) == 0 {
 		if high.ID != "" {
 			if err := s.store.SetJanitorDigestCursor(ctx, db.DigestCursor{CreatedAt: high.CreatedAt, EmailID: high.ID}); err != nil {
@@ -417,9 +412,6 @@ func (s *Sweeper) sweepDigest(ctx context.Context, users []masadmin.User, emails
 	fmt.Fprintf(&body, "%d new human sign-up(s) awaiting review:\r\n\r\n", len(candidates))
 	for _, candidate := range candidates {
 		fmt.Fprintf(&body, "%s  created %s\r\n", candidate.mxid, candidate.userCreatedAt.Format(time.RFC3339))
-		if body.Len() > maxDigestBodyBytes {
-			return &operationError{reason: "notification", err: fmt.Errorf("digest body exceeds limit")}
-		}
 	}
 	if err := s.mailer.Send(ctx, s.cfg.OwnerEmail, fmt.Sprintf("TeleCrypt.io: %d new sign-up(s) awaiting review", len(candidates)), body.String()); err != nil {
 		state.notification = "failed"

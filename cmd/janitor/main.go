@@ -15,7 +15,6 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
-	"time"
 
 	"github.com/TeleCrypt-io/controlplane/internal/config"
 	"github.com/TeleCrypt-io/controlplane/internal/db"
@@ -40,12 +39,7 @@ func run() (runErr error) {
 
 	signalCtx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
-	// One fixed budget covers the complete one-shot: database connection and lock acquisition,
-	// identity binding, migration, all MAS pages and per-user checks, SMTP delivery, and the
-	// invocation-lock cleanup. A bounded retry is safer than allowing a privileged single-flight
-	// lease to survive indefinitely; the next scheduled invocation can resume idempotent work.
-	ctx, cancel := context.WithTimeout(signalCtx, janitorInvocationTimeout)
-	defer cancel()
+	ctx := signalCtx
 
 	pool, err := db.OpenJanitorPool(ctx, cfg.JanitorDBURL)
 	if err != nil {
@@ -114,6 +108,5 @@ func build(cfg *config.JanitorConfig, store *db.Store) *janitor.Sweeper {
 }
 
 const (
-	janitorSMTPPort          = "587"
-	janitorInvocationTimeout = 15 * time.Minute
+	janitorSMTPPort = "587"
 )

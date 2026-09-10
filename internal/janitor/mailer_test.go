@@ -287,7 +287,7 @@ func TestSMTPMailer_ContextCancelsStalledGreeting(t *testing.T) {
 	}
 }
 
-func TestValidateSMTPMessageRejectsInjectionAndOversizedFields(t *testing.T) {
+func TestValidateSMTPMessageRejectsInjection(t *testing.T) {
 	tests := []struct {
 		name          string
 		from, to      string
@@ -295,13 +295,11 @@ func TestValidateSMTPMessageRejectsInjectionAndOversizedFields(t *testing.T) {
 	}{
 		{name: "from injection", from: "from@test\r\nBcc: attacker@test", to: "to@test", subject: "Test", body: "body"},
 		{name: "subject injection", from: "from@test", to: "to@test", subject: "Test\nBcc: attacker@test", body: "body"},
-		{name: "body too large", from: "from@test", to: "to@test", subject: "Test", body: strings.Repeat("x", maxSMTPBodyBytes+1)},
-		{name: "header too large", from: strings.Repeat("a", maxSMTPHeaderBytes), to: "to@test", subject: "Test", body: "body"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			if err := validateSMTPMessage(tt.from, tt.to, tt.subject, tt.body); err == nil {
-				t.Fatal("validateSMTPMessage unexpectedly accepted unsafe or oversized message")
+				t.Fatal("validateSMTPMessage unexpectedly accepted an injected header")
 			}
 		})
 	}
