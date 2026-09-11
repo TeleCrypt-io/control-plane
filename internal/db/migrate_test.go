@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -233,6 +234,92 @@ func TestMigrateUsesFreshJanitorSchema(t *testing.T) {
 	}
 	if err := Migrate(ctx, pool); err != nil {
 		t.Fatalf("second Migrate: %v", err)
+	}
+}
+
+func TestMigratePreservesHistoricalPreviewAudit(t *testing.T) {
+	dsn := os.Getenv("TEST_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("TEST_DATABASE_URL not set, skipping real-Postgres migration upgrade test")
+	}
+	ctx := context.Background()
+	pool, err := OpenJanitorPool(ctx, dsn)
+	if err != nil {
+		t.Fatalf("OpenJanitorPool: %v", err)
+	}
+	defer pool.Close()
+	if _, err := pool.Exec(ctx, `DROP SCHEMA IF EXISTS janitor CASCADE; CREATE SCHEMA janitor`); err != nil {
+		t.Fatalf("create Janitor schema: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), `DROP SCHEMA IF EXISTS janitor CASCADE`)
+	})
+
+	migrations, err := loadMigrations()
+	if err != nil {
+		t.Fatalf("loadMigrations: %v", err)
+	}
+	if len(migrations) != 3 {
+		t.Fatalf("migration count = %d, want 3", len(migrations))
+	}
+	if _, err := pool.Exec(ctx, string(migrations[0].sql)); err != nil {
+		t.Fatalf("apply 0001 migration: %v", err)
+	}
+	if _, err := pool.Exec(ctx, string(migrations[1].sql)); err != nil {
+		t.Fatalf("apply 0002 migration: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+		CREATE TABLE janitor.schema_migrations (
+			version TEXT PRIMARY KEY,
+			sha256 TEXT NOT NULL CHECK (sha256 ~ '^[0-9a-f]{64}$'),
+			applied_at TIMESTAMPTZ NOT NULL DEFAULT pg_catalog.now()
+		)`); err != nil {
+		t.Fatalf("create legacy migration history: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO janitor.schema_migrations (version, sha256, applied_at)
+		VALUES ($1, $2, '2026-01-01T00:00:00Z'), ($3, $4, '2026-01-01T00:00:01Z')
+	`, migrations[0].name, migrations[0].sha256, migrations[1].name, migrations[1].sha256); err != nil {
+		t.Fatalf("insert legacy migration history: %v", err)
+	}
+	eventID := uuid.New()
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO janitor.run_events
+		(event_id, run_id, event_kind, status, outcome, reason, server_name, billing_environment,
+		 dry_run, considered, skipped, locked_or_would_lock, failures, notification_status, labels)
+		VALUES ($1, $2, 'finished', 'succeeded', 'dry_run', 'would_disable', 'stage.telecrypt.io', 'test',
+		 TRUE, 3, 1, 2, 0, 'not_attempted', ARRAY['mas_users']::TEXT[])
+	`, eventID, uuid.New()); err != nil {
+		t.Fatalf("insert historical preview event: %v", err)
+	}
+
+	if err := Migrate(ctx, pool); err != nil {
+		t.Fatalf("upgrade Migrate: %v", err)
+	}
+	var outcome, reason string
+	var dryRun bool
+	if err := pool.QueryRow(ctx, `SELECT outcome, reason, dry_run FROM janitor.run_events WHERE event_id = $1`, eventID).Scan(&outcome, &reason, &dryRun); err != nil {
+		t.Fatalf("read historical preview event: %v", err)
+	}
+	if outcome != "dry_run" || reason != "would_disable" || !dryRun {
+		t.Fatalf("historical preview event changed to outcome=%q reason=%q dry_run=%t", outcome, reason, dryRun)
+	}
+	newEventID := uuid.New()
+	if err := NewStore(pool).InsertRunEvent(ctx, RunEvent{
+		EventID: newEventID, RunID: uuid.New(), EventKind: "finished", Status: "succeeded",
+		Outcome: "success", Reason: "disabled", ServerName: "stage.telecrypt.io", BillingEnvironment: "test",
+		Considered: 1, LockedOrWouldLock: 1, NotificationStatus: "not_attempted", Labels: []string{"lock"},
+	}); err != nil {
+		t.Fatalf("insert new real test-profile event: %v", err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT dry_run FROM janitor.run_events WHERE event_id = $1`, newEventID).Scan(&dryRun); err != nil {
+		t.Fatalf("read new real test-profile event: %v", err)
+	}
+	if dryRun {
+		t.Fatal("new real test-profile event was recorded as dry_run")
+	}
+	if err := Migrate(ctx, pool); err != nil {
+		t.Fatalf("second upgraded Migrate: %v", err)
 	}
 }
 
