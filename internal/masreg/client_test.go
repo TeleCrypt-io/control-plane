@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/TeleCrypt-io/controlplane/internal/httpdiag"
@@ -611,8 +612,17 @@ type flakyTransport struct {
 }
 
 type eventuallyReadyIdentityTransport struct {
-	calls    int
+	calls     int
 	transient int
+}
+
+type timedIdentityTransport struct {
+	calls int
+	times []time.Time
+}
+
+type timeoutThenSuccessIdentityTransport struct {
+	calls int
 }
 
 type errorTransport struct{ err error }
@@ -660,8 +670,8 @@ func (b *trackingBody) Close() error {
 }
 
 type responseBody struct {
-	reader  io.Reader
-	readErr error
+	reader   io.Reader
+	readErr  error
 	closeErr error
 }
 
@@ -721,6 +731,28 @@ func (t *eventuallyReadyIdentityTransport) RoundTrip(*http.Request) (*http.Respo
 	}, nil
 }
 
+func (t *timedIdentityTransport) RoundTrip(*http.Request) (*http.Response, error) {
+	t.calls++
+	t.times = append(t.times, time.Now())
+	return &http.Response{
+		StatusCode: http.StatusNotFound,
+		Header:     make(http.Header),
+		Body:       io.NopCloser(strings.NewReader("identity is not ready")),
+	}, nil
+}
+
+func (t *timeoutThenSuccessIdentityTransport) RoundTrip(*http.Request) (*http.Response, error) {
+	t.calls++
+	if t.calls == 1 {
+		return nil, context.DeadlineExceeded
+	}
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     make(http.Header),
+		Body:       io.NopCloser(strings.NewReader(`{"user_id":"@agent:telecrypt.io","device_id":"DEVICE-12345"}`)),
+	}, nil
+}
+
 func TestOAuthRetriesTransientTransportErrors(t *testing.T) {
 	tokenTransport := &flakyTransport{body: `{"access_token":"access","refresh_token":"refresh","expires_in":60}`}
 	s := &session{baseURL: "https://mas.example", publicHTTPClient: &http.Client{Transport: tokenTransport}}
@@ -749,6 +781,83 @@ func TestWhoAmIRetriesUntilProviderSuccess(t *testing.T) {
 	userID, deviceID, err := s.whoAmI(ctx, "https://mas.example", "access")
 	if err != nil || userID != "@agent:telecrypt.io" || deviceID != "DEVICE-12345" || transport.calls != 7 {
 		t.Fatalf("whoami result = %q, %q, %v, calls = %d", userID, deviceID, err, transport.calls)
+	}
+}
+
+func TestWhoAmIStopsRetryingWhenCallerDeadlineExpires(t *testing.T) {
+	transport := &eventuallyReadyIdentityTransport{transient: 100}
+	s := &session{
+		baseURL:          "https://mas.example",
+		publicHTTPClient: &http.Client{Transport: transport},
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+
+	_, _, err := s.whoAmI(ctx, "https://mas.example", "access")
+	if !errors.Is(err, context.DeadlineExceeded) || registrationfailure.Code(err) != "identity/timeout" {
+		t.Fatalf("whoami error = %v, want identity/timeout wrapping deadline", err)
+	}
+	if transport.calls == 0 {
+		t.Fatal("whoami did not issue an initial request")
+	}
+}
+
+func TestWhoAmIRetryDelayIsCapped(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		transport := &timedIdentityTransport{}
+		s := &session{
+			baseURL:          "https://mas.example",
+			publicHTTPClient: &http.Client{Transport: transport},
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		_, _, err := s.whoAmI(ctx, "https://mas.example", "access")
+		if !errors.Is(err, context.DeadlineExceeded) || registrationfailure.Code(err) != "identity/timeout" {
+			t.Fatalf("whoami error = %v, want identity/timeout wrapping deadline", err)
+		}
+		if transport.calls < 3 {
+			t.Fatalf("whoami calls = %d, want enough retries to reach capped backoff", transport.calls)
+		}
+		for i := 1; i < len(transport.times); i++ {
+			if got := transport.times[i].Sub(transport.times[i-1]); got > identityRetryMaxDelay {
+				t.Fatalf("retry delay %s exceeded cap %s", got, identityRetryMaxDelay)
+			}
+		}
+		if got := transport.times[len(transport.times)-1].Sub(transport.times[len(transport.times)-2]); got != identityRetryMaxDelay {
+			t.Fatalf("last retry delay = %s, want capped %s", got, identityRetryMaxDelay)
+		}
+	})
+}
+
+func TestWhoAmIRetriesPerRequestTimeout(t *testing.T) {
+	transport := &timeoutThenSuccessIdentityTransport{}
+	s := &session{
+		baseURL:          "https://mas.example",
+		publicHTTPClient: &http.Client{Transport: transport},
+	}
+
+	userID, deviceID, err := s.whoAmI(context.Background(), "https://mas.example", "access")
+	if err != nil || userID != "@agent:telecrypt.io" || deviceID != "DEVICE-12345" || transport.calls != 2 {
+		t.Fatalf("whoami result = %q, %q, %v, calls = %d", userID, deviceID, err, transport.calls)
+	}
+}
+
+func TestWhoAmIDoesNotRetryUnauthorizedResponse(t *testing.T) {
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+
+	s := &session{baseURL: srv.URL, publicHTTPClient: srv.Client()}
+	_, _, err := s.whoAmI(context.Background(), srv.URL, "access")
+	if registrationfailure.Code(err) != "identity/upstream" {
+		t.Fatalf("whoami error = %v, want identity/upstream", err)
+	}
+	if calls != 1 {
+		t.Fatalf("whoami calls = %d, want one non-retried unauthorized request", calls)
 	}
 }
 

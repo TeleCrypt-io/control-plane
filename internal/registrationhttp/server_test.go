@@ -10,15 +10,19 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"testing/synctest"
+	"time"
 
 	"github.com/TeleCrypt-io/controlplane/internal/agent"
 	"github.com/TeleCrypt-io/controlplane/internal/registrationfailure"
 )
 
 type fakeProvisioner struct {
-	result *agent.Provisioned
-	err    error
-	calls  int
+	result              *agent.Provisioned
+	err                 error
+	calls               int
+	ctx                 context.Context
+	waitForCancellation bool
 }
 
 func TestHandleRegistration_LogsSanitizedProvisioningError(t *testing.T) {
@@ -45,11 +49,65 @@ func TestHandleRegistration_LogsSanitizedProvisioningError(t *testing.T) {
 }
 
 func (f *fakeProvisioner) ProvisionAgent(ctx context.Context) (*agent.Provisioned, error) {
+	f.ctx = ctx
 	f.calls++
+	if f.waitForCancellation {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
 	if f.err != nil {
 		return nil, f.err
 	}
 	return f.result, nil
+}
+
+func TestHandleRegistrationBoundsProvisioningAndMapsDeadline(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		p := &fakeProvisioner{waitForCancellation: true}
+		s := New(p, "https://telecrypt.io/plan")
+		w := httptest.NewRecorder()
+		started := time.Now()
+		s.ServeHTTP(w, httptest.NewRequest("POST", "/agents", nil))
+
+		if p.ctx == nil {
+			t.Fatal("provisioner did not receive a context")
+		}
+		deadline, ok := p.ctx.Deadline()
+		if !ok {
+			t.Fatal("provisioning context has no deadline")
+		}
+		if got := deadline.Sub(started); got != provisioningTimeout {
+			t.Fatalf("provisioning deadline window = %s, want %s", got, provisioningTimeout)
+		}
+		if got := time.Since(started); got != provisioningTimeout {
+			t.Fatalf("provisioning elapsed = %s, want %s", got, provisioningTimeout)
+		}
+		if p.calls != 1 {
+			t.Fatalf("provisioner calls = %d, want one bounded attempt", p.calls)
+		}
+		if w.Code != http.StatusGatewayTimeout {
+			t.Fatalf("status = %d, want %d", w.Code, http.StatusGatewayTimeout)
+		}
+		if strings.Contains(w.Body.String(), "deadline") {
+			t.Fatalf("timeout response leaked internal detail: %s", w.Body.String())
+		}
+	})
+}
+
+func TestHandleRegistrationRetainsCallerCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	p := &fakeProvisioner{waitForCancellation: true}
+	s := New(p, "https://telecrypt.io/plan")
+	w := httptest.NewRecorder()
+	s.ServeHTTP(w, httptest.NewRequest("POST", "/agents", nil).WithContext(ctx))
+
+	if p.calls != 1 || p.ctx == nil || !errors.Is(p.ctx.Err(), context.Canceled) {
+		t.Fatalf("caller cancellation = calls %d, context error %v; want one canceled provisioning call", p.calls, p.ctx.Err())
+	}
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d for caller cancellation", w.Code, http.StatusInternalServerError)
+	}
 }
 
 func TestHandleRegistration_HappyPath(t *testing.T) {

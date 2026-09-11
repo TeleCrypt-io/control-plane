@@ -10,6 +10,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/TeleCrypt-io/controlplane/internal/agent"
 	"github.com/TeleCrypt-io/controlplane/internal/httpdiag"
@@ -29,6 +30,10 @@ type Server struct {
 }
 
 const registrationErrorHeader = "Telecrypt-Registration-Error"
+
+// Keep provisioning below the registration server's 65-second write timeout so a stalled
+// upstream cannot hold a request until the server forcibly closes the connection.
+const provisioningTimeout = 60 * time.Second
 
 func New(p provisioner, planURL string) *Server {
 	s := &Server{
@@ -70,14 +75,20 @@ func (s *Server) handleRegistration(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	result, err := s.provisioner.ProvisionAgent(r.Context())
+	provisioningCtx, cancel := context.WithTimeout(r.Context(), provisioningTimeout)
+	defer cancel()
+	result, err := s.provisioner.ProvisionAgent(provisioningCtx)
 	if err != nil {
 		// The typed error retains a complete sanitized diagnostic for internal logs. Only its
 		// finite code crosses the public boundary.
 		code := registrationfailure.Code(err)
 		w.Header().Set(registrationErrorHeader, code)
 		slog.Error("registration: provisioning failed", "code", code, "error", httpdiag.Sanitize(err.Error()))
-		http.Error(w, "provisioning failed", http.StatusInternalServerError)
+		status := http.StatusInternalServerError
+		if errors.Is(err, context.DeadlineExceeded) {
+			status = http.StatusGatewayTimeout
+		}
+		http.Error(w, "provisioning failed", status)
 		return
 	}
 

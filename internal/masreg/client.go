@@ -92,6 +92,8 @@ const (
 	maxMASDeviceInterval      = 5 * time.Minute
 	maxMASAccessLifetime      = 24 * time.Hour
 	maxMatrixIdentityBytes    = 255
+	identityRetryInitialDelay = 100 * time.Millisecond
+	identityRetryMaxDelay     = 2 * time.Second
 )
 
 // NewClient targets the exact public MAS origin (for example,
@@ -746,10 +748,10 @@ func (s *session) whoAmI(ctx context.Context, homeserver, accessToken string) (s
 	u.RawQuery = ""
 	u.Fragment = ""
 	var retryDiagnostics []error
-	// The caller's context is the only retry deadline. Keep retrying the known-safe
-	// GET transport failures and provider-not-ready responses until the provider
-	// succeeds, returns a non-transient response, or the caller stops the operation.
-	for delay := 100 * time.Millisecond; ; delay *= 2 {
+	// whoami is a safe GET, so transport failures and provider-not-ready responses may be
+	// retried. The caller owns the operation deadline (the public handler supplies the overall
+	// provisioning deadline); this loop does not retry a whole account creation.
+	for delay := identityRetryInitialDelay; ; delay = min(delay*2, identityRetryMaxDelay) {
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
 		if err != nil {
 			return "", "", registrationfailure.Wrap(registrationfailure.StageIdentity, registrationfailure.Invariant(err))
@@ -760,6 +762,10 @@ func (s *session) whoAmI(ctx context.Context, homeserver, accessToken string) (s
 			transportDiagnostic := masRequestError(nil, "identity transport", err, accessToken, homeserver)
 			if ctx.Err() != nil {
 				return "", "", registrationfailure.Wrap(registrationfailure.StageIdentity, errors.Join(ctx.Err(), transportDiagnostic, errors.Join(retryDiagnostics...)))
+			}
+			kind := registrationfailure.Classify(transportDiagnostic)
+			if kind != registrationfailure.KindTransport && kind != registrationfailure.KindTimeout {
+				return "", "", registrationfailure.Wrap(registrationfailure.StageIdentity, transportDiagnostic)
 			}
 			retryDiagnostics = append(retryDiagnostics, transportDiagnostic)
 			if err := waitForContext(ctx, delay); err != nil {
