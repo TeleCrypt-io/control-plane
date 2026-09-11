@@ -30,8 +30,8 @@ The image carries the project `LICENSE` and `NOTICE`. The wheel carries the proj
 notice in its metadata; it has no runtime third-party Python dependencies.
 
 The wheel version must equal the source/image tag. The standalone `telecrypt-synapse` repository
-must update its manifest to consume that exact wheel before building its corresponding exact
-Synapse image. The shared tag is the exact cross-repository release coordinate, not a claim that
+selects an exact wheel when adopting tier-controller changes. A Go-service-only release does not
+require rebuilding Synapse or changing its selected wheel. The shared tag is the exact cross-repository release coordinate, not a claim that
 the GitHub Release distributes the Go services. Deployment
 configuration, credentials, operating procedures, and production acceptance material remain
 private in Harness.
@@ -62,8 +62,8 @@ signed to the private Cashier service, which alone handles checkout, payment web
 mutation, and Dodo customer portal links.
 
 The two test profiles, `telecrypt.io` with `BILLING_ENVIRONMENT=test` during the temporary
-pre-launch acceptance and `stage.telecrypt.io` with `BILLING_ENVIRONMENT=test` after the isolated
-stage environment is activated, visibly render `TEST / SANDBOX — no real charges` on every
+pre-launch acceptance and `stage.telecrypt.io` with `BILLING_ENVIRONMENT=test` on the isolated
+stage environment, visibly render `TEST / SANDBOX — no real charges` on every
 Plan page. The later `telecrypt.io` with `BILLING_ENVIRONMENT=live` profile never renders that
 banner. Payment card data is entered only on the Dodo-hosted checkout or customer-portal page,
 never at TeleCrypt.
@@ -73,7 +73,7 @@ Plan and Janitor accept exactly these three frozen profiles:
 | `SERVER_NAME` | `BILLING_ENVIRONMENT` | Use |
 | --- | --- | --- |
 | `telecrypt.io` | `test` | Temporary v1 acceptance on the production public surface |
-| `stage.telecrypt.io` | `test` | Later isolated test environment |
+| `stage.telecrypt.io` | `test` | Isolated test environment |
 | `telecrypt.io` | `live` | Final launched production |
 
 `SERVER_NAME` owns public, Matrix, and database topology. `BILLING_ENVIRONMENT` is an explicit
@@ -81,7 +81,7 @@ nonsecret input for Plan and Janitor and selects test/live behavior; neither val
 credentials or the other field. Every other server-name, billing-environment, or pair is rejected.
 The public MAS, Registration, and Plan URLs are derived as `/auth`, `/agents`, and `/plan` on the
 backend origin: `https://backend.telecrypt.io` for the production public surface and
-`https://backend.stage.telecrypt.io` for the later stage profile. Registration is topology-only;
+`https://backend.stage.telecrypt.io` for the stage profile. Registration is topology-only;
 Plan and Janitor perform the exact frozen-profile check before billing-sensitive behavior.
 
 Janitor runs one single-flight sweep per invocation and reads Cashier-owned entitlement and identity views through

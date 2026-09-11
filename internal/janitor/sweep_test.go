@@ -3,6 +3,7 @@ package janitor
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -83,6 +84,7 @@ type fakeStore struct {
 	cursor                                        db.DigestCursor
 	found                                         bool
 	identityErr, viewErr, startedErr, finishedErr error
+	cursorReadErr, cursorWriteErr                 error
 	identityCalls                                 int
 	finishedContextCanceled                       bool
 }
@@ -98,9 +100,12 @@ func (s *fakeStore) LockExclusions(context.Context) (map[string]struct{}, error)
 	return s.exclusions, nil
 }
 func (s *fakeStore) JanitorDigestCursor(context.Context) (db.DigestCursor, bool, error) {
-	return s.cursor, s.found, nil
+	return s.cursor, s.found, s.cursorReadErr
 }
 func (s *fakeStore) SetJanitorDigestCursor(_ context.Context, c db.DigestCursor) error {
+	if s.cursorWriteErr != nil {
+		return s.cursorWriteErr
+	}
 	s.cursor, s.found = c, true
 	return nil
 }
@@ -118,9 +123,12 @@ func (s *fakeStore) InsertRunEvent(ctx context.Context, event db.RunEvent) error
 	return nil
 }
 
-type fakeMailer struct{ calls int }
+type fakeMailer struct {
+	calls int
+	err   error
+}
 
-func (m *fakeMailer) Send(context.Context, string, string, string) error { m.calls++; return nil }
+func (m *fakeMailer) Send(context.Context, string, string, string) error { m.calls++; return m.err }
 
 func staleUser(id, username string) masadmin.User {
 	return masadmin.User{ID: id, Username: username, CreatedAt: time.Now().Add(-72 * time.Hour)}
@@ -363,5 +371,71 @@ func TestSweepLockReadbackFailureStopsBeforeLaterMutation(t *testing.T) {
 	}
 	if len(store.events) != 2 || store.events[1].Reason != "lock_readback" {
 		t.Fatalf("events = %#v, want failed lock-readback audit", store.events)
+	}
+}
+
+func TestSweepDigestFailureStillLocksEligibleAccounts(t *testing.T) {
+	for _, failure := range []string{"emails", "cursor", "mail", "cursor advance"} {
+		t.Run(failure, func(t *testing.T) {
+			cause := errors.New("dependency unavailable: password=private-secret")
+			mas := &fakeMAS{users: []masadmin.User{staleUser(testID(1), "free"), staleUser(testID(2), "human")}, emails: []masadmin.UserEmail{{ID: testID(3), UserID: testID(2), CreatedAt: time.Now()}}}
+			store := &fakeStore{}
+			mailer := &fakeMailer{}
+			switch failure {
+			case "emails":
+				mas.listEmailsErr = cause
+			case "cursor":
+				store.cursorReadErr = cause
+			case "mail":
+				mailer.err = cause
+			case "cursor advance":
+				store.cursorWriteErr = cause
+			}
+			err := NewSweeper(mas, store, mailer, testConfig()).Sweep(context.Background())
+			if err == nil || !errors.Is(err, cause) || !strings.Contains(err.Error(), "dependency unavailable") || strings.Contains(err.Error(), "private-secret") {
+				t.Fatalf("Sweep error = %v, want sanitized dependency cause", err)
+			}
+			if mas.lockCalls != 1 || mas.users[0].LockedAt == nil || mas.users[1].LockedAt != nil {
+				t.Fatalf("digest failure changed required locking: calls=%d users=%#v", mas.lockCalls, mas.users)
+			}
+			if len(store.events) != 2 || store.events[1].Status != "failed" || store.events[1].LockedOrWouldLock != 1 || store.events[1].Failures != 1 {
+				t.Fatalf("audit events = %#v, want recorded lock and operational failure", store.events)
+			}
+		})
+	}
+}
+
+func TestSweepPreservesPrimaryAndFinishedAuditErrors(t *testing.T) {
+	for _, operation := range []string{"identity", "started", "view", "users", "lock", "finished"} {
+		t.Run(operation, func(t *testing.T) {
+			cause := errors.New("primary unavailable: password=primary-secret")
+			auditCause := errors.New("audit unavailable: password=audit-secret")
+			mas := &fakeMAS{users: []masadmin.User{staleUser(testID(1), "free")}}
+			store := &fakeStore{finishedErr: auditCause}
+			switch operation {
+			case "identity":
+				store.identityErr = cause
+			case "started":
+				store.startedErr = cause
+			case "view":
+				store.viewErr = cause
+			case "users":
+				mas.listUsersErr = cause
+			case "lock":
+				mas.lockErr = cause
+			case "finished":
+				cause = auditCause
+			}
+			err := NewSweeper(mas, store, &fakeMailer{}, testConfig()).Sweep(context.Background())
+			if err == nil || !errors.Is(err, cause) || !strings.Contains(err.Error(), "unavailable") {
+				t.Fatalf("Sweep error = %v, want primary cause", err)
+			}
+			if operation != "identity" && operation != "started" && !errors.Is(err, auditCause) {
+				t.Fatalf("Sweep error = %v, missing audit cause", err)
+			}
+			if strings.Contains(err.Error(), "primary-secret") || strings.Contains(err.Error(), "audit-secret") {
+				t.Fatalf("Sweep leaked credentials: %v", err)
+			}
+		})
 	}
 }

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/TeleCrypt-io/controlplane/internal/db"
+	"github.com/TeleCrypt-io/controlplane/internal/httpdiag"
 	"github.com/TeleCrypt-io/controlplane/internal/masadmin"
 	"github.com/google/uuid"
 )
@@ -135,12 +136,12 @@ func (s *Sweeper) Sweep(ctx context.Context) error {
 		return err
 	}
 	if err := s.store.VerifyDeploymentIdentity(ctx, s.cfg.ServerName, s.cfg.BillingEnvironment); err != nil {
-		return fmt.Errorf("janitor: deployment identity validation failed")
+		return httpdiag.WrapCause("janitor: deployment identity validation failed", err)
 	}
 	runID := uuid.New()
 	state := &sweepState{runID: runID, notification: "not_attempted"}
 	if err := s.store.InsertRunEvent(ctx, s.startedEvent(runID)); err != nil {
-		return fmt.Errorf("janitor: started audit event failed")
+		return httpdiag.WrapCause("janitor: started audit event failed", err)
 	}
 
 	finish := func(baseErr error) error {
@@ -152,7 +153,7 @@ func (s *Sweeper) Sweep(ctx context.Context) error {
 				reason = "disabled"
 			}
 			if err := s.store.InsertRunEvent(finishCtx, s.finishedEvent(state, "succeeded", "success", reason)); err != nil {
-				return fmt.Errorf("janitor: finished audit event failed")
+				return httpdiag.WrapCause("janitor: finished audit event failed", err)
 			}
 			return nil
 		}
@@ -161,10 +162,7 @@ func (s *Sweeper) Sweep(ctx context.Context) error {
 			reason = "audit"
 		}
 		if err := s.store.InsertRunEvent(finishCtx, s.finishedEvent(state, "failed", "operational_failure", reason)); err != nil {
-			if baseErr != nil {
-				return fmt.Errorf("%v; janitor: finished audit event failed", baseErr)
-			}
-			return fmt.Errorf("janitor: finished audit event failed")
+			return errors.Join(baseErr, httpdiag.WrapCause("janitor: finished audit event failed", err))
 		}
 		return baseErr
 	}
@@ -172,31 +170,31 @@ func (s *Sweeper) Sweep(ctx context.Context) error {
 	exclusions, err := s.store.LockExclusions(ctx)
 	if err != nil {
 		state.fail("entitlement_view", "entitlement_view")
-		return finish(fmt.Errorf("janitor: entitlement view failed"))
+		return finish(httpdiag.WrapCause("janitor: entitlement view failed", err))
 	}
 	state.addLabel("entitlement_view")
 	users, err := s.mas.ListUsers(ctx)
 	if err != nil {
 		state.fail("mas", "mas_users")
-		return finish(fmt.Errorf("janitor: list users failed"))
+		return finish(httpdiag.WrapCause("janitor: list users failed", err))
 	}
 	state.considered = int64(len(users))
 	state.addLabel("mas_users")
-	var emails []masadmin.UserEmail
-	if s.cfg.OwnerEmail != "" {
-		emails, err = s.mas.ListUserEmails(ctx)
-		if err != nil {
-			state.fail("mas", "mas_emails")
-			return finish(fmt.Errorf("janitor: list user emails failed"))
-		}
-		state.addLabel("mas_emails")
-	}
 	if err := s.sweepLocks(ctx, users, exclusions, state); err != nil {
 		return finish(err)
 	}
 	if ctx.Err() != nil {
 		state.fail("cancelled", "cancelled")
-		return finish(fmt.Errorf("janitor: sweep canceled"))
+		return finish(httpdiag.WrapCause("janitor: sweep canceled", ctx.Err()))
+	}
+	var emails []masadmin.UserEmail
+	if s.cfg.OwnerEmail != "" {
+		emails, err = s.mas.ListUserEmails(ctx)
+		if err != nil {
+			state.fail("mas", "mas_emails")
+			return finish(httpdiag.WrapCause("janitor: list user emails failed", err))
+		}
+		state.addLabel("mas_emails")
 	}
 	if err := s.sweepDigest(ctx, users, emails, state); err != nil {
 		reason, label := "notification", "notification"
@@ -206,7 +204,7 @@ func (s *Sweeper) Sweep(ctx context.Context) error {
 			label = failureLabel(operation.reason)
 		}
 		state.fail(reason, label)
-		return finish(fmt.Errorf("janitor: digest failed"))
+		return finish(httpdiag.WrapCause("janitor: digest failed", err))
 	}
 	return finish(nil)
 }
@@ -245,7 +243,7 @@ func (s *Sweeper) sweepLocks(ctx context.Context, users []masadmin.User, exclusi
 	for _, snapshot := range users {
 		if ctx.Err() != nil {
 			state.fail("cancelled", "cancelled")
-			return fmt.Errorf("janitor: sweep canceled")
+			return httpdiag.WrapCause("janitor: sweep canceled", ctx.Err())
 		}
 		mxid := s.mxid(snapshot.Username)
 		if mxid == "" {
@@ -273,7 +271,7 @@ func (s *Sweeper) sweepLocks(ctx context.Context, users []masadmin.User, exclusi
 		if err != nil {
 			state.skipped++
 			state.fail("mas", "candidate_recheck")
-			return fmt.Errorf("janitor: candidate recheck failed")
+			return httpdiag.WrapCause("janitor: candidate recheck failed", err)
 		}
 		currentMXID := s.mxid(current.Username)
 		if current.ID != snapshot.ID || currentMXID == "" || currentMXID != mxid || current.CreatedAt.IsZero() || !current.CreatedAt.Equal(snapshot.CreatedAt) {
@@ -293,7 +291,7 @@ func (s *Sweeper) sweepLocks(ctx context.Context, users []masadmin.User, exclusi
 		if err != nil {
 			state.skipped++
 			state.fail("mas", "candidate_recheck")
-			return fmt.Errorf("janitor: candidate email recheck failed")
+			return httpdiag.WrapCause("janitor: candidate email recheck failed", err)
 		}
 		if hasEmail {
 			state.skipped++
@@ -301,17 +299,23 @@ func (s *Sweeper) sweepLocks(ctx context.Context, users []masadmin.User, exclusi
 		}
 		if err := s.mas.LockUser(ctx, current.ID); err != nil {
 			state.fail("lock", "lock")
-			return fmt.Errorf("janitor: account lock failed")
+			return httpdiag.WrapCause("janitor: account lock failed", err)
 		}
 		locked, err := s.mas.GetUser(ctx, current.ID)
 		if err != nil || locked.ID != current.ID || locked.Username != current.Username || !locked.CreatedAt.Equal(current.CreatedAt) || locked.LockedAt == nil {
 			state.fail("lock_readback", "lock_readback")
-			return fmt.Errorf("janitor: account lock readback failed")
+			if err != nil {
+				return httpdiag.WrapCause("janitor: account lock readback failed", err)
+			}
+			return fmt.Errorf("janitor: account lock readback returned inconsistent state")
 		}
 		postEmail, err := s.mas.HasUserEmail(ctx, current.ID)
 		if err != nil || postEmail {
 			state.fail("lock_readback", "lock_readback")
-			return fmt.Errorf("janitor: account lock email readback failed")
+			if err != nil {
+				return httpdiag.WrapCause("janitor: account lock email readback failed", err)
+			}
+			return fmt.Errorf("janitor: account lock email readback found an email")
 		}
 		state.locked++
 		state.addLabel("lock")
@@ -325,7 +329,7 @@ func (s *Sweeper) sweepDigest(ctx context.Context, users []masadmin.User, emails
 	}
 	cursor, found, err := s.store.JanitorDigestCursor(ctx)
 	if err != nil {
-		return &operationError{reason: "database", err: fmt.Errorf("digest cursor read failed")}
+		return &operationError{reason: "database", err: httpdiag.WrapCause("digest cursor read failed", err)}
 	}
 	if !found {
 		cursor = db.DigestCursor{CreatedAt: time.Unix(0, 0).UTC()}
@@ -386,7 +390,7 @@ func (s *Sweeper) sweepDigest(ctx context.Context, users []masadmin.User, emails
 	if len(candidates) == 0 {
 		if high.ID != "" {
 			if err := s.store.SetJanitorDigestCursor(ctx, db.DigestCursor{CreatedAt: high.CreatedAt, EmailID: high.ID}); err != nil {
-				return &operationError{reason: "database", err: fmt.Errorf("digest cursor advance failed")}
+				return &operationError{reason: "database", err: httpdiag.WrapCause("digest cursor advance failed", err)}
 			}
 		}
 		return nil
@@ -399,13 +403,13 @@ func (s *Sweeper) sweepDigest(ctx context.Context, users []masadmin.User, emails
 	}
 	if err := s.mailer.Send(ctx, s.cfg.OwnerEmail, fmt.Sprintf("TeleCrypt.io: %d new sign-up(s) awaiting review", len(candidates)), body.String()); err != nil {
 		state.notification = "failed"
-		return &operationError{reason: "notification", err: fmt.Errorf("notification delivery failed")}
+		return &operationError{reason: "notification", err: httpdiag.WrapCause("notification delivery failed", err)}
 	}
 	state.notification = "succeeded"
 	state.addLabel("notification")
 	if high.ID != "" {
 		if err := s.store.SetJanitorDigestCursor(ctx, db.DigestCursor{CreatedAt: high.CreatedAt, EmailID: high.ID}); err != nil {
-			return &operationError{reason: "database", err: fmt.Errorf("digest cursor advance failed")}
+			return &operationError{reason: "database", err: httpdiag.WrapCause("digest cursor advance failed", err)}
 		}
 	}
 	return nil
