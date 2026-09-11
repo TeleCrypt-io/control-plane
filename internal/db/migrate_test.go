@@ -88,10 +88,10 @@ func TestValidateJanitorMigrationNamesRequiresFrozenStream(t *testing.T) {
 		names []string
 		valid bool
 	}{
-		{name: "exact stream", names: []string{janitorDigestCursorMigration, janitorRunEventsMigration}, valid: true},
-		{name: "extra migration", names: []string{janitorDigestCursorMigration, janitorRunEventsMigration, "0003_extra.sql"}},
+		{name: "exact stream", names: expectedJanitorMigrationNames, valid: true},
+		{name: "extra migration", names: []string{janitorDigestCursorMigration, janitorRunEventsMigration, janitorRemoveDryRunMigration, "0004_extra.sql"}},
 		{name: "renamed migration", names: []string{janitorDigestCursorMigration, "0002_renamed.sql"}},
-		{name: "missing migration", names: []string{janitorDigestCursorMigration}},
+		{name: "missing migration", names: []string{janitorDigestCursorMigration, janitorRunEventsMigration}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if (validateJanitorMigrationNames(tc.names) == nil) != tc.valid {
@@ -210,12 +210,26 @@ func TestMigrateUsesFreshJanitorSchema(t *testing.T) {
 			t.Errorf("expected table %q after Migrate", table)
 		}
 	}
+	var dryRunExists bool
+	if err := pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema = 'janitor' AND table_name = 'run_events' AND column_name = 'dry_run')`).Scan(&dryRunExists); err != nil {
+		t.Fatalf("check historical dry_run column: %v", err)
+	}
+	if !dryRunExists {
+		t.Fatal("historical dry_run column was removed from Janitor audit table")
+	}
+	var dryRunDefault *string
+	if err := pool.QueryRow(ctx, `SELECT column_default FROM information_schema.columns WHERE table_schema = 'janitor' AND table_name = 'run_events' AND column_name = 'dry_run'`).Scan(&dryRunDefault); err != nil {
+		t.Fatalf("check historical dry_run default: %v", err)
+	}
+	if dryRunDefault == nil || !strings.Contains(strings.ToLower(*dryRunDefault), "false") {
+		t.Fatalf("dry_run default = %v, want false", dryRunDefault)
+	}
 	var migrationCount int
 	if err := pool.QueryRow(ctx, `SELECT pg_catalog.count(*) FROM janitor.schema_migrations`).Scan(&migrationCount); err != nil {
 		t.Fatalf("count migrations: %v", err)
 	}
-	if migrationCount != 2 {
-		t.Fatalf("migration count = %d, want 2", migrationCount)
+	if migrationCount != 3 {
+		t.Fatalf("migration count = %d, want 3", migrationCount)
 	}
 	if err := Migrate(ctx, pool); err != nil {
 		t.Fatalf("second Migrate: %v", err)

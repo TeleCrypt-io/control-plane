@@ -25,11 +25,13 @@ const (
 	janitorRunEventsTable        = "run_events"
 	janitorDigestCursorMigration = "0001_janitor_digest_cursor.sql"
 	janitorRunEventsMigration    = "0002_janitor_run_events.sql"
+	janitorRemoveDryRunMigration = "0003_remove_dry_run.sql"
 )
 
 var expectedJanitorMigrationNames = []string{
 	janitorDigestCursorMigration,
 	janitorRunEventsMigration,
+	janitorRemoveDryRunMigration,
 }
 
 type janitorRelation struct {
@@ -256,7 +258,7 @@ func loadMigrations() ([]migration, error) {
 
 func validateJanitorMigrationNames(names []string) error {
 	if !reflect.DeepEqual(names, expectedJanitorMigrationNames) {
-		return fmt.Errorf("Janitor migration namespace must contain only the exact ordered 0001 and 0002 migrations")
+		return fmt.Errorf("Janitor migration namespace must contain only the exact ordered migrations")
 	}
 	return nil
 }

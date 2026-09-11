@@ -61,26 +61,10 @@ func (c *Config) ValidateRegistration() error {
 	return nil
 }
 
-func loadDryRun() (bool, error) {
-	value, present := os.LookupEnv("JANITOR_DRY_RUN")
-	if !present || value == "" {
-		return false, fmt.Errorf("JANITOR_DRY_RUN must be explicitly set to exactly 0 or 1")
-	}
-	switch value {
-	case "0":
-		return false, nil
-	case "1":
-		return true, nil
-	default:
-		return false, fmt.Errorf("JANITOR_DRY_RUN must be exactly 0 or 1")
-	}
-}
-
 // JanitorConfig is Janitor configuration. Cashier alone writes payment state; Janitor verifies
 // its deployment identity before it reads the two Cashier-owned Janitor views.
 type JanitorConfig struct {
 	BillingEnvironment   string
-	DryRun               bool
 	MASAdminURL          string
 	MASAdminClientID     string
 	MASAdminClientSecret string
@@ -99,20 +83,12 @@ func LoadJanitor() (*JanitorConfig, error) {
 	if err != nil {
 		return nil, err
 	}
-	dryRun, err := loadDryRun()
-	if err != nil {
-		return nil, err
-	}
-	if (billingEnvironment == "test") != dryRun {
-		return nil, fmt.Errorf("JANITOR_DRY_RUN must be 1 for BILLING_ENVIRONMENT=test and 0 for BILLING_ENVIRONMENT=live")
-	}
 	databaseIdentity, err := expectedDatabaseIdentity(serverName)
 	if err != nil {
 		return nil, err
 	}
 	c := &JanitorConfig{
 		BillingEnvironment:   billingEnvironment,
-		DryRun:               dryRun,
 		MASAdminURL:          masAdminURL,
 		MASAdminClientID:     os.Getenv("MAS_ADMIN_CLIENT_ID"),
 		MASAdminClientSecret: os.Getenv("MAS_ADMIN_CLIENT_SECRET"),
@@ -144,13 +120,14 @@ func LoadJanitor() (*JanitorConfig, error) {
 	if err := rejectSurroundingWhitespace(optional); err != nil {
 		return nil, err
 	}
-	if c.DryRun {
-		for _, value := range optional {
-			if value.value != "" {
-				return nil, fmt.Errorf("%s must be empty when BILLING_ENVIRONMENT=test", value.name)
-			}
+	mailConfigured := false
+	for _, value := range optional {
+		if value.value != "" {
+			mailConfigured = true
+			break
 		}
-	} else {
+	}
+	if mailConfigured {
 		if err := requireEnvValues([]envValue{
 			{"OWNER_EMAIL", c.OwnerEmail}, {"SMTP_HOST", c.SMTPHost},
 			{"SMTP_USERNAME", c.SMTPUsername}, {"SMTP_PASSWORD", c.SMTPPassword},

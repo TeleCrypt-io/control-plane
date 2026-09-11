@@ -38,17 +38,16 @@ func setRequiredPlanEnv(t *testing.T) {
 func setRequiredJanitorEnv(t *testing.T) {
 	t.Helper()
 	for key, value := range map[string]string{
-		"JANITOR_DRY_RUN":         "1",
 		"MAS_ADMIN_CLIENT_ID":     testJanitorClientID,
 		"MAS_ADMIN_CLIENT_SECRET": "secret",
 		"JANITOR_DB_URL":          "postgres://stage_telecrypt_janitor_user:secret@db/stage_telecrypt_billing",
 		"SERVER_NAME":             "stage.telecrypt.io",
 		"BILLING_ENVIRONMENT":     "test",
-		"SMTP_HOST":               "",
-		"SMTP_USERNAME":           "",
-		"SMTP_PASSWORD":           "",
-		"SMTP_FROM":               "",
-		"OWNER_EMAIL":             "",
+		"SMTP_HOST":               "smtp.example.test",
+		"SMTP_USERNAME":           "janitor@example.test",
+		"SMTP_PASSWORD":           "smtp-secret",
+		"SMTP_FROM":               "noreply@example.test",
+		"OWNER_EMAIL":             "owner@example.test",
 	} {
 		t.Setenv(key, value)
 	}
@@ -59,7 +58,6 @@ func setLiveJanitorEnv(t *testing.T) {
 	setRequiredJanitorEnv(t)
 	t.Setenv("SERVER_NAME", "telecrypt.io")
 	t.Setenv("BILLING_ENVIRONMENT", "live")
-	t.Setenv("JANITOR_DRY_RUN", "0")
 	t.Setenv("JANITOR_DB_URL", "postgres://telecrypt_janitor_user:secret@db/telecrypt_billing")
 	t.Setenv("SMTP_HOST", "smtp.example.test")
 	t.Setenv("SMTP_USERNAME", "janitor@example.test")
@@ -270,7 +268,7 @@ func TestLoadJanitorUsesExactDatabaseIdentity(t *testing.T) {
 	}
 }
 
-func TestLoadJanitorRequiresCompleteSMTPUnlessDryRun(t *testing.T) {
+func TestLoadJanitorRequiresCompleteSMTP(t *testing.T) {
 	for _, name := range []string{"SMTP_HOST", "SMTP_USERNAME", "SMTP_PASSWORD", "SMTP_FROM"} {
 		t.Run(name, func(t *testing.T) {
 			setLiveJanitorEnv(t)
@@ -289,13 +287,9 @@ func TestLoadJanitorRequiresCompleteSMTPUnlessDryRun(t *testing.T) {
 	for _, name := range []string{"SMTP_HOST", "SMTP_USERNAME", "SMTP_PASSWORD", "SMTP_FROM"} {
 		t.Setenv(name, "")
 	}
-	t.Setenv("JANITOR_DRY_RUN", "1")
-	cfg, err := LoadJanitor()
-	if err != nil {
-		t.Fatalf("LoadJanitor dry run without SMTP: %v", err)
-	}
-	if !cfg.DryRun {
-		t.Fatal("LoadJanitor dry-run configuration did not set DryRun")
+	t.Setenv("OWNER_EMAIL", "")
+	if _, err := LoadJanitor(); err != nil {
+		t.Fatalf("LoadJanitor without optional mail configuration: %v", err)
 	}
 
 	setLiveJanitorEnv(t)
@@ -312,31 +306,8 @@ func TestLoadJanitorRequiresCompleteSMTPUnlessDryRun(t *testing.T) {
 
 	setRequiredJanitorEnv(t)
 	t.Setenv("OWNER_EMAIL", "")
-	t.Setenv("JANITOR_DRY_RUN", "1")
-	if _, err := LoadJanitor(); err != nil {
-		t.Fatalf("LoadJanitor dry run without OWNER_EMAIL: %v", err)
-	}
-}
-
-func TestLoadJanitorRejectsInvalidDryRunValues(t *testing.T) {
-	for _, value := range []string{"", "2", "true", "01", " 1"} {
-		t.Run(value, func(t *testing.T) {
-			setRequiredJanitorEnv(t)
-			t.Setenv("JANITOR_DRY_RUN", value)
-			if _, err := LoadJanitor(); err == nil || !strings.Contains(err.Error(), "JANITOR_DRY_RUN") {
-				t.Fatalf("LoadJanitor error = %v, want JANITOR_DRY_RUN validation error", err)
-			}
-		})
-	}
-}
-
-func TestLoadJanitorRequiresDryRunKeyPresence(t *testing.T) {
-	setRequiredJanitorEnv(t)
-	if err := os.Unsetenv("JANITOR_DRY_RUN"); err != nil {
-		t.Fatalf("unset JANITOR_DRY_RUN: %v", err)
-	}
-	if _, err := LoadJanitor(); err == nil || !strings.Contains(err.Error(), "explicitly set") {
-		t.Fatalf("LoadJanitor error = %v, want missing JANITOR_DRY_RUN rejection", err)
+	if _, err := LoadJanitor(); err == nil || !strings.Contains(err.Error(), "OWNER_EMAIL") {
+		t.Fatalf("LoadJanitor test profile accepted missing OWNER_EMAIL: %v", err)
 	}
 }
 
@@ -398,25 +369,9 @@ func TestLoadJanitorUsesProductionDatabaseIdentity(t *testing.T) {
 	setLiveJanitorEnv(t)
 	t.Setenv("SERVER_NAME", "telecrypt.io")
 	t.Setenv("BILLING_ENVIRONMENT", "live")
-	t.Setenv("JANITOR_DRY_RUN", "0")
 	t.Setenv("JANITOR_DB_URL", "postgres://telecrypt_janitor_user:secret@db/telecrypt_billing")
 	if _, err := LoadJanitor(); err != nil {
 		t.Fatalf("LoadJanitor in production: %v", err)
-	}
-}
-
-func TestLoadJanitorRejectsProductionDryRunBeforeMailConfiguration(t *testing.T) {
-	setRequiredJanitorEnv(t)
-	t.Setenv("SERVER_NAME", "telecrypt.io")
-	t.Setenv("BILLING_ENVIRONMENT", "live")
-	t.Setenv("JANITOR_DB_URL", "postgres://telecrypt_janitor_user:secret@db/telecrypt_billing")
-	t.Setenv("JANITOR_DRY_RUN", "1")
-	for _, name := range []string{"OWNER_EMAIL", "SMTP_HOST", "SMTP_USERNAME", "SMTP_PASSWORD", "SMTP_FROM"} {
-		t.Setenv(name, "")
-	}
-
-	if _, err := LoadJanitor(); err == nil || !strings.Contains(err.Error(), "JANITOR_DRY_RUN") {
-		t.Fatalf("LoadJanitor error = %v, want production JANITOR_DRY_RUN rejection", err)
 	}
 }
 

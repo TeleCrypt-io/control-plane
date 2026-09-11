@@ -127,24 +127,24 @@ func staleUser(id, username string) masadmin.User {
 }
 
 func testConfig() Config {
-	return Config{ServerName: testServerName, BillingEnvironment: "test", DryRun: true}
+	return Config{ServerName: testServerName, BillingEnvironment: "test", OwnerEmail: "owner@example.test"}
 }
 
-func TestSweepUsesOnlyCashierExclusionViewAndWritesExactDryRunAudit(t *testing.T) {
+func TestSweepTestProfileLocksEligibleAccountsAndWritesMutationAudit(t *testing.T) {
 	mas := &fakeMAS{users: []masadmin.User{staleUser(testID(1), "paid"), staleUser(testID(2), "free")}}
 	store := &fakeStore{exclusions: map[string]struct{}{"@paid:" + testServerName: {}}}
 	sweeper := NewSweeper(mas, store, &fakeMailer{}, testConfig())
 	if err := sweeper.Sweep(context.Background()); err != nil {
 		t.Fatalf("Sweep: %v", err)
 	}
-	if mas.lockCalls != 0 {
-		t.Fatalf("dry-run called MAS lock %d times", mas.lockCalls)
+	if mas.lockCalls != 1 {
+		t.Fatalf("test profile MAS lock calls = %d, want one", mas.lockCalls)
 	}
 	if len(store.events) != 2 {
 		t.Fatalf("audit events = %d, want started and finished", len(store.events))
 	}
 	finished := store.events[1]
-	if finished.EventKind != "finished" || finished.Status != "succeeded" || finished.Outcome != "dry_run" || finished.Reason != "would_disable" || finished.LockedOrWouldLock != 1 {
+	if finished.EventKind != "finished" || finished.Status != "succeeded" || finished.Outcome != "success" || finished.Reason != "disabled" || finished.LockedOrWouldLock != 1 {
 		t.Fatalf("finished event = %#v", finished)
 	}
 	if finished.RunID != store.events[0].RunID || finished.EventID == store.events[0].EventID {
@@ -154,6 +154,24 @@ func TestSweepUsesOnlyCashierExclusionViewAndWritesExactDryRunAudit(t *testing.T
 		if label == "@paid:"+testServerName || label == "paid" {
 			t.Fatalf("audit label contains an identifier: %q", label)
 		}
+	}
+}
+
+func TestSweepLocksWithoutOptionalOwnerDigest(t *testing.T) {
+	mas := &fakeMAS{users: []masadmin.User{staleUser(testID(10), "free")}, listEmailsErr: errors.New("mail snapshot unavailable")}
+	store := &fakeStore{exclusions: map[string]struct{}{}}
+	cfg := Config{ServerName: testServerName, BillingEnvironment: "test"}
+	if err := NewSweeper(mas, store, &fakeMailer{}, cfg).Sweep(context.Background()); err != nil {
+		t.Fatalf("Sweep without optional owner digest: %v", err)
+	}
+	if mas.lockCalls != 1 {
+		t.Fatalf("MAS lock calls = %d, want one", mas.lockCalls)
+	}
+	if mas.listEmailCalls != 0 {
+		t.Fatalf("MAS email listing calls = %d, want zero when digest is disabled", mas.listEmailCalls)
+	}
+	if got := store.events[1].Reason; got != "disabled" {
+		t.Fatalf("finished reason = %q, want disabled", got)
 	}
 }
 
@@ -171,15 +189,15 @@ func TestSweepUsesExact48HourLockThreshold(t *testing.T) {
 	if got := store.events[1].LockedOrWouldLock; got != 1 {
 		t.Fatalf("accounts eligible at the 48-hour threshold = %d, want 1", got)
 	}
-	if mas.getUserCalls != 1 || mas.emailChecks != 1 {
-		t.Fatalf("candidate checks = (user=%d, email=%d), want only the account older than 48 hours", mas.getUserCalls, mas.emailChecks)
+	if mas.getUserCalls != 2 || mas.emailChecks != 2 {
+		t.Fatalf("candidate checks = (user=%d, email=%d), want candidate and lock readback for the older account", mas.getUserCalls, mas.emailChecks)
 	}
 }
 
 func TestSweepLiveLocksEligibleUserWithoutUnlockSurface(t *testing.T) {
 	mas := &fakeMAS{users: []masadmin.User{staleUser(testID(3), "free")}}
 	store := &fakeStore{exclusions: map[string]struct{}{}}
-	cfg := Config{ServerName: "telecrypt.io", BillingEnvironment: "live", DryRun: false, OwnerEmail: "owner@example.test"}
+	cfg := Config{ServerName: "telecrypt.io", BillingEnvironment: "live", OwnerEmail: "owner@example.test"}
 	sweeper := NewSweeper(mas, store, &fakeMailer{}, cfg)
 	if err := sweeper.Sweep(context.Background()); err != nil {
 		t.Fatalf("Sweep: %v", err)
@@ -198,10 +216,9 @@ func TestSweepLiveLocksEligibleUserWithoutUnlockSurface(t *testing.T) {
 func TestSweepExcludesFixedMASServiceIdentityOnSupportedServers(t *testing.T) {
 	for _, tc := range []struct {
 		name, server, billing string
-		dryRun                bool
 	}{
 		{name: "live", server: "telecrypt.io", billing: "live"},
-		{name: "stage test", server: testServerName, billing: "test", dryRun: true},
+		{name: "stage test", server: testServerName, billing: "test"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			service := staleUser(testID(1), "cashier-admin")
@@ -209,7 +226,7 @@ func TestSweepExcludesFixedMASServiceIdentityOnSupportedServers(t *testing.T) {
 			similarlyNamed := staleUser(testID(3), "cashier-admin-helper")
 			mas := &fakeMAS{users: []masadmin.User{service, human, similarlyNamed}}
 			store := &fakeStore{exclusions: map[string]struct{}{}}
-			cfg := Config{ServerName: tc.server, BillingEnvironment: tc.billing, DryRun: tc.dryRun, OwnerEmail: "owner@example.test"}
+			cfg := Config{ServerName: tc.server, BillingEnvironment: tc.billing, OwnerEmail: "owner@example.test"}
 
 			if err := NewSweeper(mas, store, &fakeMailer{}, cfg).Sweep(context.Background()); err != nil {
 				t.Fatalf("Sweep: %v", err)
@@ -217,22 +234,12 @@ func TestSweepExcludesFixedMASServiceIdentityOnSupportedServers(t *testing.T) {
 			if service.LockedAt != nil || mas.users[0].LockedAt != nil {
 				t.Fatal("fixed cashier-admin service identity was locked")
 			}
-			if tc.dryRun {
-				if mas.getUserCalls != 2 || mas.emailChecks != 2 {
-					t.Fatalf("dry-run MAS candidate calls = (get=%d, email=%d), want human accounts only", mas.getUserCalls, mas.emailChecks)
-				}
-			} else if mas.getUserCalls != 4 || mas.emailChecks != 4 {
-				t.Fatalf("live MAS candidate calls = (get=%d, email=%d), want human accounts only", mas.getUserCalls, mas.emailChecks)
+			if mas.getUserCalls != 4 || mas.emailChecks != 4 {
+				t.Fatalf("MAS candidate calls = (get=%d, email=%d), want human accounts only", mas.getUserCalls, mas.emailChecks)
 			}
 			finished := store.events[1]
 			if got, want := finished.LockedOrWouldLock, int64(2); got != want {
 				t.Fatalf("locked-or-would-lock = %d, want %d human accounts", got, want)
-			}
-			if tc.dryRun {
-				if mas.lockCalls != 0 {
-					t.Fatalf("dry-run called MAS lock %d times", mas.lockCalls)
-				}
-				return
 			}
 			if mas.lockCalls != 2 {
 				t.Fatalf("MAS lock calls = %d, want two human accounts", mas.lockCalls)
@@ -290,7 +297,7 @@ func TestSweepRequiredAuditWriteFailureIsNonSuccess(t *testing.T) {
 }
 
 func TestSweepRejectsUnsupportedOrMismatchedProfile(t *testing.T) {
-	for _, cfg := range []Config{{ServerName: "preview.telecrypt.io", BillingEnvironment: "test", DryRun: true}, {ServerName: testServerName, BillingEnvironment: "live", DryRun: true}} {
+	for _, cfg := range []Config{{ServerName: "preview.telecrypt.io", BillingEnvironment: "test"}, {ServerName: testServerName, BillingEnvironment: "live"}} {
 		store := &fakeStore{}
 		if err := NewSweeper(&fakeMAS{}, store, &fakeMailer{}, cfg).Sweep(context.Background()); err == nil {
 			t.Fatal("Sweep accepted invalid billing profile")

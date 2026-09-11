@@ -108,7 +108,6 @@ type RunEvent struct {
 	Reason             string
 	ServerName         string
 	BillingEnvironment string
-	DryRun             bool
 	Considered         int64
 	Skipped            int64
 	LockedOrWouldLock  int64
@@ -129,9 +128,6 @@ func validateRunEvent(event RunEvent) error {
 	}
 	if err := ValidateDeploymentProfile(event.ServerName, event.BillingEnvironment); err != nil {
 		return err
-	}
-	if (event.BillingEnvironment == "test") != event.DryRun {
-		return fmt.Errorf("Janitor audit dry-run flag does not match billing environment")
 	}
 	if event.Considered < 0 || event.Skipped < 0 || event.LockedOrWouldLock < 0 || event.Failures < 0 {
 		return fmt.Errorf("Janitor audit aggregates must be nonnegative")
@@ -165,29 +161,17 @@ func validateRunEvent(event RunEvent) error {
 		return fmt.Errorf("invalid Janitor audit event kind")
 	}
 	if event.Status == "succeeded" {
-		if event.Outcome != "dry_run" && event.Outcome != "success" {
+		if event.Outcome != "success" {
 			return fmt.Errorf("invalid Janitor success audit outcome")
 		}
 		if event.Failures != 0 {
 			return fmt.Errorf("successful Janitor audit event must have zero failures")
 		}
-		if event.Reason != "would_disable" && event.Reason != "disabled" && event.Reason != "no_eligible_accounts" {
+		if event.Reason != "disabled" && event.Reason != "no_eligible_accounts" {
 			return fmt.Errorf("invalid Janitor success audit reason")
-		}
-		if event.BillingEnvironment == "test" && event.Outcome != "dry_run" {
-			return fmt.Errorf("test-profile Janitor audit must be dry-run")
-		}
-		if event.BillingEnvironment == "live" && event.Outcome != "success" {
-			return fmt.Errorf("live-profile Janitor audit must be mutation mode")
-		}
-		if event.Outcome == "dry_run" && event.NotificationStatus != "not_attempted" {
-			return fmt.Errorf("dry-run Janitor audit must not attempt notification")
 		}
 		if event.Reason == "no_eligible_accounts" && event.LockedOrWouldLock != 0 {
 			return fmt.Errorf("no-eligible Janitor audit event has a lock count")
-		}
-		if event.Reason == "would_disable" && (event.Outcome != "dry_run" || event.LockedOrWouldLock == 0) {
-			return fmt.Errorf("would-disable Janitor audit event is inconsistent")
 		}
 		if event.Reason == "disabled" && (event.Outcome != "success" || event.LockedOrWouldLock == 0) {
 			return fmt.Errorf("disabled Janitor audit event is inconsistent")
@@ -216,9 +200,9 @@ func (s *Store) InsertRunEvent(ctx context.Context, event RunEvent) error {
 		INSERT INTO janitor.run_events
 		(event_id, run_id, event_kind, status, outcome, reason, server_name, billing_environment,
 		 dry_run, considered, skipped, locked_or_would_lock, failures, notification_status, labels)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, FALSE, $9, $10, $11, $12, $13, $14)`,
 		event.EventID, event.RunID, event.EventKind, event.Status, event.Outcome, event.Reason,
-		event.ServerName, event.BillingEnvironment, event.DryRun, event.Considered, event.Skipped,
+		event.ServerName, event.BillingEnvironment, event.Considered, event.Skipped,
 		event.LockedOrWouldLock, event.Failures, event.NotificationStatus, labels)
 	if err != nil {
 		return fmt.Errorf("insert Janitor audit event: %w", err)

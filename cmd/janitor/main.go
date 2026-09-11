@@ -1,7 +1,6 @@
 // Command janitor is TeleCrypt.io's one-shot maintenance process holding a standing MAS admin
-// credential. Each invocation locks stale unclaimed agent accounts via MAS's admin API and emails
-// the owner a digest of new human sign-ups awaiting review. JANITOR_DRY_RUN=1 logs every action it would
-// take without doing it.
+// credential. Each invocation locks stale unclaimed agent accounts via MAS's admin API and, when
+// configured, emails the owner a digest of new human sign-ups awaiting review.
 //
 // janitor opens NO listening network port of any kind: zero inbound attack surface. This is
 // deliberate — it's the one binary in this repo privileged enough that a listening port on it
@@ -87,7 +86,7 @@ func run() (runErr error) {
 		slog.Error("sweep", "error", httpdiag.Sanitize(err.Error()))
 		return err
 	}
-	slog.Info("janitor sweep complete", "dry_run", cfg.DryRun)
+	slog.Info("janitor sweep complete")
 	return nil
 }
 
@@ -103,7 +102,7 @@ func build(cfg *config.JanitorConfig, store *db.Store) *janitor.Sweeper {
 
 	return janitor.NewSweeper(masClient, store, mailer, janitor.Config{
 		ServerName: cfg.ServerName, BillingEnvironment: cfg.BillingEnvironment,
-		DryRun: cfg.DryRun, OwnerEmail: cfg.OwnerEmail,
+		OwnerEmail: cfg.OwnerEmail,
 	})
 }
 

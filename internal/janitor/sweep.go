@@ -24,7 +24,6 @@ const (
 type Config struct {
 	ServerName         string
 	BillingEnvironment string
-	DryRun             bool
 	OwnerEmail         string
 }
 
@@ -103,7 +102,7 @@ func (s *sweepState) fail(reason, label string) {
 func (s *Sweeper) startedEvent(runID uuid.UUID) db.RunEvent {
 	return db.RunEvent{
 		EventID: uuid.New(), RunID: runID, EventKind: "started", Status: "started", Outcome: "pending", Reason: "pending",
-		ServerName: s.cfg.ServerName, BillingEnvironment: s.cfg.BillingEnvironment, DryRun: s.cfg.DryRun,
+		ServerName: s.cfg.ServerName, BillingEnvironment: s.cfg.BillingEnvironment,
 		NotificationStatus: "not_attempted", Labels: []string{"audit_started"},
 	}
 }
@@ -122,7 +121,7 @@ func (s *Sweeper) finishedEvent(state *sweepState, status, outcome, reason strin
 	}
 	return db.RunEvent{
 		EventID: uuid.New(), RunID: state.runID, EventKind: "finished", Status: status, Outcome: outcome, Reason: reason,
-		ServerName: s.cfg.ServerName, BillingEnvironment: s.cfg.BillingEnvironment, DryRun: s.cfg.DryRun,
+		ServerName: s.cfg.ServerName, BillingEnvironment: s.cfg.BillingEnvironment,
 		Considered: state.considered, Skipped: state.skipped, LockedOrWouldLock: state.locked,
 		Failures: state.failures, NotificationStatus: state.notification, Labels: unique,
 	}
@@ -134,9 +133,6 @@ func (s *Sweeper) finishedEvent(state *sweepState, status, outcome, reason strin
 func (s *Sweeper) Sweep(ctx context.Context) error {
 	if err := db.ValidateDeploymentProfile(s.cfg.ServerName, s.cfg.BillingEnvironment); err != nil {
 		return err
-	}
-	if (s.cfg.BillingEnvironment == "test") != s.cfg.DryRun {
-		return fmt.Errorf("Janitor dry-run mode does not match billing environment")
 	}
 	if err := s.store.VerifyDeploymentIdentity(ctx, s.cfg.ServerName, s.cfg.BillingEnvironment); err != nil {
 		return fmt.Errorf("janitor: deployment identity validation failed")
@@ -153,17 +149,9 @@ func (s *Sweeper) Sweep(ctx context.Context) error {
 		if baseErr == nil && state.failures == 0 {
 			reason := "no_eligible_accounts"
 			if state.locked > 0 {
-				if s.cfg.DryRun {
-					reason = "would_disable"
-				} else {
-					reason = "disabled"
-				}
+				reason = "disabled"
 			}
-			outcome := "success"
-			if s.cfg.DryRun {
-				outcome = "dry_run"
-			}
-			if err := s.store.InsertRunEvent(finishCtx, s.finishedEvent(state, "succeeded", outcome, reason)); err != nil {
+			if err := s.store.InsertRunEvent(finishCtx, s.finishedEvent(state, "succeeded", "success", reason)); err != nil {
 				return fmt.Errorf("janitor: finished audit event failed")
 			}
 			return nil
@@ -194,12 +182,15 @@ func (s *Sweeper) Sweep(ctx context.Context) error {
 	}
 	state.considered = int64(len(users))
 	state.addLabel("mas_users")
-	emails, err := s.mas.ListUserEmails(ctx)
-	if err != nil {
-		state.fail("mas", "mas_emails")
-		return finish(fmt.Errorf("janitor: list user emails failed"))
+	var emails []masadmin.UserEmail
+	if s.cfg.OwnerEmail != "" {
+		emails, err = s.mas.ListUserEmails(ctx)
+		if err != nil {
+			state.fail("mas", "mas_emails")
+			return finish(fmt.Errorf("janitor: list user emails failed"))
+		}
+		state.addLabel("mas_emails")
 	}
-	state.addLabel("mas_emails")
 	if err := s.sweepLocks(ctx, users, exclusions, state); err != nil {
 		return finish(err)
 	}
@@ -308,10 +299,6 @@ func (s *Sweeper) sweepLocks(ctx context.Context, users []masadmin.User, exclusi
 			state.skipped++
 			continue
 		}
-		if s.cfg.DryRun {
-			state.locked++
-			continue
-		}
 		if err := s.mas.LockUser(ctx, current.ID); err != nil {
 			state.fail("lock", "lock")
 			return fmt.Errorf("janitor: account lock failed")
@@ -333,11 +320,8 @@ func (s *Sweeper) sweepLocks(ctx context.Context, users []masadmin.User, exclusi
 }
 
 func (s *Sweeper) sweepDigest(ctx context.Context, users []masadmin.User, emails []masadmin.UserEmail, state *sweepState) error {
-	if s.cfg.DryRun {
-		return nil
-	}
 	if s.cfg.OwnerEmail == "" {
-		return &operationError{reason: "notification", err: fmt.Errorf("owner notification is not configured")}
+		return nil
 	}
 	cursor, found, err := s.store.JanitorDigestCursor(ctx)
 	if err != nil {

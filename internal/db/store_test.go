@@ -26,11 +26,11 @@ func TestValidateDeploymentProfile(t *testing.T) {
 }
 
 func TestValidateRunEventStatesAndLabels(t *testing.T) {
-	base := RunEvent{EventID: uuid.New(), RunID: uuid.New(), ServerName: "stage.telecrypt.io", BillingEnvironment: "test", DryRun: true, NotificationStatus: "not_attempted"}
-	if err := validateRunEvent(RunEvent{EventID: base.EventID, RunID: base.RunID, EventKind: "started", Status: "started", Outcome: "pending", Reason: "pending", ServerName: base.ServerName, BillingEnvironment: base.BillingEnvironment, DryRun: true, NotificationStatus: "not_attempted"}); err != nil {
+	base := RunEvent{EventID: uuid.New(), RunID: uuid.New(), ServerName: "stage.telecrypt.io", BillingEnvironment: "test", NotificationStatus: "not_attempted"}
+	if err := validateRunEvent(RunEvent{EventID: base.EventID, RunID: base.RunID, EventKind: "started", Status: "started", Outcome: "pending", Reason: "pending", ServerName: base.ServerName, BillingEnvironment: base.BillingEnvironment, NotificationStatus: "not_attempted"}); err != nil {
 		t.Fatalf("valid started event: %v", err)
 	}
-	base.EventKind, base.Status, base.Outcome, base.Reason = "finished", "succeeded", "dry_run", "would_disable"
+	base.EventKind, base.Status, base.Outcome, base.Reason = "finished", "succeeded", "success", "disabled"
 	base.LockedOrWouldLock = 1
 	base.Labels = []string{"lock", "audit_finished"}
 	if err := validateRunEvent(base); err != nil {
@@ -46,38 +46,24 @@ func TestValidateRunEventStatesAndLabels(t *testing.T) {
 	}
 }
 
-func TestValidateRunEventBindsSuccessfulOutcomeToBillingProfile(t *testing.T) {
-	base := RunEvent{
-		EventID: uuid.New(), RunID: uuid.New(), EventKind: "finished", Status: "succeeded",
-		ServerName: "stage.telecrypt.io", BillingEnvironment: "test", DryRun: true,
-		Considered: 1, LockedOrWouldLock: 1, NotificationStatus: "not_attempted",
-	}
-	for _, tc := range []struct {
-		name    string
-		outcome string
-		reason  string
-		wantErr bool
+func TestValidateRunEventAllowsMutationForAnyBillingProfile(t *testing.T) {
+	for _, profile := range []struct {
+		server, billing string
 	}{
-		{name: "test dry-run", outcome: "dry_run", reason: "would_disable"},
-		{name: "test mutation", outcome: "success", reason: "disabled", wantErr: true},
+		{server: "stage.telecrypt.io", billing: "test"},
+		{server: "telecrypt.io", billing: "live"},
 	} {
-		t.Run(tc.name, func(t *testing.T) {
-			event := base
-			event.Outcome, event.Reason = tc.outcome, tc.reason
-			if (validateRunEvent(event) != nil) != tc.wantErr {
-				t.Fatalf("validateRunEvent(%#v) error mismatch", event)
+		t.Run(profile.server+"/"+profile.billing, func(t *testing.T) {
+			event := RunEvent{
+				EventID: uuid.New(), RunID: uuid.New(), EventKind: "finished", Status: "succeeded",
+				ServerName: profile.server, BillingEnvironment: profile.billing,
+				Outcome: "success", Reason: "disabled", Considered: 1, LockedOrWouldLock: 1,
+				NotificationStatus: "not_attempted",
+			}
+			if err := validateRunEvent(event); err != nil {
+				t.Fatalf("validateRunEvent(%#v) rejected real sweep: %v", event, err)
 			}
 		})
-	}
-
-	base.ServerName, base.BillingEnvironment, base.DryRun = "telecrypt.io", "live", false
-	base.Outcome, base.Reason = "success", "disabled"
-	if err := validateRunEvent(base); err != nil {
-		t.Fatalf("valid live mutation event rejected: %v", err)
-	}
-	base.Outcome, base.Reason = "dry_run", "would_disable"
-	if err := validateRunEvent(base); err == nil {
-		t.Fatal("live dry-run event accepted")
 	}
 }
 

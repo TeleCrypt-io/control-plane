@@ -15,7 +15,7 @@ small `main` packages in `cmd/`:
 | `agent` | Coordinates Matrix-agent provisioning after a user registers. | No database or MAS-admin credential. |
 | `config` | Loads and validates the narrowly scoped configuration of each executable. | Rejects incomplete or inconsistent runtime configuration. |
 | `db` | Janitor's pre-created private schema and read-only access to Cashier's two Janitor views. | Does not create payments, subscriptions, or provider records. |
-| `janitor` | Runs one database-locked sweep that finds stale unclaimed accounts, locks them through MAS, and sends the owner digest. It never unlocks an account; uncertain lock/readback outcomes fail the run. | No HTTP listener. |
+| `janitor` | Runs one database-locked sweep that finds stale unclaimed accounts, locks them through MAS, and sends the owner digest when mail is configured. It never unlocks an account; uncertain lock/readback outcomes fail the run. | No HTTP listener. |
 | `masadmin` | MAS admin OAuth client used only by Janitor. It retains complete upstream response diagnostics after credential and identity redaction. | Never used by Registration or Plan. |
 | `masreg` | MAS public registration, dynamic-client, and device-OAuth client used by Registration. It retains complete sanitized upstream response diagnostics internally. | Does not use MAS-admin authority or a client secret; public failures cross the HTTP boundary only as a finite stage/kind code. |
 | `registrationhttp` | Registration request parsing and response shaping. | Public surface is limited to the registration endpoint. |

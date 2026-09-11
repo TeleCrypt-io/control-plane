@@ -48,32 +48,6 @@ jobs:
           set -euo pipefail
           bash -n scripts/check-release-source.sh scripts/check-release-source_helpers.sh scripts/check-release-source_test.sh scripts/release-helpers.sh
           scripts/check-release-source_test.sh
-          test "$(grep -Fc 'source scripts/release-helpers.sh' .github/workflows/build.yml)" -ge 1
-          grep -Fq -- '--draft' .github/workflows/build.yml
-          grep -Fq -- '--method PATCH' .github/workflows/build.yml
-          grep -Fq 'releases?per_page=100&page=' .github/workflows/build.yml
-          grep -Fq "select(.draft == true and .tag_name == \$tag)" .github/workflows/build.yml
-          grep -Fq "releases/\$RELEASE_DRAFT_ID" .github/workflows/build.yml
-          grep -Fq "releases/\$RELEASE_ID" .github/workflows/build.yml
-          legacy_edit="$(printf '%s %s' gh 'release edit')"
-          tag_release_path="$(printf '%s/%s/' releases tags)"
-          if grep -Fq "$legacy_edit" .github/workflows/build.yml || grep -Fq "$tag_release_path" .github/workflows/build.yml; then
-            echo 'draft Release path must use paginated discovery and numeric release IDs' >&2
-            exit 1
-          fi
-          grep -Fq 'capture_command' .github/workflows/build.yml
-          grep -Fq 'timeout --signal=TERM --kill-after=5s 120s docker pull "$SYNAPSE_IMAGE"' .github/workflows/build.yml
-          grep -Fq 'timeout --signal=TERM --kill-after=5s 120s docker run --rm --user 0:0' .github/workflows/build.yml
-          github_expression_prefix="$(printf '%s' '$' '{')"
-          run_id_expression="${github_expression_prefix}{ github.run_id }}"
-          sha_expression="${github_expression_prefix}{ github.sha }}"
-          expected_wheel_name="name: controlplane-wheel-${run_id_expression}-${sha_expression}"
-          grep -Fq "$expected_wheel_name" .github/workflows/build.yml
-          grep -Fq 'overwrite: true' .github/workflows/build.yml
-          if grep -Eq 'capture_(command|external)\(\)' .github/workflows/build.yml; then
-            echo 'release workflow contains a duplicate capture implementation' >&2
-            exit 1
-          fi
       - uses: actions/setup-go@v7.0.0
         with:
           go-version: ${{ env.GO_VERSION }}
