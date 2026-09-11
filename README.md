@@ -86,6 +86,9 @@ backend origin: `https://backend.telecrypt.io` for the production public surface
 `https://backend.stage.telecrypt.io` for the stage profile. Registration is topology-only;
 Plan and Janitor perform the exact frozen-profile check before billing-sensitive behavior.
 
+Janitor excludes the fixed `@cashier:<SERVER_NAME>` service account used by Cashier's
+`SYNAPSE_ADMIN_TOKEN`. Other accounts receive the normal eligibility checks.
+
 Janitor runs one single-flight sweep per invocation and reads Cashier-owned entitlement and identity views through
 `JANITOR_DB_URL`, using a separate database credential from Cashier's `CASHIER_DB_URL`. The
 URL must use the exact profile database and Janitor role: `telecrypt.io` uses

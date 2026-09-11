@@ -18,7 +18,7 @@ import (
 
 const (
 	lockAfter             = 48 * time.Hour
-	cashierAdminLocalpart = "cashier-admin"
+	cashierAdminLocalpart = "cashier"
 	auditCleanupTimeout   = 2 * time.Second
 )
 

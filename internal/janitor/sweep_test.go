@@ -229,10 +229,11 @@ func TestSweepExcludesFixedMASServiceIdentityOnSupportedServers(t *testing.T) {
 		{name: "stage test", server: testServerName, billing: "test"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			service := staleUser(testID(1), "cashier-admin")
+			service := staleUser(testID(1), "cashier")
 			human := staleUser(testID(2), "alice")
-			similarlyNamed := staleUser(testID(3), "cashier-admin-helper")
-			mas := &fakeMAS{users: []masadmin.User{service, human, similarlyNamed}}
+			similarlyNamed := staleUser(testID(3), "cashier-helper")
+			oldAssumedName := staleUser(testID(4), "cashier-admin")
+			mas := &fakeMAS{users: []masadmin.User{service, human, similarlyNamed, oldAssumedName}}
 			store := &fakeStore{exclusions: map[string]struct{}{}}
 			cfg := Config{ServerName: tc.server, BillingEnvironment: tc.billing, OwnerEmail: "owner@example.test"}
 
@@ -240,19 +241,19 @@ func TestSweepExcludesFixedMASServiceIdentityOnSupportedServers(t *testing.T) {
 				t.Fatalf("Sweep: %v", err)
 			}
 			if service.LockedAt != nil || mas.users[0].LockedAt != nil {
-				t.Fatal("fixed cashier-admin service identity was locked")
+				t.Fatal("fixed cashier service identity was locked")
 			}
-			if mas.getUserCalls != 4 || mas.emailChecks != 4 {
+			if mas.getUserCalls != 6 || mas.emailChecks != 6 {
 				t.Fatalf("MAS candidate calls = (get=%d, email=%d), want human accounts only", mas.getUserCalls, mas.emailChecks)
 			}
 			finished := store.events[1]
-			if got, want := finished.LockedOrWouldLock, int64(2); got != want {
+			if got, want := finished.LockedOrWouldLock, int64(3); got != want {
 				t.Fatalf("locked-or-would-lock = %d, want %d human accounts", got, want)
 			}
-			if mas.lockCalls != 2 {
-				t.Fatalf("MAS lock calls = %d, want two human accounts", mas.lockCalls)
+			if mas.lockCalls != 3 {
+				t.Fatalf("MAS lock calls = %d, want three human accounts", mas.lockCalls)
 			}
-			if mas.users[1].LockedAt == nil || mas.users[2].LockedAt == nil {
+			if mas.users[1].LockedAt == nil || mas.users[2].LockedAt == nil || mas.users[3].LockedAt == nil {
 				t.Fatal("eligible human accounts were not locked")
 			}
 		})
