@@ -2,9 +2,7 @@
 // credential. Each invocation locks stale unclaimed agent accounts via MAS's admin API and, when
 // configured, emails the owner a digest of new human sign-ups awaiting review.
 //
-// janitor opens NO listening network port of any kind: zero inbound attack surface. This is
-// deliberate — it's the one binary in this repo privileged enough that a listening port on it
-// would matter.
+// Janitor is a one-shot process and opens no listening network port.
 package main
 
 import (

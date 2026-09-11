@@ -84,11 +84,18 @@
               </div>
               <span class="seat-count">{{len .Seats}} attached</span>
             </div>
+            {{if .CanManageAccess}}<p>Lock a member to block access, including existing sessions. Unlock restores access. Their paid seat stays attached.</p>{{end}}
             <ul class="seat-list">
               {{range .Seats}}
               <li>
-                <span>{{.MXID}}</span>
+                <span>{{.MXID}}{{if .AccessState}} <small>{{.AccessState}}</small>{{end}}</span>
+                <div class="actions">
+                {{if $.CanManageAccess}}
+                <button class="btn btn-small" type="button" data-seat-access="lock" data-mxid="{{.MXID}}">Lock</button>
+                <button class="btn btn-small" type="button" data-seat-access="unlock" data-mxid="{{.MXID}}">Unlock</button>
+                {{end}}
                 <button class="btn btn-danger btn-small" type="button" data-remove-seat data-mxid="{{.MXID}}">Remove</button>
+                </div>
               </li>
               {{else}}
               <li class="empty-state">No seats attached yet.</li>

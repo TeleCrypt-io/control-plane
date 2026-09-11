@@ -41,7 +41,7 @@ func (b *countingBody) Read(p []byte) (int, error) {
 func (b *countingBody) Close() error { return nil }
 
 type closeErrorBody struct {
-	reader  io.Reader
+	reader   io.Reader
 	closeErr error
 }
 
@@ -277,8 +277,10 @@ func (f *fakeMASAdmin) server() *httptest.Server {
 	mux.HandleFunc("POST /oauth2/token", f.handleToken)
 	mux.HandleFunc("GET /api/admin/v1/users", f.handleListUsers)
 	mux.HandleFunc("GET /api/admin/v1/users/{id}", f.handleGetUser)
+	mux.HandleFunc("GET /api/admin/v1/users/by-username/{username}", f.handleGetUser)
 	mux.HandleFunc("GET /api/admin/v1/user-emails", f.handleListEmails)
 	mux.HandleFunc("POST /api/admin/v1/users/{id}/lock", f.handleLock)
+	mux.HandleFunc("POST /api/admin/v1/users/{id}/unlock", f.handleLock)
 	return httptest.NewServer(mux)
 }
 
@@ -290,7 +292,7 @@ func (f *fakeMASAdmin) handleGetUser(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	for _, u := range f.users {
-		if u.id != id {
+		if u.id != id && u.username != r.PathValue("username") {
 			continue
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -511,7 +513,9 @@ func (f *fakeMASAdmin) handleLock(w http.ResponseWriter, r *http.Request) {
 	defer f.mu.Unlock()
 	for _, u := range f.users {
 		if u.id == id {
-			if u.lockedAt == nil {
+			if strings.HasSuffix(r.URL.Path, "/unlock") {
+				u.lockedAt = nil
+			} else if u.lockedAt == nil {
 				now := time.Now().UTC()
 				u.lockedAt = &now
 			}
@@ -769,5 +773,34 @@ func TestValidMXIDBoundsTheCompleteIdentity(t *testing.T) {
 	}
 	if ValidMXID("agent+01", "") {
 		t.Fatal("ValidMXID accepted an empty server name")
+	}
+}
+
+func TestManualAccountLockAndUnlockByUsername(t *testing.T) {
+	fake := newFakeMASAdmin("plan-admin", "test-secret")
+	fake.addUser("1", "bot/one", time.Now().Add(-time.Hour), false)
+	srv := fake.server()
+	defer srv.Close()
+	client := NewClient(srv.URL, "plan-admin", "test-secret")
+	user, err := client.GetUserByUsername(t.Context(), "bot/one")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.LockUser(t.Context(), user.ID); err != nil {
+		t.Fatal(err)
+	}
+	locked, err := client.GetUserByUsername(t.Context(), "bot/one")
+	if err != nil || locked.LockedAt == nil {
+		t.Fatalf("locked user = %#v, %v", locked, err)
+	}
+	if err := client.UnlockUser(t.Context(), user.ID); err != nil {
+		t.Fatal(err)
+	}
+	unlocked, err := client.GetUserByUsername(t.Context(), "bot/one")
+	if err != nil || unlocked.LockedAt != nil {
+		t.Fatalf("unlocked user = %#v, %v", unlocked, err)
+	}
+	if err := client.UnlockUser(t.Context(), canonicalTestULID("missing")); !errors.Is(err, ErrUserNotFound) {
+		t.Fatalf("missing unlock = %v", err)
 	}
 }

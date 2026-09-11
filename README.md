@@ -57,7 +57,9 @@ complete, independently verified release.
 ## Browser service boundary
 
 Plan owns the public `/plan` URL, MAS PKCE/OIDC, browser cookies, Origin protection, local MXID
-validation, and the plan UI. It has no Dodo, Synapse-admin, or Postgres credentials. Commands are
+validation, and the plan UI. Paying owners can manually lock/unlock members of their own team;
+Plan verifies the active plan and seat through Cashier, then uses the existing MAS admin client
+credential (`MAS_ADMIN_CLIENT_ID` / `MAS_ADMIN_CLIENT_SECRET`) for the account action. It has no Dodo, Synapse-admin, or Postgres credentials. Commands are
 signed to the private Cashier service, which alone handles checkout, payment webhooks, entitlement
 mutation, and Dodo customer portal links.
 

@@ -9,7 +9,16 @@ and billing-portal actions. MAS embeds this stable URL in its account-management
 `plan_management_iframe_uri`; it also works as a standalone page.
 
 It must not receive Dodo credentials, Dodo webhook secrets, Synapse-admin credentials, or a
-billing database URL.  It calls the private Cashier only through `CashierClient`.
+billing database URL.  It calls the private Cashier through `CashierClient` for billing and team ownership.
+For manual member access, Plan also uses the existing MAS admin credential and internal
+`mas-admin:8081` listener. Every lock/unlock request first obtains Cashier state for the signed-in
+principal and requires an active plan and a target seat in that owner's team. The browser cannot
+supply an owner or MAS user ID. Plan resolves the local Matrix username through MAS and applies
+the reversible account lock. Payment does not automatically unlock members.
+
+MAS locks block existing sessions while locked; unlocking restores those sessions. The account
+lock propagates to Synapse through MAS's provisioning queue, so real acceptance polls existing
+Matrix access for denial and recovery. Plan displays MAS lock state alongside each paid member.
 
 Plan's browser API is rooted at `/api/plan`; `/api/team*` routes are not exposed. The
 current public boundary must preserve this contract: successful plan and seat-state mutations at
@@ -27,7 +36,7 @@ The package owns the public browser flow, MAS OIDC, session cookies, exact-origi
 rendering. An unavailable Cashier client fails closed for authenticated billing views and commands;
 it never falls back to direct Dodo, Synapse, or database access. Cashier action bodies are never
 forwarded to the browser; only the local, structured seat-capacity guidance is rewritten for users.
-Plan rejects requested seat quantities above 1,000.
+
 
 ## Plan UI ownership and release integration
 

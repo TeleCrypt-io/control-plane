@@ -1,6 +1,6 @@
-// Package masadmin is a client for MAS 1.23.0's admin API — janitor's one job that
-// needs a standing MAS admin credential. The paths, authentication, response fields, and
-// pagination below implement MAS's current admin API contract:
+// Package masadmin is a client for MAS 1.23.0's admin API used by Janitor and Plan.
+// The paths, authentication, response fields, and pagination below implement MAS's current
+// admin API contract:
 //
 //   - crates/router/src/endpoints.rs — OAuth2TokenEndpoint's path is "/oauth2/token" (same
 //     no-/auth-prefix convention internal/masreg already uses against the MAS internal origin).
@@ -19,7 +19,7 @@
 //     itself — see user_emails below for email presence.
 //   - crates/handlers/src/admin/v1/users/lock.rs — POST
 //     /api/admin/v1/users/{ulid}/lock changes the reversible account lock. Janitor deliberately
-//     has no unlock capability because MAS cannot prove which actor created a raced lock.
+//     has no unlock capability; Plan exposes manual recovery to the paying team owner.
 //   - crates/handlers/src/admin/v1/user_emails/list.rs — GET /api/admin/v1/user-emails returns
 //     UserEmail resources: {created_at, user_id, email}. Supports filter[user]=<ulid> but is also
 //     listable unfiltered, so ListUserEmails fetches the whole list once per sweep and the caller
@@ -65,10 +65,10 @@ func appendResponseBodyCloseError(result *error, body io.ReadCloser, redactions 
 const listPageSize = 100
 
 const (
-	maxMASIdentifierBytes     = 255
-	maxMASEmailBytes          = 320
-	maxMASTokenBytes          = 8 << 10
-	maxMASTokenLifetime       = 24 * time.Hour
+	maxMASIdentifierBytes = 255
+	maxMASEmailBytes      = 320
+	maxMASTokenBytes      = 8 << 10
+	maxMASTokenLifetime   = 24 * time.Hour
 )
 
 // tokenSafetyMargin keeps a cached token from being handed out so close to its ~300s expiry that
@@ -317,6 +317,23 @@ func (c *Client) GetUser(ctx context.Context, userID string) (User, error) {
 	}, nil
 }
 
+// GetUserByUsername resolves a local Matrix account to its MAS identity and lock state.
+func (c *Client) GetUserByUsername(ctx context.Context, username string) (User, error) {
+	if !validMASUsername(username) {
+		return User{}, fmt.Errorf("masadmin: get user: invalid username")
+	}
+	var out struct {
+		Data resource[userAttrs] `json:"data"`
+	}
+	if err := c.get(ctx, "/api/admin/v1/users/by-username/"+url.PathEscape(username), &out, username); err != nil {
+		return User{}, fmt.Errorf("masadmin: get user by username: %w", err)
+	}
+	if !validMASULID(out.Data.ID) || out.Data.Attributes.Username != username || out.Data.Attributes.CreatedAt.IsZero() {
+		return User{}, fmt.Errorf("masadmin: get user by username response had unexpected identity")
+	}
+	return User{ID: out.Data.ID, Username: out.Data.Attributes.Username, CreatedAt: out.Data.Attributes.CreatedAt, LockedAt: out.Data.Attributes.LockedAt, DeactivatedAt: out.Data.Attributes.DeactivatedAt}, nil
+}
+
 // HasUserEmail checks email presence with MAS's filtered user-emails endpoint. It intentionally
 // fetches only one resource: the caller only needs presence, not the email value.
 func (c *Client) HasUserEmail(ctx context.Context, userID string) (bool, error) {
@@ -348,7 +365,7 @@ func (c *Client) LockUser(ctx context.Context, userID string) error {
 	if !validMASULID(userID) {
 		return fmt.Errorf("masadmin: lock user: invalid user identity")
 	}
-	attrs, err := c.lockUser(ctx, userID)
+	attrs, err := c.changeUserLock(ctx, userID, "lock")
 	if err != nil {
 		return err
 	}
@@ -358,30 +375,45 @@ func (c *Client) LockUser(ctx context.Context, userID string) error {
 	return nil
 }
 
-func (c *Client) lockUser(ctx context.Context, userID string) (attrs userAttrs, resultErr error) {
+// UnlockUser reverses an account lock. Janitor does not call this; recovery is manual.
+func (c *Client) UnlockUser(ctx context.Context, userID string) error {
+	if !validMASULID(userID) {
+		return fmt.Errorf("masadmin: unlock user: invalid user identity")
+	}
+	attrs, err := c.changeUserLock(ctx, userID, "unlock")
+	if err != nil {
+		return err
+	}
+	if attrs.LockedAt != nil {
+		return fmt.Errorf("masadmin: unlock user: response remained locked")
+	}
+	return nil
+}
+
+func (c *Client) changeUserLock(ctx context.Context, userID, action string) (attrs userAttrs, resultErr error) {
 	token, err := c.token(ctx)
 	if err != nil {
 		return userAttrs{}, err
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		c.baseURL+"/api/admin/v1/users/"+url.PathEscape(userID)+"/lock", nil)
+		c.baseURL+"/api/admin/v1/users/"+url.PathEscape(userID)+"/"+action, nil)
 	if err != nil {
-		return userAttrs{}, errors.New("masadmin: create lock request failed")
+		return userAttrs{}, errors.New("masadmin: create " + action + " request failed")
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return userAttrs{}, masadminTransportError("masadmin: lock user", err, c.clientSecret, token, userID)
+		return userAttrs{}, masadminTransportError("masadmin: "+action+" user", err, c.clientSecret, token, userID)
 	}
 	if resp.StatusCode == http.StatusNotFound {
 		body, readErr, closeErr := httpdiag.ReadAndClose(resp.Body, c.clientSecret, token, userID)
-		return userAttrs{}, errors.Join(fmt.Errorf("masadmin: lock user: %w", ErrUserNotFound), httpdiag.NewResponseError("masadmin: lock user not-found response", resp.StatusCode, body, readErr, closeErr, c.clientSecret, token, userID))
+		return userAttrs{}, errors.Join(fmt.Errorf("masadmin: "+action+" user: %w", ErrUserNotFound), httpdiag.NewResponseError("masadmin: "+action+" user not-found response", resp.StatusCode, body, readErr, closeErr, c.clientSecret, token, userID))
 	}
 	if resp.StatusCode != http.StatusOK {
 		description, drainErr := describeError(resp, c.clientSecret, token, userID)
-		statusErr := fmt.Errorf("masadmin: lock user: %s", description)
+		statusErr := fmt.Errorf("masadmin: "+action+" user: %s", description)
 		closeErr := httpdiag.WrapCause("masadmin response body close", resp.Body.Close(), c.clientSecret, token, userID)
 		return userAttrs{}, errors.Join(statusErr, drainErr, closeErr)
 	}
@@ -390,10 +422,10 @@ func (c *Client) lockUser(ctx context.Context, userID string) (attrs userAttrs, 
 		Data resource[userAttrs] `json:"data"`
 	}
 	if err := jsonbody.Decode(resp.Body, &out, c.clientSecret, token, userID); err != nil {
-		return userAttrs{}, fmt.Errorf("masadmin: decode lock user: %w", err)
+		return userAttrs{}, fmt.Errorf("masadmin: decode "+action+" user: %w", err)
 	}
 	if out.Data.ID != userID || !validMASUsername(out.Data.Attributes.Username) || out.Data.Attributes.CreatedAt.IsZero() {
-		return userAttrs{}, fmt.Errorf("masadmin: lock user response had unexpected identity")
+		return userAttrs{}, fmt.Errorf("masadmin: %s user response had unexpected identity", action)
 	}
 	return out.Data.Attributes, nil
 }

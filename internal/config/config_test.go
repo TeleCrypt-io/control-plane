@@ -27,6 +27,8 @@ func setRequiredPlanEnv(t *testing.T) {
 		"SERVER_NAME":                "stage.telecrypt.io",
 		"BILLING_ENVIRONMENT":        "test",
 		"MAS_OIDC_CLIENT_ID":         testPlanClientID,
+		"MAS_ADMIN_CLIENT_ID":        testPlanClientID,
+		"MAS_ADMIN_CLIENT_SECRET":    "admin-test-secret",
 		"MAS_OIDC_CLIENT_SECRET":     "test-secret",
 		"PLAN_SESSION_KEY":           strings.Repeat("s", 32),
 		"PLAN_ASSERTION_PRIVATE_KEY": testPlanPrivateKey(),
@@ -458,5 +460,22 @@ func TestLoadJanitorAllowsSafeDatabaseConnectionOptions(t *testing.T) {
 	t.Setenv("JANITOR_DB_URL", "postgres://stage_telecrypt_janitor_user:secret@db/stage_telecrypt_billing?sslmode=require&connect_timeout=5&application_name=janitor-sweep")
 	if _, err := LoadJanitor(); err != nil {
 		t.Fatalf("LoadJanitor rejected safe query options: %v", err)
+	}
+}
+
+func TestLoadPlanRequiresMASAccountCredential(t *testing.T) {
+	for _, name := range []string{"MAS_ADMIN_CLIENT_ID", "MAS_ADMIN_CLIENT_SECRET"} {
+		t.Run(name, func(t *testing.T) {
+			setRequiredPlanEnv(t)
+			t.Setenv(name, "")
+			if _, err := LoadPlan(); err == nil || !strings.Contains(err.Error(), name) {
+				t.Fatalf("LoadPlan = %v, want missing %s", err, name)
+			}
+		})
+	}
+	setRequiredPlanEnv(t)
+	cfg, err := LoadPlan()
+	if err != nil || cfg.MASAdminURL != "http://mas-admin:8081" || cfg.MASAdminClientID != testPlanClientID || cfg.MASAdminClientSecret != "admin-test-secret" {
+		t.Fatalf("Plan MAS admin configuration = %#v, %v", cfg, err)
 	}
 }

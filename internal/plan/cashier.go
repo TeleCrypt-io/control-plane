@@ -26,7 +26,8 @@ type Plan struct {
 
 // Seat is a Matrix account attached to a plan.
 type Seat struct {
-	MXID string `json:"mxid"`
+	MXID        string `json:"mxid"`
+	AccessState string `json:"-"`
 }
 
 // PlanState is all information the Plan renderer needs for one authenticated principal.

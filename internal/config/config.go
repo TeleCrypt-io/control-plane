@@ -151,6 +151,9 @@ func LoadJanitor() (*JanitorConfig, error) {
 // PlanConfig contains the browser-facing service configuration. It has no payment,
 // Synapse-admin, or database credentials.
 type PlanConfig struct {
+	MASAdminURL             string
+	MASAdminClientID        string
+	MASAdminClientSecret    string
 	BillingEnvironment      string
 	ServerName              string
 	BackendPublicURL        string
@@ -169,6 +172,9 @@ func LoadPlan() (*PlanConfig, error) {
 		return nil, err
 	}
 	c := &PlanConfig{
+		MASAdminURL:             masAdminURL,
+		MASAdminClientID:        os.Getenv("MAS_ADMIN_CLIENT_ID"),
+		MASAdminClientSecret:    os.Getenv("MAS_ADMIN_CLIENT_SECRET"),
 		BillingEnvironment:      billingEnvironment,
 		ServerName:              serverName,
 		BackendPublicURL:        endpoints.origin,
@@ -183,11 +189,15 @@ func LoadPlan() (*PlanConfig, error) {
 		return nil, fmt.Errorf("SESSION_KEY must be unset; use PLAN_SESSION_KEY")
 	}
 	required := []envValue{
+		{"MAS_ADMIN_CLIENT_ID", c.MASAdminClientID}, {"MAS_ADMIN_CLIENT_SECRET", c.MASAdminClientSecret},
 		{"MAS_OIDC_CLIENT_ID", c.MASClientID}, {"MAS_OIDC_CLIENT_SECRET", c.MASClientSecret},
 		{"PLAN_SESSION_KEY", c.PlanSessionKey}, {"PLAN_ASSERTION_PRIVATE_KEY", c.PlanAssertionPrivateKey},
 	}
 	if err := requireEnvValues(required, "missing required env var"); err != nil {
 		return nil, err
+	}
+	if !validMASClientID(c.MASAdminClientID) {
+		return nil, fmt.Errorf("MAS_ADMIN_CLIENT_ID must be a canonical 26-character MAS ULID")
 	}
 	if !validMASClientID(c.MASClientID) {
 		return nil, fmt.Errorf("MAS_OIDC_CLIENT_ID must be a canonical 26-character MAS ULID")

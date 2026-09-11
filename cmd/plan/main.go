@@ -13,6 +13,7 @@ import (
 
 	"github.com/TeleCrypt-io/controlplane/internal/config"
 	"github.com/TeleCrypt-io/controlplane/internal/httpdiag"
+	"github.com/TeleCrypt-io/controlplane/internal/masadmin"
 	"github.com/TeleCrypt-io/controlplane/internal/plan"
 )
 
@@ -47,7 +48,7 @@ func run() error {
 			MASClientID:        cfg.MASClientID,
 			MASClientSecret:    cfg.MASClientSecret,
 			PlanSessionKey:     cfg.PlanSessionKey,
-		}, cashierClient),
+		}, cashierClient, masadmin.NewClient(cfg.MASAdminURL, cfg.MASAdminClientID, cfg.MASAdminClientSecret)),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
 		WriteTimeout:      30 * time.Second,
