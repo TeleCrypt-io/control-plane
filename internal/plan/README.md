@@ -16,9 +16,10 @@ principal and requires an active plan and a target seat in that owner's team. Th
 supply an owner or MAS user ID. Plan resolves the local Matrix username through MAS and applies
 the reversible account lock. Payment does not automatically unlock members.
 
-MAS locks block existing sessions while locked; unlocking restores those sessions. The account
-lock propagates to Synapse through MAS's provisioning queue, so real acceptance polls existing
-Matrix access for denial and recovery. Plan displays MAS lock state alongside each paid member.
+MAS locks block existing sessions while locked; unlocking restores those sessions. Synapse caches
+MAS introspection responses for two minutes, so existing-session denial and recovery can each take
+up to two minutes. The account lock also propagates through MAS's provisioning queue. Real
+acceptance polls existing Matrix access for denial and recovery beyond the cache lifetime. Plan displays MAS lock state alongside each paid member.
 
 Plan's browser API is rooted at `/api/plan`; `/api/team*` routes are not exposed. The
 current public boundary must preserve this contract: successful plan and seat-state mutations at

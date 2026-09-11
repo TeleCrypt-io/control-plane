@@ -84,7 +84,7 @@
               </div>
               <span class="seat-count">{{len .Seats}} attached</span>
             </div>
-            {{if .CanManageAccess}}<p>Lock a member to block access, including existing sessions. Unlock restores access. Their paid seat stays attached.</p>{{end}}
+            {{if .CanManageAccess}}<p>Lock a member to block access, including existing sessions. Unlock restores access. Changes to existing sessions can take up to two minutes. Their paid seat stays attached.</p>{{end}}
             <ul class="seat-list">
               {{range .Seats}}
               <li>

@@ -94,7 +94,7 @@ async function changeSeatAccess(button) {
   button.disabled = true;
   try {
     const r = await command("/api/plan/seats/" + encodeURIComponent(button.dataset.mxid) + "/" + button.dataset.seatAccess, { method: "POST" });
-    if (r.ok) { alert(button.dataset.seatAccess === "lock" ? "Member locked. Access is blocked." : "Member unlocked. Access is restored."); location.reload(); }
+    if (r.ok) { alert(button.dataset.seatAccess === "lock" ? "Member locked." : "Member unlocked."); location.reload(); }
     else alert(await r.text());
   } catch (error) {
     alert(error.message);
