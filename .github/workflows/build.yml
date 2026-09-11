@@ -467,7 +467,7 @@ jobs:
             fi
           }
           docker_command run --detach --name "$registration_name" --publish 127.0.0.1:19009:9009 --env SERVER_NAME=stage.telecrypt.io "$IMAGE_REF" /registration
-          docker_command run --detach --name "$plan_name" --publish 127.0.0.1:19012:9012 --env SERVER_NAME=stage.telecrypt.io --env BILLING_ENVIRONMENT=test --env MAS_OIDC_CLIENT_ID=01J00000000000000000000000 --env MAS_OIDC_CLIENT_SECRET=smoke-secret --env PLAN_SESSION_KEY=ssssssssssssssssssssssssssssssss --env PLAN_ASSERTION_PRIVATE_KEY=AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyB5tVYuj-ZU-UB4sRLoqYunkB-FOuaVvtfg45ELrQSWZA "$IMAGE_REF" /plan
+          docker_command run --detach --name "$plan_name" --publish 127.0.0.1:19012:9012 --env SERVER_NAME=stage.telecrypt.io --env BILLING_ENVIRONMENT=test --env MAS_OIDC_CLIENT_ID=01J00000000000000000000000 --env MAS_OIDC_CLIENT_SECRET=smoke-secret --env MAS_ADMIN_CLIENT_ID=01J00000000000000000000000 --env MAS_ADMIN_CLIENT_SECRET=smoke-admin-secret --env PLAN_SESSION_KEY=ssssssssssssssssssssssssssssssss --env PLAN_ASSERTION_PRIVATE_KEY=AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyB5tVYuj-ZU-UB4sRLoqYunkB-FOuaVvtfg45ELrQSWZA "$IMAGE_REF" /plan
           registration_status=""; registration_curl_status=1
           for attempt in $(seq 1 30); do
             registration_body="$diagnostics_dir/registration-readiness-$attempt.body"
