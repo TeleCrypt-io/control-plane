@@ -108,9 +108,8 @@ The private `cashier` schema and both read-side views must remain owned by the e
 Cashier durably binds both `SERVER_NAME` and the explicit billing environment (`live` or `test`) in
 that identity row. Janitor rejects any server or billing-environment drift before it can sweep.
 
-These migrations intentionally accept only the final schema and exact migration digests. An older
-or incompatible disposable database must be reset and recreated by the operator; no backward
-migration path is provided.
+Supported migration histories upgrade forward in order. Unknown or incompatible history needs
+operator diagnosis before migration continues; no backward migration path is provided.
 
 ## Registration credential contract
 

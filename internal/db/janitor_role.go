@@ -118,9 +118,6 @@ func ValidateJanitorDatabaseContract(ctx context.Context, pool *pgxpool.Pool, ex
 	if err := validateJanitorRelationOwnershipAndACL(ctx, pool, true); err != nil {
 		return err
 	}
-	if err := validateJanitorTableShapes(ctx, pool, map[string]janitorRelation{janitorSchemaMigrationsTable: {kind: "r"}, janitorDigestCursorTable: {kind: "r"}, janitorRunEventsTable: {kind: "r"}}, true); err != nil {
-		return fmt.Errorf("Janitor database contract: %w", err)
-	}
 	if err := validateJanitorCashierACL(ctx, pool, expectedCashierOwner); err != nil {
 		return err
 	}
