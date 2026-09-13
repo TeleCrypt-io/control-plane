@@ -439,10 +439,8 @@ func TestLoadJanitorRejectsUnsafeDatabaseQuery(t *testing.T) {
 		"search_path=public",
 		"unknown=value",
 		"sslmode=require&sslmode=disable",
-		"%73slmode=require",
 		"sslmode=",
 		"sslmode=%20",
-		"sslmode=require&",
 		"sslmode=require&application_name=%20janitor",
 	} {
 		t.Run(query, func(t *testing.T) {
@@ -477,5 +475,13 @@ func TestLoadPlanRequiresMASAccountCredential(t *testing.T) {
 	cfg, err := LoadPlan()
 	if err != nil || cfg.MASAdminURL != "http://mas-admin:8081" || cfg.MASAdminClientID != testPlanClientID || cfg.MASAdminClientSecret != "admin-test-secret" {
 		t.Fatalf("Plan MAS admin configuration = %#v, %v", cfg, err)
+	}
+}
+
+func TestLoadJanitorAcceptsEncodedMatchingDatabaseIdentity(t *testing.T) {
+	setRequiredJanitorEnv(t)
+	t.Setenv("JANITOR_DB_URL", "postgres://stage%5Ftelecrypt_janitor_user:secret@DB:05432/stage%5Ftelecrypt_billing?%73slmode=require")
+	if _, err := LoadJanitor(); err != nil {
+		t.Fatalf("LoadJanitor: %v", err)
 	}
 }

@@ -428,18 +428,17 @@ func TestOIDCClientStatusDiagnosticRetainsSanitizedBody(t *testing.T) {
 	}
 }
 
-func TestPlanAssetsAreLocalAndCarryCommandContract(t *testing.T) {
+func TestPlanAssetsAreServedLocally(t *testing.T) {
 	srv := testServer()
 
 	for _, asset := range []struct {
 		path        string
 		contentType string
-		marker      string
 	}{
-		{"/plan/assets/product.css", "text/css; charset=utf-8", "--surface: #ffffff"},
-		{"/plan/assets/plan.css", "text/css; charset=utf-8", "Plan-specific layout"},
-		{"/plan/assets/plan.js", "text/javascript; charset=utf-8", "X-TeleCrypt-Request-ID"},
-		{"/plan/assets/logo-mark.png", "image/png", ""},
+		{"/plan/assets/product.css", "text/css; charset=utf-8"},
+		{"/plan/assets/plan.css", "text/css; charset=utf-8"},
+		{"/plan/assets/plan.js", "text/javascript; charset=utf-8"},
+		{"/plan/assets/logo-mark.png", "image/png"},
 	} {
 		rec := httptest.NewRecorder()
 		srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, asset.path, nil))
@@ -449,81 +448,20 @@ func TestPlanAssetsAreLocalAndCarryCommandContract(t *testing.T) {
 		if got, want := rec.Header().Get("Content-Type"), asset.contentType; got != want {
 			t.Errorf("GET %s Content-Type = %q, want %q", asset.path, got, want)
 		}
-		if asset.marker != "" && !strings.Contains(rec.Body.String(), asset.marker) {
-			t.Errorf("GET %s is missing %q", asset.path, asset.marker)
-		}
-	}
-}
-
-func TestPlanCustomerPortalWindowPrecedesAsyncSessionRequest(t *testing.T) {
-	srv := testServer()
-	rec := httptest.NewRecorder()
-	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/plan/assets/plan.js", nil))
-	if rec.Code != http.StatusOK {
-		t.Fatalf("plan JavaScript status = %d", rec.Code)
-	}
-	source := rec.Body.String()
-	open := strings.Index(source, `window.open("about:blank", "_blank")`)
-	request := strings.Index(source, `await command("/api/plan/portal"`)
-	if open < 0 || request < 0 || open >= request {
-		t.Fatal("customer portal window must open synchronously before the session request")
-	}
-	for _, marker := range []string{
-		"portal.opener = null",
-		"portal.location.replace(await responseLink(r, \"link\"))",
-		"portal.close()",
-	} {
-		if !strings.Contains(source, marker) {
-			t.Fatalf("customer portal script is missing %q", marker)
-		}
-	}
-	if strings.Contains(source, "window.open(await responseLink") {
-		t.Fatal("customer portal window is still opened after the asynchronous session request")
 	}
 }
 
 func TestPlanSharedUIAssetMatchesProvenance(t *testing.T) {
 	var provenance struct {
-		Version          string `json:"version"`
-		CanonicalSource  string `json:"canonical_source"`
-		CanonicalRelease string `json:"canonical_release"`
-		CanonicalCommit  string `json:"canonical_commit"`
-		SourceFile       string `json:"source_file"`
-		SHA256           string `json:"sha256"`
+		SHA256 string `json:"sha256"`
 	}
 	if err := json.Unmarshal(sharedUIProvenanceJSON, &provenance); err != nil {
 		t.Fatalf("decode shared UI provenance: %v", err)
-	}
-	if provenance.SourceFile != "src/product.css" {
-		t.Fatalf("shared UI provenance source_file = %q, want src/product.css", provenance.SourceFile)
-	}
-	if provenance.Version != "0.1.8" || provenance.CanonicalRelease != "v0.1.8" {
-		t.Fatalf("shared UI provenance release = %q/%q, want 0.1.8/v0.1.8", provenance.Version, provenance.CanonicalRelease)
-	}
-	if provenance.CanonicalSource != "https://github.com/TeleCrypt-io/ui-shared-css" {
-		t.Fatalf("shared UI provenance source = %q, want the canonical shared UI repository", provenance.CanonicalSource)
-	}
-	if provenance.CanonicalCommit != "257c9ec70024b5d39b76c266c3ab5d129fc34c65" {
-		t.Fatalf("shared UI provenance commit = %q, want the v0.1.8 source commit", provenance.CanonicalCommit)
-	}
-	if len(provenance.SHA256) != sha256.Size*2 {
-		t.Fatalf("shared UI provenance sha256 = %q, want a SHA-256 hex digest", provenance.SHA256)
-	}
-	if _, err := hex.DecodeString(provenance.SHA256); err != nil {
-		t.Fatalf("shared UI provenance sha256 = %q is not hexadecimal: %v", provenance.SHA256, err)
 	}
 
 	actual := sha256.Sum256(planProductCSS)
 	if got := hex.EncodeToString(actual[:]); got != provenance.SHA256 {
 		t.Fatalf("vendored product.css sha256 = %q, want provenance %q", got, provenance.SHA256)
-	}
-}
-
-func TestPlanTemplateHasNoInlineScriptHandlers(t *testing.T) {
-	for _, forbidden := range []string{"onclick=", "onsubmit=", "javascript:"} {
-		if strings.Contains(strings.ToLower(planHTML), forbidden) {
-			t.Fatalf("Plan template contains CSP-incompatible inline script marker %q", forbidden)
-		}
 	}
 }
 

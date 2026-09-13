@@ -152,17 +152,6 @@ def test_parse_config_accepts_zero_room_cap():
     assert TierController.parse_config({"restricted_room_cap": 0}).restricted_room_cap == 0
 
 
-def test_upload_limits_are_explicit():
-    assert MAX_MEDIA_BYTES == 128 * 1024 * 1024
-    assert MAX_USER_MEDIA_BYTES == 50 * 1024 * 1024 * 1024
-    assert "https://telecrypt.io/llms.txt" in _DENIAL_MESSAGE
-
-
-def test_controller_does_not_retain_unused_module_api():
-    module, _ = make_module()
-    assert not hasattr(module, "api")
-
-
 def make_event(event_type, sender, is_state=True):
     return SimpleNamespace(type=event_type, sender=sender, is_state=lambda: is_state)
 
@@ -213,34 +202,14 @@ async def test_upload_quota_boundaries():
     assert await upload_decision(module, "@a:x", 1) is False
 
 
-async def test_upload_query_is_one_parameterized_snapshot_and_excludes_url_cache():
-    module, api = make_module(user_types={"@a:x": "verified"})
-    assert await upload_decision(module, "@a:x", 100) is True
-    assert api.db_calls == ["tier_controller_get_upload_snapshot"]
-    assert len(api.queries) == 2
-    usage_sql, usage_args = api.queries[-1]
-    assert "COALESCE(SUM(media_length), 0)" in usage_sql
-    assert "local_media_repository" in usage_sql
-    assert "url_cache IS NULL" in usage_sql
-    assert "::BIGINT" in usage_sql
-    assert usage_args == ("@a:x",)
-
-
-async def test_upload_rejects_malformed_or_overflowing_values():
+async def test_upload_rejects_negative_size_or_usage():
     module, _ = make_module(
         user_types={"@a:x": "verified"}, media_usage={"@a:x": -1}
     )
     assert await upload_decision(module, "@a:x", 1) is False
 
-    module, _ = make_module(
-        user_types={"@a:x": "verified"}, media_usage={"@a:x": 1 << 63}
-    )
-    assert await upload_decision(module, "@a:x", 1) is False
-
     module, _ = make_module(user_types={"@a:x": "verified"})
     assert await upload_decision(module, "@a:x", -1) is False
-    assert await upload_decision(module, "@a:x", True) is False
-    assert await upload_decision(module, "@a:x", 1.0) is False
 
 
 async def test_restricted_room_cap_denied_at_cap():

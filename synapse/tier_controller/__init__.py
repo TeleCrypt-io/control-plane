@@ -35,14 +35,10 @@ BYTES_PER_GIB = 1024**3
 MAX_MEDIA_BYTES = 128 * BYTES_PER_MIB
 MAX_USER_MEDIA_BYTES = 50 * BYTES_PER_GIB
 
-# PostgreSQL's SUM(integer) returns a signed BIGINT. Values outside that range are malformed for
-# this policy even though Python itself can represent arbitrarily large integers.
-_MAX_SIGNED_INTEGER = (1 << 63) - 1
-
 _DENIAL_MESSAGE = (
-    "This account is unverified. Uploads/room creation/encryption require a verified account "
-    "— sign in at https://telecrypt.io with an email address to request verification. "
-    "See https://telecrypt.io/llms.txt"
+    "This account needs a paid team seat for uploads, encryption, and additional rooms. "
+    "Ask your team owner to manage seats on the Plan page, available from https://telecrypt.io. "
+    "See https://telecrypt-io.github.io/llms-authority/llms.txt"
 )
 
 
@@ -147,29 +143,24 @@ class TierController:
             )
             return None, None
 
-        if not isinstance(snapshot, tuple) or len(snapshot) != 2:
-            logger.error("tier_controller: malformed upload policy result, failing closed")
-            return None, None
         return snapshot
 
     @staticmethod
-    def _bounded_nonnegative_integer(value: Any) -> int | None:
-        if type(value) is not int or value < 0 or value > _MAX_SIGNED_INTEGER:
+    def _nonnegative_integer(value: Any) -> int | None:
+        if type(value) is not int or value < 0:
             return None
         return value
 
     async def is_user_allowed_to_upload_media_of_size(self, user_id: str, size: int) -> bool:
-        proposed_size = self._bounded_nonnegative_integer(size)
+        proposed_size = self._nonnegative_integer(size)
         if proposed_size is None or proposed_size > MAX_MEDIA_BYTES:
             return False
 
         user_type, current_usage = await self._get_upload_snapshot(user_id)
         if user_type != VERIFIED:
             return False
-        usage = self._bounded_nonnegative_integer(current_usage)
+        usage = self._nonnegative_integer(current_usage)
         if usage is None or usage > MAX_USER_MEDIA_BYTES:
-            return False
-        if usage > _MAX_SIGNED_INTEGER - proposed_size:
             return False
         return usage + proposed_size <= MAX_USER_MEDIA_BYTES
 

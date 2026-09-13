@@ -1,3 +1,11 @@
+// Every command reports a rejected request as well as an HTTP error. Keep retries explicit.
+function reportFailure(action) {
+  return async (...args) => {
+    try { await action(...args); }
+    catch (error) { alert(error.message); }
+  };
+}
+
 async function command(url, o = {}) {
   o.headers = Object.assign({}, o.headers, { "X-TeleCrypt-Request-ID": crypto.randomUUID() });
   return fetch(url, o);
@@ -46,11 +54,7 @@ async function checkout(e) {
     body: JSON.stringify({ quantity: +e.target.quantity.value }),
   });
   if (!r.ok) { alert(await r.text()); return false; }
-  try {
-    location.assign(await responseLink(r, "payment_link"));
-  } catch (error) {
-    alert(error.message);
-  }
+  location.assign(await responseLink(r, "payment_link"));
   return false;
 }
 
@@ -81,13 +85,13 @@ async function changeSeatCount(e) {
   return false;
 }
 
-document.querySelector("#create-plan")?.addEventListener("click", createPlan);
-document.querySelector("#add-seat")?.addEventListener("submit", addSeat);
-document.querySelector("#checkout")?.addEventListener("submit", checkout);
-document.querySelector("#seat-count")?.addEventListener("submit", changeSeatCount);
+document.querySelector("#create-plan")?.addEventListener("click", reportFailure(createPlan));
+document.querySelector("#add-seat")?.addEventListener("submit", reportFailure(addSeat));
+document.querySelector("#checkout")?.addEventListener("submit", reportFailure(checkout));
+document.querySelector("#seat-count")?.addEventListener("submit", reportFailure(changeSeatCount));
 document.querySelector("#open-portal")?.addEventListener("click", openPortal);
 document.querySelectorAll("[data-remove-seat]").forEach((button) => {
-  button.addEventListener("click", () => removeSeat(button.dataset.mxid));
+  button.addEventListener("click", reportFailure(() => removeSeat(button.dataset.mxid)));
 });
 
 async function changeSeatAccess(button) {

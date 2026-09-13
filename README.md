@@ -3,7 +3,7 @@
 Public source for the non-payment control-plane components of a TeleCrypt Matrix deployment:
 
 Current TeleCrypt project facts and decisions are maintained only in the canonical
-[`llms.txt`](https://telecrypt.io/llms.txt); this README documents the components implemented here.
+[`llms.txt`](https://telecrypt-io.github.io/llms-authority/llms.txt); this README documents the components implemented here.
 
 - `registration` provisions Matrix agent accounts without holding a database connection.
 - `janitor` runs a single-flight sweep that locks stale accounts and, when mail is configured, sends owner digests. It never unlocks accounts and reads only the two Cashier-owned Janitor views.
@@ -51,6 +51,10 @@ complete, independently verified release.
   Registration, Janitor, and Plan.
 - `internal/` contains their shared Go implementation. Go deliberately prevents packages below
   `internal/` from being imported by unrelated repositories.
+- `postgresurl/` is the small public connection-input validator shared with Cashier. It checks
+  one explicit target and supported options before pgx; each service retains its own
+  database/role/profile/schema policy. Standard URL escaping, DNS spelling and numeric port
+  spelling are accepted. Cashier pins this package by immutable commit.
 - `synapse/tier_controller/` contains the public Python package released as the exact wheel for
   `telecrypt-synapse`; it is not copied into the Controlplane container image.
 

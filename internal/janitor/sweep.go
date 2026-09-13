@@ -111,20 +111,11 @@ func (s *Sweeper) startedEvent(runID uuid.UUID) db.RunEvent {
 func (s *Sweeper) finishedEvent(state *sweepState, status, outcome, reason string) db.RunEvent {
 	labels := append([]string(nil), state.labels...)
 	labels = append(labels, "audit_finished")
-	seen := make(map[string]struct{}, len(labels))
-	unique := labels[:0]
-	for _, label := range labels {
-		if _, exists := seen[label]; exists {
-			continue
-		}
-		seen[label] = struct{}{}
-		unique = append(unique, label)
-	}
 	return db.RunEvent{
 		EventID: uuid.New(), RunID: state.runID, EventKind: "finished", Status: status, Outcome: outcome, Reason: reason,
 		ServerName: s.cfg.ServerName, BillingEnvironment: s.cfg.BillingEnvironment,
 		Considered: state.considered, Skipped: state.skipped, LockedOrWouldLock: state.locked,
-		Failures: state.failures, NotificationStatus: state.notification, Labels: unique,
+		Failures: state.failures, NotificationStatus: state.notification, Labels: labels,
 	}
 }
 
