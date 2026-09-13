@@ -36,8 +36,9 @@ MAX_MEDIA_BYTES = 128 * BYTES_PER_MIB
 MAX_USER_MEDIA_BYTES = 50 * BYTES_PER_GIB
 
 _DENIAL_MESSAGE = (
-    "This account needs a paid team seat for uploads, encryption, and additional rooms. "
-    "Ask your team owner to manage seats on the Plan page, available from https://telecrypt.io. "
+    "This account needs an active paid team seat for uploads, encryption, and additional rooms. "
+    "Ask your team's paying owner to assign a seat or restore access in Plan at "
+    "https://telecrypt.io/plan. "
     "See https://telecrypt-io.github.io/llms-authority/llms.txt"
 )
 
