@@ -466,8 +466,8 @@ jobs:
               echo 'container logs unavailable' >&2
             fi
           }
-          docker_command run --detach --name "$registration_name" --publish 127.0.0.1:19009:9009 --env SERVER_NAME=stage.telecrypt.io "$IMAGE_REF" /registration
-          docker_command run --detach --name "$plan_name" --publish 127.0.0.1:19012:9012 --env SERVER_NAME=stage.telecrypt.io --env BILLING_ENVIRONMENT=test --env MAS_OIDC_CLIENT_ID=01J00000000000000000000000 --env MAS_OIDC_CLIENT_SECRET=smoke-secret --env MAS_ADMIN_CLIENT_ID=01J00000000000000000000000 --env MAS_ADMIN_CLIENT_SECRET=smoke-admin-secret --env PLAN_SESSION_KEY=ssssssssssssssssssssssssssssssss --env PLAN_ASSERTION_PRIVATE_KEY=AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyB5tVYuj-ZU-UB4sRLoqYunkB-FOuaVvtfg45ELrQSWZA "$IMAGE_REF" /plan
+          docker_command run --detach --network host --name "$registration_name" --env SERVER_NAME=stage.telecrypt.io "$IMAGE_REF" /registration
+          docker_command run --detach --network host --name "$plan_name" --env SERVER_NAME=stage.telecrypt.io --env BILLING_ENVIRONMENT=test --env MAS_OIDC_CLIENT_ID=01J00000000000000000000000 --env MAS_OIDC_CLIENT_SECRET=smoke-secret --env MAS_ADMIN_CLIENT_ID=01J00000000000000000000000 --env MAS_ADMIN_CLIENT_SECRET=smoke-admin-secret --env PLAN_SESSION_KEY=ssssssssssssssssssssssssssssssss --env PLAN_ASSERTION_PRIVATE_KEY=AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyB5tVYuj-ZU-UB4sRLoqYunkB-FOuaVvtfg45ELrQSWZA "$IMAGE_REF" /plan
           registration_status=""; registration_curl_status=1
           for attempt in $(seq 1 30); do
             registration_body="$diagnostics_dir/registration-readiness-$attempt.body"
@@ -475,7 +475,7 @@ jobs:
             set +e
             registration_status="$(curl --no-progress-meter --show-error --connect-timeout 1 --max-time 3 \
               --head --output "$registration_body" --write-out '%{http_code}' \
-              http://127.0.0.1:19009/agents 2>"$registration_stderr")"
+              http://127.0.0.1:9009/agents 2>"$registration_stderr")"
             registration_curl_status=$?
             set -e
             [[ "$registration_curl_status" -eq 0 && "$registration_status" == 405 ]] && break
@@ -496,7 +496,7 @@ jobs:
             set +e
             plan_status="$(curl --no-progress-meter --show-error --connect-timeout 1 --max-time 3 \
               --output "$plan_body" --write-out '%{http_code}' \
-              http://127.0.0.1:19012/plan 2>"$plan_stderr")"
+              http://127.0.0.1:9012/plan 2>"$plan_stderr")"
             plan_curl_status=$?
             set -e
             [[ "$plan_curl_status" -eq 0 && "$plan_status" == 200 ]] && break
