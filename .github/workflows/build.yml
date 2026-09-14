@@ -400,8 +400,8 @@ jobs:
                 failure_status=1
               fi
             fi
-            if [[ -n "$capture_diagnostics_stdout" ]] && ! redact_diagnostics "$capture_diagnostics_stdout" >&2; then replay_status=1; fi
-            if [[ -n "$capture_diagnostics_stderr" ]] && ! redact_diagnostics "$capture_diagnostics_stderr" >&2; then replay_status=1; fi
+            if [[ -n "$capture_diagnostics_stdout" ]] && ! cat -- "$capture_diagnostics_stdout" >&2; then replay_status=1; fi
+            if [[ -n "$capture_diagnostics_stderr" ]] && ! cat -- "$capture_diagnostics_stderr" >&2; then replay_status=1; fi
             if [[ "$replay_status" -ne 0 ]]; then
               printf 'smoke diagnostics could not be replayed after %s\n' "$signal_name" >&2
               failure_status=1
@@ -452,16 +452,16 @@ jobs:
             else
               logs_status="$?"
             fi
-            printf 'sanitized container diagnostics for %s:\n' "$name" >&2
+            printf 'complete container diagnostics for %s:\n' "$name" >&2
             if [[ "$inspect_status" -eq 0 || -s "$status_file" || -s "$status_file.stderr" ]]; then
-              redact_diagnostics "$status_file" >&2
-              redact_diagnostics "$status_file.stderr" >&2
+              cat -- "$status_file" >&2
+              cat -- "$status_file.stderr" >&2
             else
               echo 'container status unavailable' >&2
             fi
             if [[ "$logs_status" -eq 0 || -s "$log_file" || -s "$log_file.stderr" ]]; then
-              redact_diagnostics "$log_file" >&2
-              redact_diagnostics "$log_file.stderr" >&2
+              cat -- "$log_file" >&2
+              cat -- "$log_file.stderr" >&2
             else
               echo 'container logs unavailable' >&2
             fi

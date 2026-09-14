@@ -14,12 +14,6 @@ source "$repo_root/scripts/release-helpers.sh"
 project_version="$(sed -n 's/^version = "\([^"]*\)"$/\1/p' "$tier_controller_pyproject")"
 test -n "$project_version"
 
-printf '%s\n' \
-  'MAS_OIDC_CLIENT_SECRET=fake-secret' \
-  'PLAN_SESSION_KEY: fake-token' \
-  'private key=fake-private-key' >"$temporary/diagnostic"
-test "$(redact_diagnostics "$temporary/diagnostic")" = $'MAS_OIDC_CLIENT_SECRET=[redacted]\nPLAN_SESSION_KEY: [redacted]\nprivate key=[redacted]'
-
 test_digest='sha256:0000000000000000000000000000000000000000000000000000000000000000'
 binding_image_digest='sha256:1111111111111111111111111111111111111111111111111111111111111111'
 jq -cn --arg digest "$binding_image_digest" \

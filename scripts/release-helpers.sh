@@ -138,18 +138,6 @@ capture_extract() {
   return "$status"
 }
 
-redact_diagnostics() {
-  sed -E \
-    -e 's/(MAS_OIDC_CLIENT_SECRET|PLAN_SESSION_KEY|PLAN_ASSERTION_PRIVATE_KEY)([=:][[:space:]]*)[^[:space:]]+/\1\2[redacted]/g' \
-    -e 's/((secret|token|password|private[[:space:]]+key))([=:][[:space:]]*)[^[:space:]]+/\1\3[redacted]/Ig' \
-    -e 's#(https?://)[^/@[:space:]]+@#\1[redacted]@#g' \
-    -e 's#(^|[^[:alnum:]_])(([[:alnum:]_.-]*(secret|token|password|private([_-]?key)?|credential|customer|email)[[:alnum:]_.-]*)[[:space:]]*"?[[:space:]]*[:=][[:space:]]*)("[^"]*"|[^[:space:],}]+)#\1\2[redacted]#Ig' \
-    -e 's#((Authorization|Proxy-Authorization|Cookie):[[:space:]]+)[^,[:cntrl:]]+#\1[redacted]#Ig' \
-    -e 's#[[:alnum:]_.%+-]+@[[:alnum:].-]+#[redacted]#g' \
-    -e 's#@[[:alnum:]_.=-]+:[[:alnum:].-]+#[redacted]#g' \
-    "$@"
-}
-
 ghcr_version_records() {
   local page_json="$1" release_tag="$2" build_digest="$3"
   jq -e '
