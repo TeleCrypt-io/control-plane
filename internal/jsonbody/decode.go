@@ -9,8 +9,6 @@ import (
 	"io"
 	"strconv"
 	"strings"
-
-	"github.com/TeleCrypt-io/controlplane/internal/httpdiag"
 )
 
 var (
@@ -19,9 +17,7 @@ var (
 	ErrTrailingData = errors.New("JSON body contains trailing data")
 )
 
-// DecodeError retains the complete sanitized response input and the underlying read or JSON
-// error. Body is never truncated; callers choose the redactions for values they already know
-// must not appear in diagnostics.
+// DecodeError retains the complete response input and the underlying read or JSON error.
 type DecodeError struct {
 	Body      string
 	cause     error
@@ -41,32 +37,32 @@ func (e *DecodeError) Error() string {
 
 func (e *DecodeError) Unwrap() error { return e.cause }
 
-func newDecodeError(body []byte, cause error, redactions ...string) error {
+func newDecodeError(body []byte, cause error) error {
 	return &DecodeError{
-		Body:      httpdiag.Sanitize(string(body), redactions...),
+		Body:      string(body),
 		cause:     cause,
-		causeText: httpdiag.Sanitize(cause.Error(), redactions...),
+		causeText: cause.Error(),
 	}
 }
 
 // Decode reads the complete response, decodes exactly one JSON value into dst,
 // and rejects any trailing JSON or data.
-func Decode(r io.Reader, dst any, redactions ...string) error {
+func Decode(r io.Reader, dst any) error {
 	body, err := io.ReadAll(r)
 	if err != nil {
-		return newDecodeError(body, err, redactions...)
+		return newDecodeError(body, err)
 	}
 
 	decoder := json.NewDecoder(bytes.NewReader(body))
 	if err := decoder.Decode(dst); err != nil {
-		return newDecodeError(body, err, redactions...)
+		return newDecodeError(body, err)
 	}
 	var trailing any
 	if err := decoder.Decode(&trailing); err != io.EOF {
 		if err == nil {
-			return newDecodeError(body, ErrTrailingData, redactions...)
+			return newDecodeError(body, ErrTrailingData)
 		}
-		return newDecodeError(body, fmt.Errorf("%w: %v", ErrTrailingData, err), redactions...)
+		return newDecodeError(body, fmt.Errorf("%w: %v", ErrTrailingData, err))
 	}
 	return nil
 }

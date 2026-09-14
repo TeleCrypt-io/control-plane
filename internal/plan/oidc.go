@@ -62,21 +62,21 @@ func (c *OIDCClient) ExchangeCode(ctx context.Context, code, verifier string) (a
 	req.SetBasicAuth(c.clientID, c.clientSecret)
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return "", httpdiag.WrapCause("token exchange", err, c.clientSecret, c.clientID, code, verifier, c.redirectURI)
+		return "", httpdiag.WrapCause("token exchange", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		body, readErr, closeErr := httpdiag.ReadAndClose(resp.Body, c.clientSecret, c.clientID, code, verifier, c.redirectURI)
-		return "", httpdiag.NewResponseError("token exchange", resp.StatusCode, body, readErr, closeErr, c.clientSecret, c.clientID, code, verifier, c.redirectURI)
+		body, readErr, closeErr := httpdiag.ReadAndClose(resp.Body)
+		return "", httpdiag.NewResponseError("token exchange", resp.StatusCode, body, readErr, closeErr)
 	}
 	defer func() {
 		if closeErr := resp.Body.Close(); closeErr != nil {
-			resultErr = errors.Join(resultErr, httpdiag.WrapCause("token exchange response body close", closeErr, c.clientSecret, c.clientID, code, verifier, c.redirectURI))
+			resultErr = errors.Join(resultErr, httpdiag.WrapCause("token exchange response body close", closeErr))
 		}
 	}()
 	var out struct {
 		AccessToken string `json:"access_token"`
 	}
-	if err := jsonbody.Decode(resp.Body, &out, c.clientSecret, c.clientID, code, verifier, c.redirectURI); err != nil {
+	if err := jsonbody.Decode(resp.Body, &out); err != nil {
 		return "", fmt.Errorf("token exchange response: %w", err)
 	}
 	if !validOIDCField(out.AccessToken, maxOIDCFieldBytes) {
@@ -93,21 +93,21 @@ func (c *OIDCClient) Username(ctx context.Context, token string) (username strin
 	req.Header.Set("Authorization", "Bearer "+token)
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return "", httpdiag.WrapCause("userinfo", err, c.clientSecret, c.clientID, token)
+		return "", httpdiag.WrapCause("userinfo", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		body, readErr, closeErr := httpdiag.ReadAndClose(resp.Body, c.clientSecret, c.clientID, token)
-		return "", httpdiag.NewResponseError("userinfo", resp.StatusCode, body, readErr, closeErr, c.clientSecret, c.clientID, token)
+		body, readErr, closeErr := httpdiag.ReadAndClose(resp.Body)
+		return "", httpdiag.NewResponseError("userinfo", resp.StatusCode, body, readErr, closeErr)
 	}
 	defer func() {
 		if closeErr := resp.Body.Close(); closeErr != nil {
-			resultErr = errors.Join(resultErr, httpdiag.WrapCause("userinfo response body close", closeErr, c.clientSecret, c.clientID, token))
+			resultErr = errors.Join(resultErr, httpdiag.WrapCause("userinfo response body close", closeErr))
 		}
 	}()
 	var out struct {
 		Username string `json:"username"`
 	}
-	if err := jsonbody.Decode(resp.Body, &out, c.clientSecret, c.clientID, token); err != nil {
+	if err := jsonbody.Decode(resp.Body, &out); err != nil {
 		return "", fmt.Errorf("userinfo response: %w", err)
 	}
 	if !validOIDCField(out.Username, maxOIDCUsernameBytes) {

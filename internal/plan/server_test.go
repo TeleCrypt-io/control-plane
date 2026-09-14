@@ -116,7 +116,7 @@ func TestServerRendersPersistentSandboxBanner(t *testing.T) {
 	}
 }
 
-func TestPlanLogsPrivateCashierFailureWithoutExposingIt(t *testing.T) {
+func TestPlanLogsRawCashierFailureAndKeepsResponseGeneric(t *testing.T) {
 	const privateDetail = "token=fixture-plan-secret"
 	previous := slog.Default()
 	var logs bytes.Buffer
@@ -139,8 +139,8 @@ func TestPlanLogsPrivateCashierFailureWithoutExposingIt(t *testing.T) {
 	if !strings.Contains(logs.String(), "operation=\"load Cashier plan state\"") {
 		t.Fatalf("Cashier operation was not logged: %s", logs.String())
 	}
-	if !strings.Contains(logs.String(), "token=[REDACTED]") || strings.Contains(logs.String(), "fixture-plan-secret") {
-		t.Fatalf("Cashier failure was not sanitized in logs: %s", logs.String())
+	if !strings.Contains(logs.String(), privateDetail) {
+		t.Fatalf("Cashier log omitted complete raw diagnostic: %s", logs.String())
 	}
 }
 
@@ -198,7 +198,7 @@ func TestCallbackRejectsInvalidProviderUsername(t *testing.T) {
 	}
 }
 
-func TestCallbackLogsOAuthExchangeFailureWithoutExposingIt(t *testing.T) {
+func TestCallbackLogsRawOAuthExchangeFailureAndKeepsResponseGeneric(t *testing.T) {
 	previous := slog.Default()
 	var logs bytes.Buffer
 	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
@@ -225,9 +225,8 @@ func TestCallbackLogsOAuthExchangeFailureWithoutExposingIt(t *testing.T) {
 		t.Fatalf("OAuth exchange failure exposed private detail: %q", rec.Body.String())
 	}
 	if !strings.Contains(logs.String(), "operation=\"exchange OAuth code\"") ||
-		!strings.Contains(logs.String(), "[REDACTED]") ||
-		strings.Contains(logs.String(), "fixture-oauth-secret") {
-		t.Fatalf("OAuth exchange failure was not logged safely: %s", logs.String())
+		!strings.Contains(logs.String(), "token=fixture-oauth-secret") {
+		t.Fatalf("OAuth exchange log omitted complete raw diagnostic: %s", logs.String())
 	}
 }
 
@@ -413,7 +412,7 @@ func TestOIDCClientPreservesResponseCloseFailure(t *testing.T) {
 	}
 }
 
-func TestOIDCClientStatusDiagnosticRetainsSanitizedBody(t *testing.T) {
+func TestOIDCClientStatusDiagnosticRetainsRawBody(t *testing.T) {
 	const secret = "oidc-client-secret"
 	client := NewOIDCClient("https://backend.example", "https://mas.example", "client", secret, "https://plan.example/callback")
 	client.httpClient.Transport = roundTripFunc(func(*http.Request) (*http.Response, error) {
@@ -423,8 +422,8 @@ func TestOIDCClientStatusDiagnosticRetainsSanitizedBody(t *testing.T) {
 		}, nil
 	})
 	_, err := client.ExchangeCode(context.Background(), "authorization-code", "verifier")
-	if err == nil || !strings.Contains(err.Error(), "tail") || strings.Contains(err.Error(), secret) {
-		t.Fatalf("OIDC status error = %v, want complete sanitized body", err)
+	if err == nil || !strings.Contains(err.Error(), "provider detail "+secret+" tail") {
+		t.Fatalf("OIDC status error = %v, want complete raw body", err)
 	}
 }
 

@@ -26,11 +26,10 @@ func TestDecodeRejectsTrailingJSONAndData(t *testing.T) {
 	}
 }
 
-func TestDecodeErrorRetainsCompleteSanitizedInput(t *testing.T) {
-	const secret = "body-secret"
-	body := `{"ok":1,"token":"` + secret + `"}{"extra":2}`
+func TestDecodeErrorRetainsCompleteRawInput(t *testing.T) {
+	body := `{"ok":1,"access_token":"fixture-token-value"}{"extra":2}`
 	var got map[string]any
-	err := Decode(strings.NewReader(body), &got, secret)
+	err := Decode(strings.NewReader(body), &got)
 	if !errors.Is(err, ErrTrailingData) {
 		t.Fatalf("Decode() error = %v, want ErrTrailingData", err)
 	}
@@ -38,17 +37,17 @@ func TestDecodeErrorRetainsCompleteSanitizedInput(t *testing.T) {
 	if !errors.As(err, &decodeErr) {
 		t.Fatalf("Decode() error = %T, want *DecodeError", err)
 	}
-	if !strings.Contains(decodeErr.Body, `"extra":2`) || !strings.Contains(decodeErr.Body, "[REDACTED]") || strings.Contains(decodeErr.Body, secret) {
-		t.Fatalf("DecodeError body = %q, want complete sanitized input", decodeErr.Body)
+	if decodeErr.Body != body || !strings.Contains(err.Error(), "fixture-token-value") {
+		t.Fatalf("DecodeError body = %q, want complete raw input %q", decodeErr.Body, body)
 	}
 }
 
 func TestDecodeErrorPreservesReadFailureAndPartialBody(t *testing.T) {
-	const secret = "partial-secret"
+	const partialBody = `{"access_token":"partial-token-value" tail`
 	readErr := errors.New("response read failed")
-	r := &errorReader{data: []byte(`{"token":"` + secret + `" tail`), err: readErr}
+	r := &errorReader{data: []byte(partialBody), err: readErr}
 	var got map[string]string
-	err := Decode(r, &got, secret)
+	err := Decode(r, &got)
 	if !errors.Is(err, readErr) {
 		t.Fatalf("Decode() error = %v, want read failure", err)
 	}
@@ -56,8 +55,8 @@ func TestDecodeErrorPreservesReadFailureAndPartialBody(t *testing.T) {
 	if !errors.As(err, &decodeErr) {
 		t.Fatalf("Decode() error = %T, want *DecodeError", err)
 	}
-	if !strings.Contains(decodeErr.Body, "[REDACTED]") || strings.Contains(decodeErr.Body, secret) {
-		t.Fatalf("DecodeError body = %q, want sanitized partial input", decodeErr.Body)
+	if decodeErr.Body != partialBody {
+		t.Fatalf("DecodeError body = %q, want complete partial input %q", decodeErr.Body, partialBody)
 	}
 	if !strings.Contains(err.Error(), "response read failed") {
 		t.Fatalf("Decode() error = %v, want read detail", err)

@@ -280,8 +280,6 @@ func TestProvisionerValidatesBackendHostAndServerName(t *testing.T) {
 	} {
 		if _, err := NewProvisioner(&fakeMASReg{}, raw, "telecrypt.io"); err == nil {
 			t.Fatalf("accepted unsafe backend URL %q", raw)
-		} else if strings.Contains(err.Error(), "password") || strings.Contains(err.Error(), "secret") {
-			t.Fatalf("backend URL error exposed URL contents: %v", err)
 		}
 	}
 	if _, err := NewProvisioner(&fakeMASReg{}, "https://backend.example", ""); err == nil {

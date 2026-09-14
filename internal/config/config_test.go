@@ -279,9 +279,6 @@ func TestLoadJanitorRequiresCompleteSMTP(t *testing.T) {
 			if err == nil || !strings.Contains(err.Error(), name) {
 				t.Fatalf("LoadJanitor error = %v, want missing %s", err, name)
 			}
-			if strings.Contains(err.Error(), "smtp-secret") {
-				t.Fatalf("LoadJanitor error revealed an SMTP secret: %v", err)
-			}
 		})
 	}
 

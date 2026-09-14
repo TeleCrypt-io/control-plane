@@ -885,15 +885,15 @@ func TestPollDeviceTokenRejectsResponseDrainAndCloseFailures(t *testing.T) {
 	}
 }
 
-func TestUnexpectedStatusRetainsSanitizedCompleteBody(t *testing.T) {
-	secret := "device-token-secret"
+func TestUnexpectedStatusRetainsCompleteRawBody(t *testing.T) {
+	secret := "access_token=device-token-secret"
 	userID := "@customer:telecrypt.io"
 	body := "provider detail " + secret + " " + userID + " tail"
 	resp := &http.Response{StatusCode: http.StatusBadGateway, Body: io.NopCloser(strings.NewReader(body))}
-	err := unexpectedStatus(resp, secret, userID)
+	err := unexpectedStatus(resp)
 	var diagnostic *httpdiag.ResponseError
-	if !errors.As(err, &diagnostic) || diagnostic == nil || !strings.Contains(diagnostic.Body, "tail") || strings.Contains(diagnostic.Body, secret) || strings.Contains(diagnostic.Body, userID) {
-		t.Fatalf("unexpectedStatus error = %v, diagnostic = %#v, want complete sanitized body", err, diagnostic)
+	if !errors.As(err, &diagnostic) || diagnostic == nil || diagnostic.Body != body || !strings.Contains(err.Error(), secret) || !strings.Contains(err.Error(), userID) {
+		t.Fatalf("unexpectedStatus error = %v, diagnostic = %#v, want complete raw body", err, diagnostic)
 	}
 }
 
@@ -995,9 +995,9 @@ func TestSessionReusesPublicHTTPClient(t *testing.T) {
 	}
 }
 
-func TestMASRequestErrorsPreserveSanitizedTransportText(t *testing.T) {
-	const secret = "must-not-escape"
-	detail := strings.Repeat("diagnostic-", 7000) + " password=" + secret + " final-detail"
+func TestMASRequestErrorsPreserveCompleteRawTransportText(t *testing.T) {
+	const secret = "password=must-preserve"
+	detail := strings.Repeat("diagnostic-", 7000) + " " + secret + " final-detail"
 	s := &session{
 		baseURL: "https://mas.example",
 		publicHTTPClient: &http.Client{
@@ -1008,10 +1008,7 @@ func TestMASRequestErrorsPreserveSanitizedTransportText(t *testing.T) {
 	if err == nil {
 		t.Fatal("registerPublicNativeClient returned nil error")
 	}
-	if strings.Contains(err.Error(), secret) {
-		t.Fatalf("registerPublicNativeClient exposed credential: %v", err)
-	}
-	if !strings.Contains(err.Error(), strings.Repeat("diagnostic-", 7000)) || !strings.Contains(err.Error(), "final-detail") {
-		t.Fatalf("registerPublicNativeClient discarded transport diagnostic: %v", err)
+	if !strings.Contains(err.Error(), detail) {
+		t.Fatalf("registerPublicNativeClient did not preserve complete raw transport diagnostic: %v", err)
 	}
 }

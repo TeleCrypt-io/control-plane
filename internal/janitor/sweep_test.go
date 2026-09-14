@@ -393,8 +393,8 @@ func TestSweepDigestFailureStillLocksEligibleAccounts(t *testing.T) {
 				store.cursorWriteErr = cause
 			}
 			err := NewSweeper(mas, store, mailer, testConfig()).Sweep(context.Background())
-			if err == nil || !errors.Is(err, cause) || !strings.Contains(err.Error(), "dependency unavailable") || strings.Contains(err.Error(), "private-secret") {
-				t.Fatalf("Sweep error = %v, want sanitized dependency cause", err)
+			if err == nil || !errors.Is(err, cause) || !strings.Contains(err.Error(), "dependency unavailable: password=private-secret") {
+				t.Fatalf("Sweep error = %v, want complete raw dependency cause", err)
 			}
 			if mas.lockCalls != 1 || mas.users[0].LockedAt == nil || mas.users[1].LockedAt != nil {
 				t.Fatalf("digest failure changed required locking: calls=%d users=%#v", mas.lockCalls, mas.users)
@@ -434,8 +434,11 @@ func TestSweepPreservesPrimaryAndFinishedAuditErrors(t *testing.T) {
 			if operation != "identity" && operation != "started" && !errors.Is(err, auditCause) {
 				t.Fatalf("Sweep error = %v, missing audit cause", err)
 			}
-			if strings.Contains(err.Error(), "primary-secret") || strings.Contains(err.Error(), "audit-secret") {
-				t.Fatalf("Sweep leaked credentials: %v", err)
+			if !strings.Contains(err.Error(), cause.Error()) {
+				t.Fatalf("Sweep error omitted complete raw primary diagnostic %q: %v", cause, err)
+			}
+			if operation != "identity" && operation != "started" && !strings.Contains(err.Error(), auditCause.Error()) {
+				t.Fatalf("Sweep error omitted complete raw audit diagnostic %q: %v", auditCause, err)
 			}
 		})
 	}

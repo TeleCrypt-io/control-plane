@@ -1,15 +1,12 @@
 // Package registrationfailure defines the one bounded failure vocabulary shared by the
-// registration flow and its HTTP boundary. Its Error text retains the complete sanitized
-// underlying diagnostic for internal logs and callers may unwrap it for control flow. External
-// responses use only Code.
+// registration flow and its HTTP boundary. Its Error text retains the complete underlying
+// diagnostic for internal logs; external responses use only Code.
 package registrationfailure
 
 import (
 	"context"
 	"errors"
 	"net"
-
-	"github.com/TeleCrypt-io/controlplane/internal/httpdiag"
 )
 
 type Stage string
@@ -55,7 +52,7 @@ func (e *Error) Error() string {
 	if e.err == nil {
 		return code
 	}
-	detail := httpdiag.Sanitize(e.err.Error())
+	detail := e.err.Error()
 	if detail == "" {
 		return code
 	}
@@ -92,8 +89,8 @@ func WithKind(stage Stage, kind Kind, err error) error {
 }
 
 // Protocol, Invariant, Upstream and Transport mark typed failures at their source. Their Error
-// text retains a complete sanitized cause for internal diagnostics; callers crossing the HTTP
-// boundary must use Code instead.
+// text retains the complete cause for internal diagnostics; callers crossing the HTTP boundary
+// must use Code instead.
 func Protocol(err error) error {
 	if err == nil {
 		return nil
@@ -131,7 +128,7 @@ func (e marked) Error() string {
 	if e.err == nil {
 		return string(e.kind)
 	}
-	detail := httpdiag.Sanitize(e.err.Error())
+	detail := e.err.Error()
 	if detail == "" {
 		return string(e.kind)
 	}

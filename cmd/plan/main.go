@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/TeleCrypt-io/controlplane/internal/config"
-	"github.com/TeleCrypt-io/controlplane/internal/httpdiag"
 	"github.com/TeleCrypt-io/controlplane/internal/masadmin"
 	"github.com/TeleCrypt-io/controlplane/internal/plan"
 )
@@ -26,14 +25,14 @@ func main() {
 func run() error {
 	cfg, err := config.LoadPlan()
 	if err != nil {
-		slog.Error("config", "error", httpdiag.Sanitize(err.Error()))
+		slog.Error("config", "error", err.Error())
 		return err
 	}
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo})))
 
 	cashierClient, err := plan.NewHTTPCashierClient(cfg.CashierInternalURL, cfg.PlanAssertionPrivateKey, nil)
 	if err != nil {
-		slog.Error("cashier client", "error", httpdiag.Sanitize(err.Error()))
+		slog.Error("cashier client", "error", err.Error())
 		return err
 	}
 
@@ -68,14 +67,14 @@ func run() error {
 		if err == nil || errors.Is(err, http.ErrServerClosed) {
 			return nil
 		}
-		slog.Error("server", "error", httpdiag.Sanitize(err.Error()))
+		slog.Error("server", "error", err.Error())
 		stop()
 		return shutdownPlanAfterFailure(srv, err)
 	case <-ctx.Done():
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		if err := shutdownHTTPServer(shutdownCtx, srv); err != nil {
-			slog.Error("shutdown", "error", httpdiag.Sanitize(err.Error()))
+			slog.Error("shutdown", "error", err.Error())
 			return err
 		}
 		return nil
@@ -86,7 +85,7 @@ func shutdownPlanAfterFailure(server *http.Server, serveErr error) error {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := shutdownHTTPServer(shutdownCtx, server); err != nil {
-		slog.Error("shutdown", "error", httpdiag.Sanitize(err.Error()))
+		slog.Error("shutdown", "error", err.Error())
 		return errors.Join(serveErr, err)
 	}
 	return serveErr

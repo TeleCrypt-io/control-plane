@@ -13,7 +13,6 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/TeleCrypt-io/controlplane/internal/httpdiag"
 	"github.com/TeleCrypt-io/controlplane/internal/masadmin"
 	"github.com/google/uuid"
 )
@@ -665,7 +664,7 @@ func logPlanFailure(operation string, err error) {
 	if err == nil {
 		return
 	}
-	slog.Error("plan operation failed", "operation", operation, "detail", httpdiag.Sanitize(err.Error()))
+	slog.Error("plan operation failed", "operation", operation, "detail", err.Error())
 }
 
 type pageData struct {

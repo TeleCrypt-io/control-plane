@@ -89,11 +89,11 @@ func TestCodePreservesStageThroughFormattedWrappers(t *testing.T) {
 	}
 }
 
-func TestErrorRetainsCompleteSanitizedCauseWhileCodeStaysBounded(t *testing.T) {
+func TestErrorRetainsCompleteRawCauseWhileCodeStaysBounded(t *testing.T) {
 	const secret = "access_token=secret-value"
 	err := WithKind(StageDeviceToken, KindProtocol, errors.New(secret+" tail"))
-	if got := err.Error(); !strings.Contains(got, "tail") || strings.Contains(got, "secret-value") {
-		t.Fatalf("typed error = %q, want sanitized complete cause", got)
+	if got := err.Error(); !strings.Contains(got, secret+" tail") {
+		t.Fatalf("typed error = %q, want complete raw cause", got)
 	}
 	if got, want := Code(err), "device_token/protocol"; got != want {
 		t.Fatalf("Code() = %q, want bounded code %q", got, want)

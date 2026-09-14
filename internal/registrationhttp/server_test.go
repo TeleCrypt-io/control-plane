@@ -25,7 +25,7 @@ type fakeProvisioner struct {
 	waitForCancellation bool
 }
 
-func TestHandleRegistration_LogsSanitizedProvisioningError(t *testing.T) {
+func TestHandleRegistrationLogsRawErrorAndReturnsGenericResponse(t *testing.T) {
 	var logs bytes.Buffer
 	previous := slog.Default()
 	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
@@ -34,17 +34,14 @@ func TestHandleRegistration_LogsSanitizedProvisioningError(t *testing.T) {
 	s := New(&fakeProvisioner{err: registrationfailure.WithKind(registrationfailure.StageDeviceConsent, registrationfailure.KindUpstream, errors.New(secret+" tail"))}, "https://telecrypt.io/plan")
 	w := httptest.NewRecorder()
 	s.ServeHTTP(w, httptest.NewRequest("POST", "/agents", nil))
-	if strings.Contains(logs.String(), secret) {
-		t.Fatalf("provisioning log leaked secret: %s", logs.String())
-	}
-	if !strings.Contains(logs.String(), "tail") {
-		t.Fatalf("provisioning log omitted sanitized diagnostic: %s", logs.String())
+	if !strings.Contains(logs.String(), secret+" tail") {
+		t.Fatalf("provisioning log omitted complete raw diagnostic: %s", logs.String())
 	}
 	if got, want := w.Header().Get(registrationErrorHeader), "device_consent/upstream"; got != want {
 		t.Fatalf("registration error header = %q, want %q", got, want)
 	}
-	if strings.Contains(w.Body.String(), secret) {
-		t.Fatalf("provisioning response leaked secret: %s", w.Body.String())
+	if got, want := w.Body.String(), "provisioning failed\n"; got != want {
+		t.Fatalf("provisioning response = %q, want generic response %q", got, want)
 	}
 }
 
@@ -229,7 +226,7 @@ func TestHandleRegistration_MapsEveryBoundedStageAndKind(t *testing.T) {
 					t.Fatalf("response = %d, header %q, want 500/%q", w.Code, w.Header().Get(registrationErrorHeader), want)
 				}
 				if strings.Contains(w.Body.String(), secret) {
-					t.Fatalf("response leaked secret: %s", w.Body.String())
+					t.Fatalf("public response contained internal detail: %s", w.Body.String())
 				}
 			})
 		}

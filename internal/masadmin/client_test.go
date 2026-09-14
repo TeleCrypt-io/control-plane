@@ -60,21 +60,21 @@ func canonicalTestULID(value string) string {
 	return testULID(value)
 }
 
-func TestDescribeErrorDrainsAndSanitizesUpstreamBody(t *testing.T) {
-	secret := "mas-client-secret-should-never-escape"
+func TestDescribeErrorDrainsAndRetainsCompleteRawUpstreamBody(t *testing.T) {
+	secret := "client_secret=mas-client-secret"
 	body := append([]byte("prefix "+secret+" "), bytes.Repeat([]byte("x"), 256<<10)...)
 	body = append(body, []byte(" tail")...)
 	resp := &http.Response{StatusCode: http.StatusBadGateway, Body: &countingBody{reader: bytes.NewReader(body)}}
 
-	got, err := describeError(resp, secret)
+	got, err := describeError(resp)
 	if err != nil {
 		t.Fatalf("describeError: %v", err)
 	}
 	if !strings.Contains(got, "prefix") || !strings.Contains(got, "tail") {
 		t.Fatalf("describeError = %q, want complete response body", got)
 	}
-	if strings.Contains(got, secret) {
-		t.Fatal("describeError returned sensitive upstream body")
+	if !strings.Contains(got, secret) {
+		t.Fatal("describeError omitted raw upstream body content")
 	}
 	reader := resp.Body.(*countingBody)
 	if reader.read != len(body) {
@@ -144,8 +144,8 @@ func TestClientPreservesResponseCloseFailure(t *testing.T) {
 	}
 }
 
-func TestClientStatusDiagnosticRetainsSanitizedBodyAndCloseFailure(t *testing.T) {
-	secret := "mas-client-secret"
+func TestClientStatusDiagnosticRetainsRawBodyAndCloseFailure(t *testing.T) {
+	secret := "client_secret=mas-client-secret"
 	userID := testULID("diagnostic-user")
 	closeErr := errors.New("close response failed for " + userID)
 	client := NewClient("https://mas.example", "client", secret)
@@ -162,8 +162,8 @@ func TestClientStatusDiagnosticRetainsSanitizedBodyAndCloseFailure(t *testing.T)
 	})
 	var out paginatedResponse[User]
 	err := client.get(context.Background(), "/api/admin/v1/users/"+userID, &out)
-	if err == nil || !strings.Contains(err.Error(), "tail") || strings.Contains(err.Error(), secret) || strings.Contains(err.Error(), userID) || !errors.Is(err, closeErr) {
-		t.Fatalf("MAS admin status error = %v, want complete sanitized body and close failure", err)
+	if err == nil || !strings.Contains(err.Error(), "provider detail "+secret+" "+userID+" tail") || !errors.Is(err, closeErr) {
+		t.Fatalf("MAS admin status error = %v, want complete raw body and close failure", err)
 	}
 }
 
@@ -200,8 +200,8 @@ func TestClientDoesNotLeakCredentialsAcrossRedirect(t *testing.T) {
 	}
 }
 
-func TestUserErrorsDoNotExposeMASIDs(t *testing.T) {
-	const userIDSeed = "01JMASUSERIDSHOULDNOTLEAK"
+func TestUserTransportErrorRetainsCompleteCause(t *testing.T) {
+	const userIDSeed = "01JMASUSERIDRAWDATA"
 	userID := testULID(userIDSeed)
 	transportErr := errors.New("dial failed for " + userID + " tail")
 	client := NewClient("https://mas.example", "client", "secret")
@@ -209,13 +209,8 @@ func TestUserErrorsDoNotExposeMASIDs(t *testing.T) {
 		return nil, transportErr
 	})
 	_, err := client.GetUser(context.Background(), userID)
-	if err == nil || !strings.Contains(err.Error(), "tail") || strings.Contains(err.Error(), userID) || !errors.Is(err, transportErr) {
-		t.Fatalf("GetUser error = %v, want complete sanitized transport cause", err)
-	}
-	badURLClient := NewClient(":", "client", "secret")
-	_, err = badURLClient.GetUser(context.Background(), userID)
-	if err == nil || strings.Contains(err.Error(), userID) {
-		t.Fatalf("GetUser malformed-URL error = %v, want sanitized error without MAS ID", err)
+	if err == nil || !strings.Contains(err.Error(), "dial failed for "+userID+" tail") || !errors.Is(err, transportErr) {
+		t.Fatalf("GetUser error = %v, want complete raw transport cause", err)
 	}
 }
 

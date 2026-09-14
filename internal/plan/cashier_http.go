@@ -155,30 +155,29 @@ func (c *HTTPCashierClient) do(ctx context.Context, principal Principal, method,
 
 	response, err := c.httpClient.Do(req)
 	if err != nil {
-		return httpdiag.WrapCause("call cashier", err, assertion, principal.MXID, requestID, path)
+		return httpdiag.WrapCause("call cashier", err)
 	}
-	redactions := []string{assertion, principal.MXID, requestID, path}
 	if !acceptsCashierStatus(response.StatusCode, expectedStatuses) {
-		body, readErr, closeErr := httpdiag.ReadAndClose(response.Body, redactions...)
+		body, readErr, closeErr := httpdiag.ReadAndClose(response.Body)
 		statusErr := &CashierError{StatusCode: response.StatusCode, Message: body}
-		return errors.Join(statusErr, httpdiag.NewResponseError("Cashier error response", response.StatusCode, body, readErr, closeErr, redactions...))
+		return errors.Join(statusErr, httpdiag.NewResponseError("Cashier error response", response.StatusCode, body, readErr, closeErr))
 	}
 	if result == nil {
-		body, readErr, closeErr := httpdiag.ReadAndClose(response.Body, redactions...)
+		body, readErr, closeErr := httpdiag.ReadAndClose(response.Body)
 		if readErr != nil || closeErr != nil {
-			return httpdiag.NewResponseError("read Cashier response", response.StatusCode, body, readErr, closeErr, redactions...)
+			return httpdiag.NewResponseError("read Cashier response", response.StatusCode, body, readErr, closeErr)
 		}
 		if body != "" {
-			return httpdiag.NewResponseError("cashier returned unexpected response body", response.StatusCode, body, nil, nil, redactions...)
+			return httpdiag.NewResponseError("cashier returned unexpected response body", response.StatusCode, body, nil, nil)
 		}
 		return nil
 	}
 	defer func() {
 		if closeErr := response.Body.Close(); closeErr != nil {
-			resultErr = errors.Join(resultErr, httpdiag.WrapCause("close Cashier response body", closeErr, redactions...))
+			resultErr = errors.Join(resultErr, httpdiag.WrapCause("close Cashier response body", closeErr))
 		}
 	}()
-	if err := jsonbody.Decode(response.Body, result, redactions...); err != nil {
+	if err := jsonbody.Decode(response.Body, result); err != nil {
 		return fmt.Errorf("decode cashier response: %w", err)
 	}
 	return nil

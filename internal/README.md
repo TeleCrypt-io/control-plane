@@ -16,8 +16,8 @@ small `main` packages in `cmd/`:
 | `config` | Loads and validates the narrowly scoped configuration of each executable. | Rejects incomplete or inconsistent runtime configuration. |
 | `db` | Janitor's pre-created private schema and read-only access to Cashier's two Janitor views. | Does not create payments, subscriptions, or provider records. |
 | `janitor` | Runs one database-locked sweep that finds stale unclaimed accounts, locks them through MAS, and sends the owner digest when mail is configured. It never unlocks an account; uncertain lock/readback outcomes fail the run. | No HTTP listener. |
-| `masadmin` | MAS admin OAuth client shared by Janitor and Plan. It retains complete upstream response diagnostics after credential and identity redaction. | Never used by Registration; Plan acts only on an active owner’s own team members. |
-| `masreg` | MAS public registration, dynamic-client, and device-OAuth client used by Registration. It retains complete sanitized upstream response diagnostics internally. | Does not use MAS-admin authority or a client secret; public failures cross the HTTP boundary only as a finite stage/kind code. |
+| `masadmin` | MAS admin OAuth client shared by Janitor and Plan. It retains complete upstream response diagnostics, including credential and identity text. | Never used by Registration; Plan acts only on an active owner’s own team members. |
+| `masreg` | MAS public registration, dynamic-client, and device-OAuth client used by Registration. It retains complete raw upstream response and transport diagnostics internally. | Does not use MAS-admin authority or a client secret; public failures cross the HTTP boundary only as a finite stage/kind code. |
 | `registrationhttp` | Registration request parsing and response shaping. | Public surface is limited to the registration endpoint. |
 | `plan` | MAS OIDC, browser sessions, CSRF/origin checks, rendering, signed Cashier commands, and owner-authorized MAS account lock/unlock. | Has no Dodo, Synapse-admin, or Postgres credential. |
 

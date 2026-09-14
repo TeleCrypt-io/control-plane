@@ -52,9 +52,9 @@ import (
 // ErrUserNotFound is returned by LockUser when MAS reports the ULID doesn't exist (404).
 var ErrUserNotFound = errors.New("masadmin: user not found")
 
-func appendResponseBodyCloseError(result *error, body io.ReadCloser, redactions ...string) {
+func appendResponseBodyCloseError(result *error, body io.ReadCloser) {
 	if closeErr := body.Close(); closeErr != nil {
-		*result = errors.Join(*result, httpdiag.WrapCause("masadmin response body close", closeErr, redactions...))
+		*result = errors.Join(*result, httpdiag.WrapCause("masadmin response body close", closeErr))
 	}
 }
 
@@ -142,21 +142,21 @@ func (c *Client) token(ctx context.Context) (token string, resultErr error) {
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return "", masadminTransportError("masadmin: fetch token", err, c.clientSecret, c.clientID)
+		return "", masadminTransportError("masadmin: fetch token", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		description, drainErr := describeError(resp, c.clientSecret, c.clientID)
+		description, drainErr := describeError(resp)
 		statusErr := fmt.Errorf("masadmin: fetch token: %s", description)
-		closeErr := httpdiag.WrapCause("masadmin response body close", resp.Body.Close(), c.clientSecret, c.clientID)
+		closeErr := httpdiag.WrapCause("masadmin response body close", resp.Body.Close())
 		return "", errors.Join(statusErr, drainErr, closeErr)
 	}
-	defer func() { appendResponseBodyCloseError(&resultErr, resp.Body, c.clientSecret, c.clientID) }()
+	defer func() { appendResponseBodyCloseError(&resultErr, resp.Body) }()
 
 	var out struct {
 		AccessToken string `json:"access_token"`
 		ExpiresIn   int    `json:"expires_in"`
 	}
-	if err := jsonbody.Decode(resp.Body, &out, c.clientSecret, c.clientID); err != nil {
+	if err := jsonbody.Decode(resp.Body, &out); err != nil {
 		return "", fmt.Errorf("masadmin: decode token response: %w", err)
 	}
 	if out.AccessToken == "" {
@@ -302,7 +302,7 @@ func (c *Client) GetUser(ctx context.Context, userID string) (User, error) {
 	var out struct {
 		Data resource[userAttrs] `json:"data"`
 	}
-	if err := c.get(ctx, "/api/admin/v1/users/"+url.PathEscape(userID), &out, userID); err != nil {
+	if err := c.get(ctx, "/api/admin/v1/users/"+url.PathEscape(userID), &out); err != nil {
 		return User{}, fmt.Errorf("masadmin: get user: %w", err)
 	}
 	if !validMASULID(userID) || out.Data.ID != userID || !validMASUsername(out.Data.Attributes.Username) || out.Data.Attributes.CreatedAt.IsZero() {
@@ -325,7 +325,7 @@ func (c *Client) GetUserByUsername(ctx context.Context, username string) (User, 
 	var out struct {
 		Data resource[userAttrs] `json:"data"`
 	}
-	if err := c.get(ctx, "/api/admin/v1/users/by-username/"+url.PathEscape(username), &out, username); err != nil {
+	if err := c.get(ctx, "/api/admin/v1/users/by-username/"+url.PathEscape(username), &out); err != nil {
 		return User{}, fmt.Errorf("masadmin: get user by username: %w", err)
 	}
 	if !validMASULID(out.Data.ID) || out.Data.Attributes.Username != username || out.Data.Attributes.CreatedAt.IsZero() {
@@ -345,7 +345,7 @@ func (c *Client) HasUserEmail(ctx context.Context, userID string) (bool, error) 
 		"filter[user]": {userID},
 	}
 	var page paginatedResponse[emailAttrs]
-	if err := c.get(ctx, "/api/admin/v1/user-emails?"+query.Encode(), &page, userID); err != nil {
+	if err := c.get(ctx, "/api/admin/v1/user-emails?"+query.Encode(), &page); err != nil {
 		return false, fmt.Errorf("masadmin: check user email: %w", err)
 	}
 	if len(page.Data) == 0 && page.Links.Next != "" {
@@ -405,23 +405,23 @@ func (c *Client) changeUserLock(ctx context.Context, userID, action string) (att
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return userAttrs{}, masadminTransportError("masadmin: "+action+" user", err, c.clientSecret, token, userID)
+		return userAttrs{}, masadminTransportError("masadmin: "+action+" user", err)
 	}
 	if resp.StatusCode == http.StatusNotFound {
-		body, readErr, closeErr := httpdiag.ReadAndClose(resp.Body, c.clientSecret, token, userID)
-		return userAttrs{}, errors.Join(fmt.Errorf("masadmin: "+action+" user: %w", ErrUserNotFound), httpdiag.NewResponseError("masadmin: "+action+" user not-found response", resp.StatusCode, body, readErr, closeErr, c.clientSecret, token, userID))
+		body, readErr, closeErr := httpdiag.ReadAndClose(resp.Body)
+		return userAttrs{}, errors.Join(fmt.Errorf("masadmin: "+action+" user: %w", ErrUserNotFound), httpdiag.NewResponseError("masadmin: "+action+" user not-found response", resp.StatusCode, body, readErr, closeErr))
 	}
 	if resp.StatusCode != http.StatusOK {
-		description, drainErr := describeError(resp, c.clientSecret, token, userID)
+		description, drainErr := describeError(resp)
 		statusErr := fmt.Errorf("masadmin: "+action+" user: %s", description)
-		closeErr := httpdiag.WrapCause("masadmin response body close", resp.Body.Close(), c.clientSecret, token, userID)
+		closeErr := httpdiag.WrapCause("masadmin response body close", resp.Body.Close())
 		return userAttrs{}, errors.Join(statusErr, drainErr, closeErr)
 	}
-	defer func() { appendResponseBodyCloseError(&resultErr, resp.Body, c.clientSecret, token, userID) }()
+	defer func() { appendResponseBodyCloseError(&resultErr, resp.Body) }()
 	var out struct {
 		Data resource[userAttrs] `json:"data"`
 	}
-	if err := jsonbody.Decode(resp.Body, &out, c.clientSecret, token, userID); err != nil {
+	if err := jsonbody.Decode(resp.Body, &out); err != nil {
 		return userAttrs{}, fmt.Errorf("masadmin: decode "+action+" user: %w", err)
 	}
 	if out.Data.ID != userID || !validMASUsername(out.Data.Attributes.Username) || out.Data.Attributes.CreatedAt.IsZero() {
@@ -474,7 +474,7 @@ func ValidMXID(username, serverName string) bool {
 
 // get issues an authenticated GET against path (relative to baseURL) and decodes a 200 JSON body
 // into out.
-func (c *Client) get(ctx context.Context, path string, out any, redactions ...string) (resultErr error) {
+func (c *Client) get(ctx context.Context, path string, out any) (resultErr error) {
 	token, err := c.token(ctx)
 	if err != nil {
 		return err
@@ -485,23 +485,21 @@ func (c *Client) get(ctx context.Context, path string, out any, redactions ...st
 		return errors.New("masadmin: create request failed")
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
-	allRedactions := append([]string{c.clientSecret, token, path}, redactions...)
-
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return masadminTransportError("masadmin: request", err, allRedactions...)
+		return masadminTransportError("masadmin: request", err)
 	}
 	if resp.StatusCode == http.StatusNotFound {
-		body, readErr, closeErr := httpdiag.ReadAndClose(resp.Body, allRedactions...)
-		return errors.Join(ErrUserNotFound, httpdiag.NewResponseError("masadmin not-found response", resp.StatusCode, body, readErr, closeErr, allRedactions...))
+		body, readErr, closeErr := httpdiag.ReadAndClose(resp.Body)
+		return errors.Join(ErrUserNotFound, httpdiag.NewResponseError("masadmin not-found response", resp.StatusCode, body, readErr, closeErr))
 	}
 	if resp.StatusCode != http.StatusOK {
-		description, drainErr := describeError(resp, allRedactions...)
-		closeErr := httpdiag.WrapCause("masadmin response body close", resp.Body.Close(), allRedactions...)
+		description, drainErr := describeError(resp)
+		closeErr := httpdiag.WrapCause("masadmin response body close", resp.Body.Close())
 		return errors.Join(fmt.Errorf("%s", description), drainErr, closeErr)
 	}
-	defer func() { appendResponseBodyCloseError(&resultErr, resp.Body, allRedactions...) }()
-	return jsonbody.Decode(resp.Body, out, allRedactions...)
+	defer func() { appendResponseBodyCloseError(&resultErr, resp.Body) }()
+	return jsonbody.Decode(resp.Body, out)
 }
 
 func rejectRedirects(*http.Request, []*http.Request) error {
@@ -518,21 +516,20 @@ func noProxyTransport() http.RoundTripper {
 	return transport
 }
 
-func masadminTransportError(prefix string, err error, redactions ...string) error {
-	return httpdiag.WrapCause(prefix, err, redactions...)
+func masadminTransportError(prefix string, err error) error {
+	return httpdiag.WrapCause(prefix, err)
 }
 
-// describeError reads the complete untrusted body and returns a sanitized diagnostic. The
-// caller remains responsible for closing the response, so close failures can be joined with the
-// status and read failures at that boundary.
-func describeError(resp *http.Response, redactions ...string) (string, error) {
-	body, readErr := httpdiag.ReadBody(resp.Body, redactions...)
+// describeError reads the complete response body. The caller closes the response so any close
+// failure can be joined with the status and read failures at that boundary.
+func describeError(resp *http.Response) (string, error) {
+	body, readErr := httpdiag.ReadBody(resp.Body)
 	diagnostic := fmt.Sprintf("status %d", resp.StatusCode)
 	if body != "" {
 		diagnostic += ": body=" + strconv.Quote(body)
 	}
 	if readErr != nil {
-		return diagnostic, httpdiag.WrapCause("masadmin error response read", readErr, redactions...)
+		return diagnostic, httpdiag.WrapCause("masadmin error response read", readErr)
 	}
 	return diagnostic, nil
 }

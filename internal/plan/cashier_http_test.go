@@ -183,8 +183,8 @@ func TestHTTPCashierClientReturnsBusinessStatus(t *testing.T) {
 	if !errors.As(err, &cashierError) || cashierError.StatusCode != http.StatusConflict {
 		t.Fatalf("AttachSeat error = %#v, want CashierError 409", err)
 	}
-	if !strings.Contains(cashierError.Message, "tail") || strings.Contains(cashierError.Message, secret) {
-		t.Fatalf("Cashier error message = %q, want complete sanitized body", cashierError.Message)
+	if !strings.Contains(cashierError.Message, "provider detail access_token="+secret+" tail") {
+		t.Fatalf("Cashier error message = %q, want complete raw body", cashierError.Message)
 	}
 }
 
