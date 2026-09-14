@@ -159,7 +159,7 @@ type PlanConfig struct {
 	BackendPublicURL        string
 	MASInternalURL          string
 	PlanPublicURL           string
-	CashierInternalURL      string // fixed Compose-local endpoint
+	CashierInternalURL      string // fixed pod-local endpoint
 	MASClientID             string
 	MASClientSecret         string
 	PlanSessionKey          string
@@ -216,9 +216,9 @@ func LoadPlan() (*PlanConfig, error) {
 }
 
 const (
-	masAdminURL        = "http://mas-admin:8081"
-	masInternalURL     = "http://mas:8080"
-	cashierInternalURL = "http://cashier:9011"
+	masAdminURL        = "http://127.0.0.1:8081"
+	masInternalURL     = "http://127.0.0.1:8082"
+	cashierInternalURL = "http://127.0.0.1:9011"
 )
 
 type backendEndpoints struct {

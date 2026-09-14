@@ -80,10 +80,10 @@ func TestLoadPlanDerivesPublicURLsFromServerName(t *testing.T) {
 	if got, want := cfg.PlanPublicURL, "https://backend.stage.telecrypt.io/plan"; got != want {
 		t.Fatalf("PlanPublicURL = %q, want %q", got, want)
 	}
-	if got, want := cfg.MASInternalURL, "http://mas:8080"; got != want {
+	if got, want := cfg.MASInternalURL, "http://127.0.0.1:8082"; got != want {
 		t.Fatalf("MASInternalURL = %q, want %q", got, want)
 	}
-	if got, want := cfg.CashierInternalURL, "http://cashier:9011"; got != want {
+	if got, want := cfg.CashierInternalURL, "http://127.0.0.1:9011"; got != want {
 		t.Fatalf("CashierInternalURL = %q, want %q", got, want)
 	}
 }
@@ -253,7 +253,7 @@ func TestLoadJanitorUsesExactDatabaseIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadJanitor: %v", err)
 	}
-	if got, want := cfg.MASAdminURL, "http://mas-admin:8081"; got != want {
+	if got, want := cfg.MASAdminURL, "http://127.0.0.1:8081"; got != want {
 		t.Fatalf("MASAdminURL = %q, want %q", got, want)
 	}
 	if got, want := cfg.CashierDBRole, "stage_telecrypt_cashier_user"; got != want {
@@ -403,7 +403,7 @@ func TestLoadAndValidateRegistrationDerivesPublicURLs(t *testing.T) {
 	if err := cfg.ValidateRegistration(); err != nil {
 		t.Fatalf("ValidateRegistration rejected a valid configuration: %v", err)
 	}
-	cfg.MASPublicURL = "http://mas:8080"
+	cfg.MASPublicURL = "http://127.0.0.1:8082"
 	if err := cfg.ValidateRegistration(); err == nil {
 		t.Fatal("ValidateRegistration accepted an internal MAS endpoint")
 	}
@@ -473,7 +473,7 @@ func TestLoadPlanRequiresMASAccountCredential(t *testing.T) {
 	}
 	setRequiredPlanEnv(t)
 	cfg, err := LoadPlan()
-	if err != nil || cfg.MASAdminURL != "http://mas-admin:8081" || cfg.MASAdminClientID != testPlanClientID || cfg.MASAdminClientSecret != "admin-test-secret" {
+	if err != nil || cfg.MASAdminURL != "http://127.0.0.1:8081" || cfg.MASAdminClientID != testPlanClientID || cfg.MASAdminClientSecret != "admin-test-secret" {
 		t.Fatalf("Plan MAS admin configuration = %#v, %v", cfg, err)
 	}
 }

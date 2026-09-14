@@ -65,7 +65,7 @@ func testServer() *Server {
 		BillingEnvironment: "test",
 		ServerName:         "stage.telecrypt.io",
 		BackendPublicURL:   "https://backend.stage.telecrypt.io",
-		MASInternalURL:     "http://mas:8080",
+		MASInternalURL:     "http://127.0.0.1:8082",
 		PlanPublicURL:      "https://backend.stage.telecrypt.io/plan",
 		MASClientID:        "plan",
 		MASClientSecret:    "test-secret",
@@ -389,7 +389,7 @@ func TestOIDCClientRejectsCrossOriginRedirects(t *testing.T) {
 }
 
 func TestOIDCClientDoesNotUseAmbientProxy(t *testing.T) {
-	client := NewOIDCClient("https://backend.example", "http://mas:8080", "client", "secret", "https://plan.example/callback")
+	client := NewOIDCClient("https://backend.example", "http://127.0.0.1:8082", "client", "secret", "https://plan.example/callback")
 	transport, ok := client.httpClient.Transport.(*http.Transport)
 	if !ok {
 		t.Fatalf("OIDC transport = %T, want *http.Transport", client.httpClient.Transport)

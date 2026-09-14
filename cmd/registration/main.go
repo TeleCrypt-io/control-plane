@@ -111,4 +111,4 @@ func build(cfg *config.Config) (http.Handler, error) {
 	return registrationhttp.New(provisioner, cfg.PlanPublicURL), nil
 }
 
-const registrationListenAddr = ":9009"
+const registrationListenAddr = "127.0.0.1:9009"

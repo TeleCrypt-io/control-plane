@@ -41,8 +41,9 @@ type PlanState struct {
 // database access. Every command is performed for principal; Cashier must derive ownership from
 // that identity rather than accepting browser-supplied ownership identifiers.
 //
-// Implementations must use short-lived, audience-bound Plan assertions on a private Compose
-// network. Monetary commands must accept and durably honour requestID for safe browser retries.
+// Implementations must use short-lived, audience-bound Plan assertions on the shared pod's
+// loopback connection. Monetary commands must accept and durably honour requestID for safe
+// browser retries.
 type CashierClient interface {
 	PlanState(ctx context.Context, principal Principal) (PlanState, error)
 	CreatePlan(ctx context.Context, principal Principal, requestID string) error

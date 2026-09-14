@@ -99,4 +99,4 @@ func shutdownHTTPServer(ctx context.Context, server *http.Server) error {
 	return nil
 }
 
-const planListenAddr = ":9012"
+const planListenAddr = "127.0.0.1:9012"

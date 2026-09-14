@@ -11,10 +11,11 @@ and billing-portal actions. MAS embeds this stable URL in its account-management
 It must not receive Dodo credentials, Dodo webhook secrets, Synapse-admin credentials, or a
 billing database URL.  It calls the private Cashier through `CashierClient` for billing and team ownership.
 For manual member access, Plan also uses the existing MAS admin credential and internal
-`mas-admin:8081` listener. Every lock/unlock request first obtains Cashier state for the signed-in
-principal and requires an active plan and a target seat in that owner's team. The browser cannot
-supply an owner or MAS user ID. Plan resolves the local Matrix username through MAS and applies
-the reversible account lock. Payment does not automatically unlock members.
+`127.0.0.1:8081` listener in the shared application pod. Every lock/unlock request first obtains
+Cashier state for the signed-in principal and requires an active plan and a target seat in that
+owner's team. The browser cannot supply an owner or MAS user ID. Plan resolves the local Matrix
+username through MAS and applies the reversible account lock. Payment does not automatically
+unlock members.
 
 MAS locks block existing sessions while locked; unlocking restores those sessions. Synapse caches
 MAS introspection responses for two minutes, so existing-session denial and recovery can each take

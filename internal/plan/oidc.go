@@ -23,7 +23,7 @@ const (
 )
 
 // OIDCClient is Plan's MAS authorization-code + PKCE client. Browser authorization uses the
-// public homeserver URL; token and userinfo calls use MAS's private Compose address.
+// public homeserver URL; token and userinfo calls use MAS's pod-local address.
 type OIDCClient struct {
 	authorizeURL, tokenURL, userinfoURL, clientID, clientSecret, redirectURI string
 	httpClient                                                               *http.Client

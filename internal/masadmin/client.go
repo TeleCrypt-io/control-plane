@@ -88,7 +88,7 @@ type Client struct {
 	tokenExpiry time.Time
 }
 
-// NewClient targets the MAS admin origin (e.g. http://mas-admin:8081, no /auth prefix) with the given
+// NewClient targets the MAS admin origin (e.g. http://127.0.0.1:8081, no /auth prefix) with the given
 // admin
 // client_credentials client_id/client_secret.
 func NewClient(baseURL, clientID, clientSecret string) *Client {
