@@ -3,10 +3,6 @@ package plan
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
-	_ "embed"
-	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"github.com/TeleCrypt-io/controlplane/internal/masadmin"
 	"io"
@@ -19,11 +15,6 @@ import (
 	"testing"
 	"time"
 )
-
-// sharedUIProvenanceJSON is the release record for the vendored shared stylesheet.
-//
-//go:embed assets/SHARED_UI_PROVENANCE.json
-var sharedUIProvenanceJSON []byte
 
 type fakeCashier struct {
 	principal Principal
@@ -95,8 +86,9 @@ func TestServerRendersPublicPlanLoginSurface(t *testing.T) {
 	}
 	for _, marker := range []string{
 		"Create a TeleCrypt account",
-		"/plan/assets/logo-mark.png",
-		"/plan/assets/product.css",
+		"https://www.telecrypt.io/logo-mark.png",
+		"https://www.telecrypt.io/favicon-32x32.png",
+		"https://www.telecrypt.io/ui/product.css",
 		"/plan/assets/plan.css",
 		"/plan/assets/plan.js",
 		"Sign-in is handled by your TeleCrypt account.",
@@ -427,17 +419,15 @@ func TestOIDCClientStatusDiagnosticRetainsRawBody(t *testing.T) {
 	}
 }
 
-func TestPlanAssetsAreServedLocally(t *testing.T) {
+func TestPlanApplicationAssetsAreServedLocally(t *testing.T) {
 	srv := testServer()
 
 	for _, asset := range []struct {
 		path        string
 		contentType string
 	}{
-		{"/plan/assets/product.css", "text/css; charset=utf-8"},
 		{"/plan/assets/plan.css", "text/css; charset=utf-8"},
 		{"/plan/assets/plan.js", "text/javascript; charset=utf-8"},
-		{"/plan/assets/logo-mark.png", "image/png"},
 	} {
 		rec := httptest.NewRecorder()
 		srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, asset.path, nil))
@@ -450,17 +440,26 @@ func TestPlanAssetsAreServedLocally(t *testing.T) {
 	}
 }
 
-func TestPlanSharedUIAssetMatchesProvenance(t *testing.T) {
-	var provenance struct {
-		SHA256 string `json:"sha256"`
+func TestPlanSharedAssetsAreHostedByWebsite(t *testing.T) {
+	srv := testServer()
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/plan", nil))
+	body := rec.Body.String()
+	for _, marker := range []string{
+		`rel="icon" href="https://www.telecrypt.io/favicon-32x32.png" type="image/png"`,
+		`rel="stylesheet" href="https://www.telecrypt.io/ui/product.css"`,
+		`class="tc-brand-mark" src="https://www.telecrypt.io/logo-mark.png"`,
+	} {
+		if !strings.Contains(body, marker) {
+			t.Errorf("Plan page is missing shared website asset reference %q", marker)
+		}
 	}
-	if err := json.Unmarshal(sharedUIProvenanceJSON, &provenance); err != nil {
-		t.Fatalf("decode shared UI provenance: %v", err)
-	}
-
-	actual := sha256.Sum256(planProductCSS)
-	if got := hex.EncodeToString(actual[:]); got != provenance.SHA256 {
-		t.Fatalf("vendored product.css sha256 = %q, want provenance %q", got, provenance.SHA256)
+	for _, localPath := range []string{"/plan/assets/product.css", "/plan/assets/logo-mark.png"} {
+		rec := httptest.NewRecorder()
+		srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, localPath, nil))
+		if got, want := rec.Code, http.StatusNotFound; got != want {
+			t.Errorf("GET %s status = %d, want %d", localPath, got, want)
+		}
 	}
 }
 

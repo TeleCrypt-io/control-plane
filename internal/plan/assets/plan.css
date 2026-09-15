@@ -1,4 +1,4 @@
-/* Plan-specific layout layered on the byte-identical shared product.css. */
+/* Plan-specific layout layered on the shared product.css hosted by www.telecrypt.io. */
 * { box-sizing: border-box; }
 body { min-width: 320px; }
 
@@ -8,7 +8,6 @@ body { min-width: 320px; }
   background: var(--surface); border-bottom: 1px solid var(--border);
 }
 .brand { display: inline-flex; align-items: center; gap: 9px; color: var(--text); font-weight: 650; text-decoration: none; }
-.brand img { display: block; width: 28px; height: 28px; padding: 3px; border-radius: 5px; background: #111; }
 .brand-tld { color: var(--text-secondary); }
 .brand-section { padding-left: 10px; border-left: 1px solid var(--border); color: var(--text-secondary); font-weight: 500; }
 .user { margin-left: auto; max-width: min(42vw, 400px); overflow: hidden; color: var(--text-secondary); font-size: .9em; text-overflow: ellipsis; white-space: nowrap; }

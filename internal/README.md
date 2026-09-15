@@ -22,8 +22,8 @@ small `main` packages in `cmd/`:
 | `plan` | MAS OIDC, browser sessions, CSRF/origin checks, rendering, signed Cashier commands, and owner-authorized MAS account lock/unlock. | Has no Dodo, Synapse-admin, or Postgres credential. |
 
 Public topology, deployment-identity selection, and the Janitor database role contract are owned
-by the root README. The private Cashier command details and Plan asset provenance are documented
-with the `plan` package in `internal/plan/README.md`.
+by the root README. The private Cashier command details and Plan UI ownership are documented with
+the `plan` package in `internal/plan/README.md`.
 
 The Synapse `tier_controller` is intentionally not under `internal/`: it runs inside the external
 Synapse process and is released as the separately installable `telecrypt-tier-controller` wheel.

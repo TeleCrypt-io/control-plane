@@ -42,20 +42,26 @@ forwarded to the browser; only the local, structured seat-capacity guidance is r
 
 ## Plan UI ownership and release integration
 
-`assets/product.css`, `assets/plan.html`, `assets/plan.css`, and `assets/plan.js` are embedded in the
-Plan binary. They need no browser-side package manager, CDN, or runtime dependency.
-`product.css` is a byte-identical vendored copy of the framework-neutral shared UI source in
-`www.telecrypt.io`; `plan.css` contains only Plan-specific composition and responsive layout. The page thus
-uses the same light canvas, white surfaces, system typography, compact controls, and neutral borders
-without giving this Go service a frontend build pipeline.
+Plan keeps its HTML and Plan-specific CSS and JavaScript embedded in the binary. The shared product
+stylesheet and TeleCrypt branding are loaded directly from the stable public URLs owned by
+`www.telecrypt.io`:
 
-The website repository remains the source of those visual tokens and component conventions. Updating
-the vendored file requires an exact website release plus a byte-identity check before the Controlplane
-release. `assets/SHARED_UI_PROVENANCE.json` records the exact source release, commit, path, and content
-hash used by this checkout. The canonical brand mark is `public/logo-mark.png` in that same repository.
-Plan embeds its reviewed copy locally, so the page has no runtime asset dependency.
+- `https://www.telecrypt.io/ui/product.css`
+- `https://www.telecrypt.io/logo-mark.png`
+- `https://www.telecrypt.io/favicon-32x32.png`
 
-Before release, integrate these files into a reviewed immutable Controlplane release, run the
-Plan rendering and security tests plus an authenticated visual regression against the exact
-release artifact, and record that exact release for promotion. No deployment should be made from
-this working tree.
+Storage Web and Plan therefore use one editable source for their shared presentation. `plan.css`
+contains only Plan-specific composition and responsive layout. The landing website keeps its own
+independent design and does not load the product stylesheet. MAS authentication and account screens
+also keep their existing upstream design; MAS embeds this Plan page for team and billing management.
+
+The public asset URLs are intentionally unversioned and use the website's normal browser and CDN
+caching. A stylesheet or branding change can affect both consumers as caches refresh, so visual
+changes must be checked in Storage Web and Plan before publishing the website change. Application
+releases remain exact and immutable; the release record should identify both the application release
+and the website release observed during acceptance. Plan does not vendor shared assets or maintain a
+second checksum/provenance file.
+
+Before release, run the Plan rendering and security tests plus an authenticated visual regression
+against the exact Controlplane release artifact, and verify the three public asset URLs return the
+expected content types. No deployment should be made from this working tree.

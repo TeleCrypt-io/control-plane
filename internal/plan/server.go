@@ -34,7 +34,7 @@ var errCashierUnavailable = errors.New("cashier client is not configured")
 
 const (
 	planSeatPrice             = "15 EUR per seat"
-	planContentSecurityPolicy = "default-src 'self'; base-uri 'none'; connect-src 'self'; form-action 'self'; frame-ancestors 'self'; img-src 'self'; object-src 'none'; script-src 'self'; style-src 'self'"
+	planContentSecurityPolicy = "default-src 'self'; base-uri 'none'; connect-src 'self'; form-action 'self'; frame-ancestors 'self'; img-src 'self' https://www.telecrypt.io; object-src 'none'; script-src 'self'; style-src 'self' https://www.telecrypt.io"
 )
 
 // AccountAdmin is the MAS account capability used after Cashier authorizes team ownership.
@@ -58,8 +58,6 @@ func NewServer(cfg Config, cashier CashierClient, accounts AccountAdmin) *Server
 	s := &Server{cfg: cfg, cashier: cashier, accounts: accounts, session: NewSession(cfg.PlanSessionKey, cfg.ServerName), mux: http.NewServeMux()}
 	s.oidc = NewOIDCClient(cfg.BackendPublicURL, cfg.MASInternalURL, cfg.MASClientID, cfg.MASClientSecret, strings.TrimRight(cfg.PlanPublicURL, "/")+"/callback")
 	s.mux.HandleFunc("GET /plan", s.handlePlan)
-	s.mux.HandleFunc("GET /plan/assets/logo-mark.png", s.handlePlanLogo)
-	s.mux.HandleFunc("GET /plan/assets/product.css", s.handlePlanProductCSS)
 	s.mux.HandleFunc("GET /plan/assets/plan.css", s.handlePlanCSS)
 	s.mux.HandleFunc("GET /plan/assets/plan.js", s.handlePlanJS)
 	s.mux.HandleFunc("GET /plan/login", s.handleLogin)
@@ -179,25 +177,6 @@ func (s *Server) handlePlan(w http.ResponseWriter, r *http.Request) {
 	if err := planTmpl.Execute(w, data); err != nil {
 		logPlanFailure("render plan page", err)
 		http.Error(w, "Plan is temporarily unavailable", http.StatusInternalServerError)
-	}
-}
-
-// handlePlanLogo serves the product-neutral TeleCrypt mark used by Plan. It is
-// intentionally local to Plan: Plan must not need a third-party asset host
-// to render its authentication or billing controls.
-func (s *Server) handlePlanLogo(w http.ResponseWriter, _ *http.Request) {
-	w.Header().Set("Content-Type", "image/png")
-	w.Header().Set("Cache-Control", "no-store")
-	if _, err := w.Write(planLogoPNG); err != nil {
-		logPlanFailure("write plan logo", err)
-	}
-}
-
-func (s *Server) handlePlanProductCSS(w http.ResponseWriter, _ *http.Request) {
-	w.Header().Set("Content-Type", "text/css; charset=utf-8")
-	w.Header().Set("Cache-Control", "no-store")
-	if _, err := w.Write(planProductCSS); err != nil {
-		logPlanFailure("write plan product stylesheet", err)
 	}
 }
 
