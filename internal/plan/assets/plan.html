@@ -28,7 +28,7 @@
 
       <main class="plan-main">
         {{if not .LoggedIn}}
-        <section class="auth-card" aria-labelledby="plan-title">
+        <section class="auth-card tc-surface" aria-labelledby="plan-title">
           <p class="eyebrow">PLAN &amp; BILLING</p>
           <h1 id="plan-title">Manage your TeleCrypt Plan</h1>
           <p class="intro">Registration is free and does not require a card.</p>
@@ -48,7 +48,7 @@
         </section>
 
         <div class="plan-grid">
-          <section class="card plan-overview" aria-labelledby="subscription-title">
+          <section class="card tc-surface plan-overview" aria-labelledby="subscription-title">
             <div class="card-heading">
               <div>
                 <p class="eyebrow">SUBSCRIPTION</p>
@@ -64,12 +64,12 @@
             <div class="card-actions">
               {{if .CanCheckout}}
               <form id="checkout" class="quantity-action">
-                <label>Seats ({{.SeatPrice}}) <input name="quantity" type="number" min="1" value="1" required></label>
+                <label>Seats ({{.SeatPrice}}) <input class="tc-field" name="quantity" type="number" min="1" value="1" required></label>
                 <button class="btn btn-primary">Start {{if $.TestMode}}sandbox {{end}}checkout</button>
               </form>
               {{else if .CanChangeSeats}}
               <form id="seat-count" class="quantity-action">
-                <label>Paid seats ({{.SeatPrice}}) <input name="quantity" type="number" min="1" value="{{.Plan.PaidSeats}}" required></label>
+                <label>Paid seats ({{.SeatPrice}}) <input class="tc-field" name="quantity" type="number" min="1" value="{{.Plan.PaidSeats}}" required></label>
                 <button class="btn">Update paid seats</button>
               </form>
               {{end}}
@@ -77,7 +77,7 @@
             </div>
           </section>
 
-          <section class="card seats-card" aria-labelledby="seats-title">
+          <section class="card tc-surface seats-card" aria-labelledby="seats-title">
             <div class="card-heading">
               <div>
                 <p class="eyebrow">ACCESS</p>
@@ -92,10 +92,10 @@
                 <span>{{.MXID}}{{if .AccessState}} <small>{{.AccessState}}</small>{{end}}</span>
                 <div class="actions">
                 {{if $.CanManageAccess}}
-                <button class="btn btn-small" type="button" data-seat-access="lock" data-mxid="{{.MXID}}">Lock</button>
-                <button class="btn btn-small" type="button" data-seat-access="unlock" data-mxid="{{.MXID}}">Unlock</button>
+                <button class="btn btn-sm" type="button" data-seat-access="lock" data-mxid="{{.MXID}}">Lock</button>
+                <button class="btn btn-sm" type="button" data-seat-access="unlock" data-mxid="{{.MXID}}">Unlock</button>
                 {{end}}
-                <button class="btn btn-danger btn-small" type="button" data-remove-seat data-mxid="{{.MXID}}">Remove</button>
+                <button class="btn btn-danger btn-sm" type="button" data-remove-seat data-mxid="{{.MXID}}">Remove</button>
                 </div>
               </li>
               {{else}}
@@ -105,14 +105,14 @@
             <form id="add-seat" class="add-seat">
               <label for="seat-mxid">Add a Matrix ID</label>
               <div>
-                <input id="seat-mxid" name="mxid" placeholder="@name:server" required>
+                <input class="tc-field" id="seat-mxid" name="mxid" placeholder="@name:server" required>
                 <button class="btn" type="submit">Attach seat</button>
               </div>
             </form>
           </section>
         </div>
         {{else}}
-          <section class="card empty-plan" aria-labelledby="plan-setup-title">
+          <section class="card tc-surface empty-plan" aria-labelledby="plan-setup-title">
             <p class="eyebrow">PLAN &amp; BILLING</p>
             <h2 id="plan-setup-title">Set up your plan</h2>
             <p>Add the Matrix accounts you want covered, then choose your paid seats.</p>
