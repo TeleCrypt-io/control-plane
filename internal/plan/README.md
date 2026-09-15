@@ -1,7 +1,7 @@
 # Plan service boundary
 
 Current public project facts and component responsibilities are authoritative in
-[`llms.txt`](https://telecrypt-io.github.io/llms-authority/llms.txt); this document describes the Plan package implementation.
+[`llms.txt`](https://www.telecrypt.io/llms.txt); this document describes the Plan package implementation.
 
 `internal/plan` is the deployed public, browser-facing owner of `/plan`. It owns MAS OIDC,
 browser sessions, origin/CSRF protection, rendering, and the user-facing plan, seat, checkout,
@@ -44,16 +44,16 @@ forwarded to the browser; only the local, structured seat-capacity guidance is r
 
 `assets/product.css`, `assets/plan.html`, `assets/plan.css`, and `assets/plan.js` are embedded in the
 Plan binary. They need no browser-side package manager, CDN, or runtime dependency.
-`product.css` is a byte-identical vendored copy of the exact framework-neutral shared UI core used
-by the shared UI library; `plan.css` contains only Plan-specific composition and responsive layout. The page thus
+`product.css` is a byte-identical vendored copy of the framework-neutral shared UI source in
+`www.telecrypt.io`; `plan.css` contains only Plan-specific composition and responsive layout. The page thus
 uses the same light canvas, white surfaces, system typography, compact controls, and neutral borders
 without giving this Go service a frontend build pipeline.
 
-The shared library remains the source of those visual tokens and component conventions. Updating
-the vendored file requires an exact shared-library release plus a byte-identity check before the
-Controlplane release. `assets/SHARED_UI_PROVENANCE.json` records the exact shared source commit and
-content hash used by this checkout. Product assets are not inferred from service favicons: Plan embeds
-TeleCrypt's original `logo-mark.png` locally, so the page has no runtime asset dependency.
+The website repository remains the source of those visual tokens and component conventions. Updating
+the vendored file requires an exact website release plus a byte-identity check before the Controlplane
+release. `assets/SHARED_UI_PROVENANCE.json` records the exact source release, commit, path, and content
+hash used by this checkout. The canonical brand mark is `public/logo-mark.png` in that same repository.
+Plan embeds its reviewed copy locally, so the page has no runtime asset dependency.
 
 Before release, integrate these files into a reviewed immutable Controlplane release, run the
 Plan rendering and security tests plus an authenticated visual regression against the exact

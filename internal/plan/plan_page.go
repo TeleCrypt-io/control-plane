@@ -7,7 +7,8 @@ import (
 
 // The Plan presentation is kept in local embedded assets. This makes the page
 // independently maintainable without introducing a frontend build or a runtime
-// dependency. Its tokens mirror the framework-neutral shared UI package:
+// dependency. Its tokens mirror the framework-neutral shared UI source in
+// www.telecrypt.io:
 // light canvas and surfaces, system type, compact controls, small radii, and
 // neutral borders. Product identity remains local: Plan uses TeleCrypt's
 // original custom mark without a runtime asset dependency.
@@ -15,9 +16,9 @@ import (
 //go:embed assets/plan.html
 var planHTML string
 
-// planProductCSS is vendored byte-for-byte from the exact shared UI release
-// source used by the shared UI library. It is embedded because Plan has no frontend build
-// or runtime package manager.
+// planProductCSS is vendored byte-for-byte from the exact www.telecrypt.io
+// release recorded in SHARED_UI_PROVENANCE.json. It is embedded because Plan
+// has no frontend build or runtime package manager.
 //
 //go:embed assets/product.css
 var planProductCSS []byte

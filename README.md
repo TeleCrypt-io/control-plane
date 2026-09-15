@@ -3,7 +3,7 @@
 Public source for the non-payment control-plane components of a TeleCrypt Matrix deployment:
 
 Current TeleCrypt project facts and decisions are maintained only in the canonical
-[`llms.txt`](https://telecrypt-io.github.io/llms-authority/llms.txt); this README documents the components implemented here.
+[`llms.txt`](https://www.telecrypt.io/llms.txt); this README documents the components implemented here.
 
 - `registration` provisions Matrix agent accounts without holding a database connection.
 - `janitor` runs a single-flight sweep that locks stale accounts and, when mail is configured, sends owner digests. It never unlocks accounts and reads only the two Cashier-owned Janitor views.

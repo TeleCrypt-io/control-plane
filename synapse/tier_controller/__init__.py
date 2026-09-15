@@ -39,7 +39,7 @@ _DENIAL_MESSAGE = (
     "This account needs an active paid team seat for uploads, encryption, and additional rooms. "
     "Ask your team's paying owner to assign a seat or restore access in Plan at "
     "https://telecrypt.io/plan. "
-    "See https://telecrypt-io.github.io/llms-authority/llms.txt"
+    "See https://www.telecrypt.io/llms.txt"
 )
 
 
