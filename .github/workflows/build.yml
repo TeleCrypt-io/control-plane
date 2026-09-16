@@ -529,7 +529,8 @@ jobs:
           package_owner="${GITHUB_REPOSITORY%%/*}"
           # The image package keeps the stable controlplane name after the repository rename.
           package_name="${IMAGE##*/}"
-          [[ "$package_owner/$package_name" == "$GITHUB_REPOSITORY" ]]
+          image_path="${IMAGE#ghcr.io/}"
+          [[ "$image_path" == "${package_owner,,}/$package_name" ]]
           [[ "$package_owner" =~ ^[A-Za-z0-9_.-]+$ && "$package_name" =~ ^[A-Za-z0-9_.-]+$ ]]
           package_page="$(mktemp)"; package_records="$(mktemp)"; package_diagnostics="$(mktemp -d)"
           cleanup() {
