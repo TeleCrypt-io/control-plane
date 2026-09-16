@@ -1,6 +1,6 @@
 # tier_controller — fail-closed capability restrictions for unverified users.
 #
-# Installed by the standalone telecrypt-synapse image from the exact wheel release and loaded by
+# Installed by the standalone Synapse server container image from the exact wheel release and loaded by
 # Synapse's `modules:` configuration. It is not copied into the Controlplane image. Inverted tier
 # model: everyone is RESTRICTED (no uploads,
 # a capped number of created rooms, no m.room.encryption) unless user_type == 'verified'.

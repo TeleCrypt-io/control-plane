@@ -18,7 +18,7 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/plan ./cmd/plan
 # verified TLS, so the shared runtime bundle must contain the CA trust store.
 #
 # The tier controller is intentionally absent from this image. GitHub Actions releases it only as a
-# wheel; the standalone telecrypt-synapse builder downloads that exact release asset and verifies
+# wheel; the standalone Synapse server container builder downloads that exact release asset and verifies
 # its checksum after that repository updates its pinned manifest.
 #
 # CMD defaults to the Registration component. It is a default, rather than an ENTRYPOINT, because this
