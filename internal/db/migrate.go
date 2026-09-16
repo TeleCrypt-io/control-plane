@@ -230,6 +230,15 @@ func readJanitorRelations(ctx context.Context, tx pgx.Tx) (map[string]janitorRel
 }
 
 func validateJanitorRelations(relations map[string]janitorRelation, currentRole string, requireAll bool) error {
+	allowed := make(map[string]struct{}, len(requiredJanitorRelations))
+	for _, name := range requiredJanitorRelations {
+		allowed[name] = struct{}{}
+	}
+	for name := range relations {
+		if _, ok := allowed[name]; !ok {
+			return fmt.Errorf("unexpected Janitor schema relation %q; operator diagnosis required", name)
+		}
+	}
 	for _, name := range requiredJanitorRelations {
 		relation, exists := relations[name]
 		if !exists {
