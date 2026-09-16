@@ -24,7 +24,7 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/plan ./cmd/plan
 # CMD defaults to the Registration component. It is a default, rather than an ENTRYPOINT, because this
 # one image contains three separately deployed components; Janitor and Plan replace CMD.
 FROM scratch AS controlplane
-LABEL org.opencontainers.image.source="https://github.com/TeleCrypt-io/controlplane"
+LABEL org.opencontainers.image.source="https://github.com/TeleCrypt-io/control-plane"
 LABEL org.opencontainers.image.licenses="BUSL-1.1"
 LABEL org.opencontainers.image.title="TeleCrypt Controlplane"
 LABEL org.opencontainers.image.description="TeleCrypt Registration, Janitor, and Plan services"

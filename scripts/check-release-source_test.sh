@@ -4,7 +4,7 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 url_helper="$repo_root/scripts/check-release-source_helpers.sh"
-tier_controller_pyproject="$repo_root/synapse/tier_controller/pyproject.toml"
+tier_controller_pyproject="$repo_root/synapse-policy/pyproject.toml"
 
 # Exercise helper implementations with bounded synthetic inputs. Workflow contract checks belong
 # in the workflow itself; duplicating its source text here only makes harmless refactors fail.
@@ -106,19 +106,19 @@ test "$(stat -c %s "$temporary/large-stderr.stderr")" -eq 70000
 
 # shellcheck source=scripts/check-release-source_helpers.sh
 source "$url_helper"
-canonical_repository='TeleCrypt-io/controlplane'
-canonical_url='https://github.com/TeleCrypt-io/controlplane.git'
-test "$(normalize_canonical_origin_url "$canonical_repository" 'https://github.com/TeleCrypt-io/controlplane')" = "$canonical_url"
+canonical_repository='TeleCrypt-io/control-plane'
+canonical_url='https://github.com/TeleCrypt-io/control-plane.git'
+test "$(normalize_canonical_origin_url "$canonical_repository" 'https://github.com/TeleCrypt-io/control-plane')" = "$canonical_url"
 test "$(normalize_canonical_origin_url "$canonical_repository" "$canonical_url")" = "$canonical_url"
 
 for hostile_url in \
-  'https://user:secret@github.com/TeleCrypt-io/controlplane.git' \
-  'http://github.com/TeleCrypt-io/controlplane.git' \
-  'https://gitlab.com/TeleCrypt-io/controlplane.git' \
-  'https://github.com/TeleCrypt-io/controlplane/' \
-  'https://github.com/TeleCrypt-io/controlplane.git?query=1' \
-  'ssh://git@github.com/TeleCrypt-io/controlplane.git' \
-  $'https://github.com/TeleCrypt-io/controlplane\nhttps://github.com/TeleCrypt-io/controlplane.git'; do
+  'https://user:secret@github.com/TeleCrypt-io/control-plane.git' \
+  'http://github.com/TeleCrypt-io/control-plane.git' \
+  'https://gitlab.com/TeleCrypt-io/control-plane.git' \
+  'https://github.com/TeleCrypt-io/control-plane/' \
+  'https://github.com/TeleCrypt-io/control-plane.git?query=1' \
+  'ssh://git@github.com/TeleCrypt-io/control-plane.git' \
+  $'https://github.com/TeleCrypt-io/control-plane\nhttps://github.com/TeleCrypt-io/control-plane.git'; do
   if normalize_canonical_origin_url "$canonical_repository" "$hostile_url" >/dev/null; then
     echo "hostile origin URL was accepted: $hostile_url" >&2
     exit 1

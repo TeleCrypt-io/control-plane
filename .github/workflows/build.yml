@@ -58,7 +58,7 @@ jobs:
           [[ "$(sed -n 's/^FROM \(golang:[^ ]*\) AS controlplane-build$/\1/p' Dockerfile)" == "golang:${GO_VERSION}-alpine" ]]
           [[ "$PYTHON_VERSION" == 3.12.14 ]]
           [[ "$SYNAPSE_IMAGE" == "ghcr.io/element-hq/synapse:v${SYNAPSE_VERSION}" ]]
-          [[ "$(sed -n 's/^requires = \["\([^"]*\)"\]$/\1/p' synapse/tier_controller/pyproject.toml)" == setuptools==84.0.0 ]]
+          [[ "$(sed -n 's/^requires = \["\([^"]*\)"\]$/\1/p' synapse-policy/pyproject.toml)" == setuptools==84.0.0 ]]
       - name: Test Go services
         run: go test ./...
       - name: Vet Go services
@@ -73,18 +73,18 @@ jobs:
           test_wheelhouse=/tmp/tier-controller-test-wheelhouse
           rm -rf -- "$test_wheelhouse"; mkdir -p "$test_wheelhouse"
           python -m pip download --disable-pip-version-check --only-binary=:all: --no-deps --require-hashes \
-            --dest "$test_wheelhouse" -r synapse/tier_controller/requirements-test.txt
+            --dest "$test_wheelhouse" -r synapse-policy/requirements-test.txt
           python -m venv /tmp/tier-controller-venv
           python_bin=/tmp/tier-controller-venv/bin/python
           "$python_bin" -m pip install --disable-pip-version-check --no-index \
-            --find-links="$test_wheelhouse" --require-hashes -r synapse/tier_controller/requirements-test.txt
+            --find-links="$test_wheelhouse" --require-hashes -r synapse-policy/requirements-test.txt
           "$python_bin" -c 'import setuptools; assert setuptools.__version__ == "84.0.0"'
-          "$python_bin" -m build --no-isolation --wheel --outdir dist/tier-controller synapse/tier_controller
+          "$python_bin" -m build --no-isolation --wheel --outdir dist/tier-controller synapse-policy
           timeout --signal=TERM --kill-after=5s 120s docker pull "$SYNAPSE_IMAGE"
           timeout --signal=TERM --kill-after=5s 120s docker run --rm --user 0:0 \
             --env PIP_ROOT_USER_ACTION=ignore \
             --mount "type=bind,src=$GITHUB_WORKSPACE/dist/tier-controller,dst=/wheel,readonly" \
-            --mount "type=bind,src=$GITHUB_WORKSPACE/synapse/tier_controller/test_tier_controller.py,dst=/work/test_tier_controller.py,readonly" \
+            --mount "type=bind,src=$GITHUB_WORKSPACE/synapse-policy/test_tier_controller.py,dst=/work/test_tier_controller.py,readonly" \
             --entrypoint python "$SYNAPSE_IMAGE" - <<'PY'
           import pathlib, site, subprocess, sys
           wheel = next(pathlib.Path('/wheel').glob('*.whl'))
@@ -162,7 +162,7 @@ jobs:
       - name: Require the exact tested wheel
         run: |
           set -euo pipefail
-          source_version="$(python -c 'import tomllib; print(tomllib.load(open("synapse/tier_controller/pyproject.toml", "rb"))["project"]["version"])')"
+          source_version="$(python -c 'import tomllib; print(tomllib.load(open("synapse-policy/pyproject.toml", "rb"))["project"]["version"])')"
           [[ "$source_version" == "$RELEASE_TAG" ]]
           shopt -s nullglob; wheels=(dist/tier-controller/*.whl)
           [[ "${#wheels[@]}" -eq 1 ]]; wheel="${wheels[0]##*/}"

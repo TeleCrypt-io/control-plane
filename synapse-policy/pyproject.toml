@@ -4,9 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "telecrypt-tier-controller"
-version = "0.5.30"
+version = "0.5.31"
 description = "TeleCrypt fail-closed Synapse capability-policy module"
-readme = "README.md"
 requires-python = ">=3.10"
 license = "LicenseRef-BUSL-1.1"
 license-files = ["LICENSE", "NOTICE"]
