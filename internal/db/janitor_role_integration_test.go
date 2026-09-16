@@ -80,7 +80,7 @@ func TestJanitorDatabaseContractPG17(t *testing.T) {
 	if err := ValidateJanitorSchemaACL(ctx, janitorPool); err != nil {
 		t.Fatalf("ValidateJanitorSchemaACL: %v", err)
 	}
-	if err := ValidateJanitorDatabaseContract(ctx, janitorPool, cashierRole); err != nil {
+	if err := ValidateJanitorDatabaseContract(ctx, janitorPool); err != nil {
 		t.Fatalf("ValidateJanitorDatabaseContract: %v", err)
 	}
 	store := NewStore(janitorPool)

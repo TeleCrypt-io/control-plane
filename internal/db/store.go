@@ -21,14 +21,35 @@ const (
 	maxDeploymentIdentityRows = 1
 )
 
-// ValidateDeploymentProfile is the one exact profile table shared by Plan, Janitor, and
-// deployment-time checks. Billing mode is explicit and never inferred from credentials or a
-// hostname alone.
+// ValidateServerName accepts the deployment hostname used to derive public endpoints and to bind
+// append-only Janitor audit records. The Cashier deployment-identity view remains the authority
+// for which deployment is connected to a database.
+func ValidateServerName(serverName string) error {
+	if len(serverName) == 0 || len(serverName) > 253 || strings.TrimSpace(serverName) != serverName {
+		return fmt.Errorf("SERVER_NAME must be a valid hostname")
+	}
+	for _, label := range strings.Split(serverName, ".") {
+		if len(label) == 0 || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+			return fmt.Errorf("SERVER_NAME must be a valid hostname")
+		}
+		for i := 0; i < len(label); i++ {
+			c := label[i]
+			if (c < 'a' || c > 'z') && (c < 'A' || c > 'Z') && (c < '0' || c > '9') && c != '-' {
+				return fmt.Errorf("SERVER_NAME must be a valid hostname")
+			}
+		}
+	}
+	return nil
+}
+
+// ValidateDeploymentProfile is the one profile check shared by Plan, Janitor, and audit writes.
+// Billing mode is explicit and never inferred from credentials or a hostname alone.
 func ValidateDeploymentProfile(serverName, billingEnvironment string) error {
+	if err := ValidateServerName(serverName); err != nil {
+		return err
+	}
 	switch {
-	case serverName == "telecrypt.io" && (billingEnvironment == "test" || billingEnvironment == "live"):
-		return nil
-	case serverName == "stage.telecrypt.io" && billingEnvironment == "test":
+	case billingEnvironment == "test" || billingEnvironment == "live":
 		return nil
 	default:
 		return fmt.Errorf("invalid SERVER_NAME/BILLING_ENVIRONMENT profile")

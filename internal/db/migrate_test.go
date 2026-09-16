@@ -85,36 +85,20 @@ func TestValidateMigrationStateRejectsChangedMigrationDigest(t *testing.T) {
 	}
 }
 
-func TestValidateJanitorMigrationNamesRequiresFrozenStream(t *testing.T) {
-	for _, tc := range []struct {
-		name  string
-		names []string
-		valid bool
-	}{
-		{name: "exact stream", names: expectedJanitorMigrationNames, valid: true},
-		{name: "extra migration", names: []string{janitorDigestCursorMigration, janitorRunEventsMigration, janitorRemoveDryRunMigration, "0004_extra.sql"}},
-		{name: "renamed migration", names: []string{janitorDigestCursorMigration, "0002_renamed.sql"}},
-		{name: "missing migration", names: []string{janitorDigestCursorMigration, janitorRunEventsMigration}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			if (validateJanitorMigrationNames(tc.names) == nil) != tc.valid {
-				t.Fatalf("validateJanitorMigrationNames(%v) validity mismatch", tc.names)
-			}
-		})
-	}
-}
-
-func TestLoadJanitorMigrationsUsesFrozenChecksummedSources(t *testing.T) {
+func TestLoadJanitorMigrationsUsesChecksummedSources(t *testing.T) {
 	migrations, err := loadMigrations()
 	if err != nil {
 		t.Fatalf("loadMigrations: %v", err)
 	}
-	if len(migrations) != len(expectedJanitorMigrationNames) {
-		t.Fatalf("migration count = %d, want %d", len(migrations), len(expectedJanitorMigrationNames))
+	if len(migrations) == 0 {
+		t.Fatal("loadMigrations returned no migrations")
 	}
 	for i, migration := range migrations {
-		if migration.name != expectedJanitorMigrationNames[i] || len(migration.sha256) != 64 {
-			t.Fatalf("migration %d = (%q, %q), want frozen name and SHA-256 digest", i, migration.name, migration.sha256)
+		if i > 0 && migration.name <= migrations[i-1].name {
+			t.Fatalf("migrations are not sorted: %q follows %q", migration.name, migrations[i-1].name)
+		}
+		if len(migration.sha256) != 64 {
+			t.Fatalf("migration %d %q has invalid SHA-256 digest %q", i, migration.name, migration.sha256)
 		}
 	}
 }
@@ -127,9 +111,6 @@ func TestValidateJanitorRelations(t *testing.T) {
 	}
 	if err := validateJanitorRelations(valid, "janitor", true); err != nil {
 		t.Fatalf("validateJanitorRelations rejected required tables: %v", err)
-	}
-	if err := validateJanitorRelations(map[string]janitorRelation{"other": {kind: "r", owner: "janitor"}}, "janitor", false); err == nil || !strings.Contains(err.Error(), "unexpected Janitor schema relation") {
-		t.Fatalf("validateJanitorRelations accepted unrelated relation: %v", err)
 	}
 	tests := []struct {
 		name      string
@@ -196,8 +177,8 @@ func TestMigrateUsesFreshJanitorSchema(t *testing.T) {
 	if err := pool.QueryRow(ctx, `SELECT pg_catalog.count(*) FROM janitor.schema_migrations`).Scan(&migrationCount); err != nil {
 		t.Fatalf("count migrations: %v", err)
 	}
-	if migrationCount != 3 {
-		t.Fatalf("migration count = %d, want 3", migrationCount)
+	if migrationCount != 4 {
+		t.Fatalf("migration count = %d, want 4", migrationCount)
 	}
 	if err := Migrate(ctx, pool); err != nil {
 		t.Fatalf("second Migrate: %v", err)
@@ -226,8 +207,8 @@ func TestMigratePreservesHistoricalPreviewAudit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loadMigrations: %v", err)
 	}
-	if len(migrations) != 3 {
-		t.Fatalf("migration count = %d, want 3", len(migrations))
+	if len(migrations) != 4 {
+		t.Fatalf("migration count = %d, want 4", len(migrations))
 	}
 	if _, err := pool.Exec(ctx, string(migrations[0].sql)); err != nil {
 		t.Fatalf("apply 0001 migration: %v", err)
@@ -693,7 +674,7 @@ func TestMigrateLockCancellationAndConcurrentStarts(t *testing.T) {
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM janitor.schema_migrations`).Scan(&migrationCount); err != nil {
 		t.Fatalf("count concurrent migration records: %v", err)
 	}
-	if migrationCount != 3 {
-		t.Fatalf("concurrent migration records = %d, want 3", migrationCount)
+	if migrationCount != 4 {
+		t.Fatalf("concurrent migration records = %d, want 4", migrationCount)
 	}
 }

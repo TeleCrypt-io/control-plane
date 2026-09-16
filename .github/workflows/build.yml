@@ -10,9 +10,6 @@ permissions:
   contents: read
 
 env:
-  GIT_CONFIG_COUNT: "1"
-  GIT_CONFIG_KEY_0: init.defaultBranch
-  GIT_CONFIG_VALUE_0: main
   GO_VERSION: "1.26.4"
   PYTHON_VERSION: "3.12.14"
   SYNAPSE_VERSION: "1.159.0"
@@ -39,26 +36,31 @@ jobs:
       PIP_ROOT_USER_ACTION: ignore
     steps:
       - uses: actions/checkout@v7.0.1
-        timeout-minutes: 5
         with:
           fetch-depth: 0
           persist-credentials: false
-      - name: Verify release workflow contract
-        run: |
-          set -euo pipefail
-          bash -n scripts/check-release-source.sh scripts/check-release-source_helpers.sh scripts/check-release-source_test.sh scripts/release-helpers.sh
-          scripts/check-release-source_test.sh
       - uses: actions/setup-go@v7.0.0
         with:
           go-version: ${{ env.GO_VERSION }}
-      - name: Require exact Go and component versions
+      - name: Require exact tool versions
         run: |
           set -euo pipefail
           [[ "$(awk '$1 == "go" { print $2; exit }' go.mod)" == "$GO_VERSION" ]]
           [[ "$(sed -n 's/^FROM \(golang:[^ ]*\) AS controlplane-build$/\1/p' Dockerfile)" == "golang:${GO_VERSION}-alpine" ]]
-          [[ "$PYTHON_VERSION" == 3.12.14 ]]
+          [[ "$(sed -n 's/^requires = \[\"\([^\"]*\)\"\]$/\1/p' pyproject.toml)" == setuptools==84.0.0 ]]
           [[ "$SYNAPSE_IMAGE" == "ghcr.io/element-hq/synapse:v${SYNAPSE_VERSION}" ]]
-          [[ "$(sed -n 's/^requires = \["\([^"]*\)"\]$/\1/p' synapse-policy/pyproject.toml)" == setuptools==84.0.0 ]]
+      - name: Check tag source
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_TAG" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
+          [[ "$RELEASE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$(git cat-file -t "$RELEASE_TAG")" == tag ]]
+          [[ "$(git rev-parse "$RELEASE_TAG^{}")" == "$RELEASE_SHA" ]]
+          [[ "$(git rev-parse HEAD)" == "$RELEASE_SHA" ]]
       - name: Test Go services
         run: go test ./...
       - name: Vet Go services
@@ -69,9 +71,9 @@ jobs:
       - name: Build and test tier-controller wheel
         run: |
           set -euo pipefail
-          source scripts/release-helpers.sh
           test_wheelhouse=/tmp/tier-controller-test-wheelhouse
-          rm -rf -- "$test_wheelhouse"; mkdir -p "$test_wheelhouse"
+          rm -rf -- "$test_wheelhouse"
+          mkdir -p "$test_wheelhouse"
           python -m pip download --disable-pip-version-check --only-binary=:all: --no-deps --require-hashes \
             --dest "$test_wheelhouse" -r synapse-policy/requirements-test.txt
           python -m venv /tmp/tier-controller-venv
@@ -79,7 +81,7 @@ jobs:
           "$python_bin" -m pip install --disable-pip-version-check --no-index \
             --find-links="$test_wheelhouse" --require-hashes -r synapse-policy/requirements-test.txt
           "$python_bin" -c 'import setuptools; assert setuptools.__version__ == "84.0.0"'
-          "$python_bin" -m build --no-isolation --wheel --outdir dist/tier-controller synapse-policy
+          "$python_bin" -m build --no-isolation --wheel --outdir dist/tier-controller .
           timeout --signal=TERM --kill-after=5s 120s docker pull "$SYNAPSE_IMAGE"
           timeout --signal=TERM --kill-after=5s 120s docker run --rm --user 0:0 \
             --env PIP_ROOT_USER_ACTION=ignore \
@@ -91,20 +93,17 @@ jobs:
           subprocess.run([sys.executable, '-m', 'pip', 'install', '--no-index', '--no-deps', '--target', site.getsitepackages()[0], str(wheel)], check=True)
           subprocess.run([sys.executable, '/work/test_tier_controller.py'], check=True)
           PY
-      - name: Create tested tier-controller wheel checksum
+      - name: Check tested wheel
         run: |
           set -euo pipefail
-          shopt -s nullglob; wheels=(dist/tier-controller/*.whl)
-          [[ "${#wheels[@]}" -eq 1 ]]; wheel="${wheels[0]##*/}"
+          shopt -s nullglob
+          wheels=(dist/tier-controller/*.whl)
+          [[ "${#wheels[@]}" -eq 1 ]]
+          wheel="${wheels[0]##*/}"
           (cd dist/tier-controller && sha256sum "$wheel" >"$wheel.sha256" && sha256sum --strict --check "$wheel.sha256")
-          files=(dist/tier-controller/*); [[ "${#files[@]}" -eq 2 ]]
+          files=(dist/tier-controller/*)
+          [[ "${#files[@]}" -eq 2 ]]
           [[ "$(wc -c <"${wheels[0]}")" -le 67108864 ]]
-      - name: Recheck release source before wheel publication
-        if: startsWith(github.ref, 'refs/tags/')
-        env:
-          RELEASE_TAG: ${{ github.ref_name }}
-          RELEASE_SHA: ${{ github.sha }}
-        run: scripts/check-release-source.sh
       - uses: actions/upload-artifact@v7.0.1
         with:
           name: controlplane-wheel-${{ github.run_id }}-${{ github.sha }}
@@ -127,7 +126,6 @@ jobs:
       RELEASE_TAG: ${{ github.ref_name }}
       RELEASE_SHA: ${{ github.sha }}
       IMAGE: ghcr.io/telecrypt-io/controlplane
-      IMAGE_BUILD_REF: ghcr.io/telecrypt-io/controlplane:controlplane-build-${{ github.run_id }}-${{ github.run_attempt }}
       RELEASE_WHEEL: telecrypt_tier_controller-${{ github.ref_name }}-py3-none-any.whl
       RELEASE_BINDING: controlplane-${{ github.ref_name }}.digest.json
     permissions:
@@ -136,21 +134,23 @@ jobs:
       packages: write
     steps:
       - uses: actions/checkout@v7.0.1
-        timeout-minutes: 5
         with:
           fetch-depth: 0
           persist-credentials: false
-      - name: Require an exact numeric release tag and source
+      - name: Verify release tag and source
         run: |
           set -euo pipefail
           [[ "$GITHUB_REF" == "refs/tags/$RELEASE_TAG" ]]
           [[ "$RELEASE_TAG" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
           [[ "$RELEASE_SHA" =~ ^[0-9a-f]{40}$ ]]
-          scripts/check-release-source.sh
+          [[ "$(git cat-file -t "$RELEASE_TAG")" == tag ]]
+          [[ "$(git rev-parse "$RELEASE_TAG^{}")" == "$RELEASE_SHA" ]]
+          [[ "$(git rev-parse HEAD)" == "$RELEASE_SHA" ]]
+          printf 'ANNOTATED_TAG_SHA=%s\n' "$(git rev-parse "$RELEASE_TAG^{tag}")" >>"$GITHUB_ENV"
       - uses: actions/setup-python@v7.0.0
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-      - name: Download the exact tested wheel
+      - name: Download tested wheel
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -159,13 +159,15 @@ jobs:
             --repo "$GITHUB_REPOSITORY" \
             --name "controlplane-wheel-${GITHUB_RUN_ID}-${GITHUB_SHA}" \
             --dir dist/tier-controller
-      - name: Require the exact tested wheel
+      - name: Verify wheel and source version
         run: |
           set -euo pipefail
-          source_version="$(python -c 'import tomllib; print(tomllib.load(open("synapse-policy/pyproject.toml", "rb"))["project"]["version"])')"
+          source_version="$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
           [[ "$source_version" == "$RELEASE_TAG" ]]
-          shopt -s nullglob; wheels=(dist/tier-controller/*.whl)
-          [[ "${#wheels[@]}" -eq 1 ]]; wheel="${wheels[0]##*/}"
+          shopt -s nullglob
+          wheels=(dist/tier-controller/*.whl)
+          [[ "${#wheels[@]}" -eq 1 ]]
+          wheel="${wheels[0]##*/}"
           [[ "$wheel" == "$RELEASE_WHEEL" ]]
           (cd dist/tier-controller && sha256sum --strict --check "$wheel.sha256")
           python - "${wheels[0]}" <<'PY'
@@ -178,149 +180,25 @@ jobs:
               assert not metadata.get_all('Requires-Dist')
               assert any(n.endswith('.dist-info/licenses/LICENSE') for n in names)
               assert any(n.endswith('.dist-info/licenses/NOTICE') for n in names)
-              wheel_name = pathlib.Path(sys.argv[1]).name
-              wheel_prefix = 'telecrypt_tier_controller-'
-              assert wheel_name.startswith(wheel_prefix)
-              wheel_version = wheel_name.removeprefix(wheel_prefix).split('-', 1)[0]
-              assert wheel_version and metadata['Version'] == wheel_version
+              assert metadata['Version'] == pathlib.Path(sys.argv[1]).name.removeprefix('telecrypt_tier_controller-').split('-', 1)[0]
           PY
           for notice in LICENSE NOTICE; do test -s "$notice"; done
-      - name: Log in to GHCR
-        uses: docker/login-action@v4.6.0
+      - uses: docker/login-action@v4.6.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - uses: docker/setup-buildx-action@v4.3.0
-      - name: Reuse and verify an exact immutable Release
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_METADATA_DIR: ${{ runner.temp }}/controlplane-release-assets
-        run: |
-          set -euo pipefail
-          source scripts/release-helpers.sh
-          docker_command() { timeout --signal=TERM --kill-after=5s 120s docker "$@"; }
-          mkdir -p "$RELEASE_METADATA_DIR"
-          release_json="$(mktemp)"; page_json="$(mktemp)"; page_diagnostics="$(mktemp -d)"; download_dir="$(mktemp -d)"
-          cleanup() {
-            local status=0
-            if ! rm -f -- "$release_json" "$release_json.stderr" "$page_json" "$page_json.stderr"; then status=1; fi
-            if ! rm -rf -- "$page_diagnostics"; then status=1; fi
-            if ! rm -rf -- "$download_dir"; then status=1; fi
-            return "$status"
-          }
-          cleanup_on_exit() {
-            local status=$?
-            trap - EXIT
-            if ! cleanup && [[ "$status" -eq 0 ]]; then status=1; fi
-            exit "$status"
-          }
-          trap cleanup_on_exit EXIT
-          replay_release_pages() {
-            local status=0 page_file
-            for page_file in "$page_diagnostics"/*.json; do
-              [[ -e "$page_file" ]] || continue
-              if ! cat -- "$page_file" >&2; then status=1; fi
-              if ! cat -- "$page_file.stderr" >&2; then status=1; fi
-            done
-            return "$status"
-          }
-          found=false
-          for (( page=1; ; page++ )); do
-            capture_command "$page_json" 120 gh api --hostname github.com -H 'Accept: application/vnd.github+json' -H 'X-GitHub-Api-Version: 2026-03-10' \
-              "repos/$GITHUB_REPOSITORY/releases?per_page=100&page=$page"
-            if ! cp -- "$page_json" "$page_diagnostics/page-$page.json" ||
-              ! cp -- "$page_json.stderr" "$page_diagnostics/page-$page.json.stderr"; then
-              echo 'Release response retention failed' >&2
-              replay_capture "$page_json" || echo 'Release response diagnostics could not be replayed' >&2
-              exit 1
-            fi
-            capture_jq "$page_json" 'type == "array" and length <= 100'
-            matches="$(jq --arg tag "$RELEASE_TAG" '[.[] | select(.tag_name == $tag)]' "$page_json")"
-            [[ "$(jq length <<<"$matches")" -le 1 ]]
-            if [[ "$(jq length <<<"$matches")" -eq 1 ]]; then
-              if [[ "$found" == "true" ]]; then
-                echo 'release tag appeared twice' >&2
-                replay_release_pages || echo 'Release list response diagnostics could not be replayed' >&2
-                exit 1
-              fi
-              jq -e '.[0]' <<<"$matches" >"$release_json"; found=true
-            fi
-            [[ "$(jq length "$page_json")" -lt 100 ]] && break
-          done
-          if [[ "$found" != "true" ]]; then
-            printf 'RELEASE_EXISTS=false\nRELEASE_REUSE=false\n' >>"$GITHUB_ENV"; exit 0
-          fi
-          capture_extract release_id "$release_json" '.id | select(type == "number" and . > 0 and . == floor)'
-          capture_jq "$release_json" --arg tag "$RELEASE_TAG" \
-            '.tag_name == $tag and .name == $tag and .prerelease == false and ((.draft == false and .immutable == true) or (.draft == true and .immutable == false))'
-          capture_extract count "$release_json" '.assets | type == "array" and length'
-          if [[ "$count" -ne 2 ]]; then
-            echo 'immutable Release must contain exactly two assets' >&2
-            replay_capture "$release_json" || echo 'Release response diagnostics could not be replayed' >&2
-            exit 1
-          fi
-          capture_jq "$release_json" 'all(.assets[];
-            (.id | type == "number" and . > 0 and . == floor) and
-            (.size | type == "number" and . > 0 and . <= 67108864) and
-            (.digest | type == "string" and test("^sha256:[0-9a-f]{64}$")))'
-          printf 'RELEASE_EXISTS=true\nRELEASE_ID=%s\n' "$release_id" >>"$GITHUB_ENV"
-          if [[ "$(jq -er '.draft' "$release_json")" == "true" ]]; then
-            printf 'RELEASE_DRAFT_ID=%s\n' "$release_id" >>"$GITHUB_ENV"
-          fi
-          expected_assets="$(printf '%s\n' "$RELEASE_BINDING" "$RELEASE_WHEEL" | sort)"
-          actual_assets="$(jq -r '.assets[].name' "$release_json" | sort)"
-          if [[ "$actual_assets" != "$expected_assets" ]]; then
-            echo 'immutable Release assets do not match the exact expected set' >&2
-            replay_capture "$release_json" || echo 'Release response diagnostics could not be replayed' >&2
-            exit 1
-          fi
-          tag_object="$ANNOTATED_TAG_SHA"
-          for asset in "$RELEASE_BINDING" "$RELEASE_WHEEL"; do
-            capture_extract asset_id "$release_json" --arg name "$asset" '.assets[] | select(.name == $name) | .id'
-            capture_extract asset_size "$release_json" --arg name "$asset" '.assets[] | select(.name == $name) | .size'
-            capture_extract asset_digest "$release_json" --arg name "$asset" '.assets[] | select(.name == $name) | .digest | select(test("^sha256:[0-9a-f]{64}$"))'
-            if [[ "$asset" == "$RELEASE_WHEEL" ]]; then
-              capture_command --binary-output "$download_dir/$asset" 120 gh api --hostname github.com -H 'Accept: application/octet-stream' -H 'X-GitHub-Api-Version: 2026-03-10' "repos/$GITHUB_REPOSITORY/releases/assets/$asset_id"
-            else
-              capture_command "$download_dir/$asset" 120 gh api --hostname github.com -H 'Accept: application/octet-stream' -H 'X-GitHub-Api-Version: 2026-03-10' "repos/$GITHUB_REPOSITORY/releases/assets/$asset_id"
-            fi
-            if [[ "$(wc -c <"$download_dir/$asset")" -ne "$asset_size" || \
-              "sha256:$(sha256sum "$download_dir/$asset" | awk '{print $1}')" != "$asset_digest" ]]; then
-              echo "Release asset $asset did not match its complete API metadata" >&2
-              replay_capture "$release_json" || echo 'Release response diagnostics could not be replayed' >&2
-              if [[ "$asset" != "$RELEASE_WHEEL" ]]; then
-                replay_capture "$download_dir/$asset" || echo 'Release asset diagnostics could not be replayed' >&2
-              fi
-              exit 1
-            fi
-          done
-          if ! cmp -- "dist/tier-controller/$RELEASE_WHEEL" "$download_dir/$RELEASE_WHEEL"; then
-            echo 'Release wheel asset did not match the tested wheel' >&2
-            replay_capture "$release_json" || echo 'Release response diagnostics could not be replayed' >&2
-            exit 1
-          fi
-          capture_jq "$download_dir/$RELEASE_BINDING" --arg image "$IMAGE" --arg tag "$RELEASE_TAG" --arg source "$RELEASE_SHA" --arg tag_object "$tag_object" \
-            'type == "object" and (keys | sort) == ["annotated_tag_sha", "digest", "image", "schema_version", "source_commit", "tag"] and .schema_version == 1 and .image == $image and .tag == $tag and .source_commit == $source and .annotated_tag_sha == $tag_object and (.digest | type == "string" and test("^sha256:[0-9a-f]{64}$"))'
-          capture_extract digest "$download_dir/$RELEASE_BINDING" '.digest | select(test("^sha256:[0-9a-f]{64}$"))'
-          test "$(docker_command buildx imagetools inspect "$IMAGE:$RELEASE_TAG" --format '{{.Manifest.Digest}}')" = "$digest"
-          cp -- "$download_dir/$RELEASE_BINDING" "$RELEASE_METADATA_DIR/$RELEASE_BINDING"
-          printf 'RELEASE_REUSE=true\nRELEASE_IMAGE_DIGEST=%s\n' "$digest" >>"$GITHUB_ENV"
-      - name: Recheck release source before image build
-        if: env.RELEASE_REUSE != 'true'
-        run: scripts/check-release-source.sh
-      - name: Build exact single-platform image and tested archive
-        id: build-image
-        if: env.RELEASE_REUSE != 'true'
+      - name: Build and push image
+        id: image
         uses: docker/build-push-action@v7.3.0
         with:
           context: .
+          target: controlplane
           platforms: linux/amd64
           provenance: false
-          target: controlplane
-          outputs: |
-            type=docker,name=${{ env.IMAGE_BUILD_REF }},dest=${{ runner.temp }}/controlplane-image.tar
-            type=image,name=${{ env.IMAGE }},push=true,push-by-digest=true,name-canonical=true
+          push: true
+          tags: ${{ env.IMAGE }}:${{ env.RELEASE_TAG }}
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.revision=${{ env.RELEASE_SHA }}
@@ -332,512 +210,84 @@ jobs:
             io.telecrypt.config-contract=1
             org.telecrypt.controlplane.release=${{ env.RELEASE_TAG }}
             org.telecrypt.tier-controller.release=${{ env.RELEASE_TAG }}
-      - name: Smoke-test exact image and license inventory
-        id: smoke-image
-        if: env.RELEASE_REUSE != 'true'
+      - name: Smoke-test published image
         env:
-          IMAGE_REF: ${{ env.IMAGE_BUILD_REF }}
+          IMAGE_REF: ${{ env.IMAGE }}:${{ env.RELEASE_TAG }}
+          BUILD_DIGEST: ${{ steps.image.outputs.digest }}
         run: |
           set -euo pipefail
-          source scripts/release-helpers.sh
-          docker_command() { timeout --signal=TERM --kill-after=5s 120s docker "$@"; }
-          diagnostics_dir="$(mktemp -d)"
-          registration_name=controlplane-registration-smoke; plan_name=controlplane-plan-smoke
-          cleanup() {
-            local status=0
-            if ! timeout --signal=TERM --kill-after=5s 30s docker rm -f "$registration_name" "$plan_name"; then
-              echo 'smoke container cleanup failed' >&2
-              status=1
-            fi
-            if ! rm -rf -- "$diagnostics_dir"; then
-              echo 'smoke diagnostics cleanup failed' >&2
-              status=1
-            fi
-            return "$status"
-          }
-          cleanup_on_exit() {
-            local status=$?
-            trap - EXIT
-            if ! cleanup; then
-              if [[ "$status" -eq 0 ]]; then
-                status=1
-              fi
-            fi
-            exit "$status"
-          }
-          trap cleanup_on_exit EXIT
-          capture_diagnostics_pid=""
-          capture_diagnostics_stdout=""
-          capture_diagnostics_stderr=""
-          capture_diagnostics_signal() {
-            local signal_name="$1" status=143 probe_status=0 kill_status=0 wait_status replay_status=0 failure_status=0
-            case "$signal_name" in
-              HUP) status=129 ;;
-              INT) status=130 ;;
-              TERM) status=143 ;;
-              *) status=143 ;;
-            esac
-            set +e
-            if [[ -n "$capture_diagnostics_pid" ]]; then
-              kill -0 "$capture_diagnostics_pid"
-              probe_status=$?
-              if [[ "$probe_status" -eq 0 ]]; then
-                kill -TERM "$capture_diagnostics_pid"
-                kill_status=$?
-                if [[ "$kill_status" -ne 0 ]]; then
-                  printf 'smoke diagnostic child termination failed during %s (status %s)\n' "$signal_name" "$kill_status" >&2
-                  failure_status=1
-                fi
-              elif [[ "$probe_status" -ne 1 ]]; then
-                printf 'smoke diagnostic child liveness check failed during %s (status %s)\n' "$signal_name" "$probe_status" >&2
-                failure_status=1
-              fi
-              wait "$capture_diagnostics_pid"
-              wait_status=$?
-              capture_diagnostics_pid=""
-              if [[ "$wait_status" -ne 0 && "$wait_status" -ne 143 ]]; then
-                printf 'smoke diagnostic child wait failed during %s (status %s)\n' "$signal_name" "$wait_status" >&2
-                failure_status=1
-              fi
-            fi
-            if [[ -n "$capture_diagnostics_stdout" ]] && ! cat -- "$capture_diagnostics_stdout" >&2; then replay_status=1; fi
-            if [[ -n "$capture_diagnostics_stderr" ]] && ! cat -- "$capture_diagnostics_stderr" >&2; then replay_status=1; fi
-            if [[ "$replay_status" -ne 0 ]]; then
-              printf 'smoke diagnostics could not be replayed after %s\n' "$signal_name" >&2
-              failure_status=1
-            fi
-            if [[ "$failure_status" -ne 0 ]]; then status=1; fi
-            exit "$status"
-          }
-          trap 'capture_diagnostics_signal HUP' HUP
-          trap 'capture_diagnostics_signal INT' INT
-          trap 'capture_diagnostics_signal TERM' TERM
-          capture_diagnostics() {
-            local stdout_file="$1" previous_hup previous_int previous_term status
-            shift
-            previous_hup="$(trap -p HUP || true)"
-            previous_int="$(trap -p INT || true)"
-            previous_term="$(trap -p TERM || true)"
-            capture_diagnostics_stdout="$stdout_file"
-            capture_diagnostics_stderr="$stdout_file.stderr"
-            trap 'capture_diagnostics_signal HUP' HUP
-            trap 'capture_diagnostics_signal INT' INT
-            trap 'capture_diagnostics_signal TERM' TERM
-            set +e
-            timeout --signal=TERM --kill-after=5s 120s "$@" >"$stdout_file" 2>"$stdout_file.stderr" &
-            capture_diagnostics_pid="$!"
-            wait "$capture_diagnostics_pid"
-            status="$?"
-            set -e
-            capture_diagnostics_pid=""
-            capture_diagnostics_stdout=""
-            capture_diagnostics_stderr=""
-            if [[ -n "$previous_hup" ]]; then eval "$previous_hup"; else trap - HUP; fi
-            if [[ -n "$previous_int" ]]; then eval "$previous_int"; else trap - INT; fi
-            if [[ -n "$previous_term" ]]; then eval "$previous_term"; else trap - TERM; fi
-            return "$status"
-          }
-          timeout --signal=TERM --kill-after=5s 120s docker load --input "$RUNNER_TEMP/controlplane-image.tar"
-          IMAGE_REF="$IMAGE_REF" RELEASE_TAG="$RELEASE_TAG" RELEASE_SHA="$RELEASE_SHA" GITHUB_REPOSITORY="$GITHUB_REPOSITORY" bash scripts/validate-image-contract.sh
-          emit_container_diagnostics() {
-            local name="$1" status_file="$diagnostics_dir/$1.status" log_file="$diagnostics_dir/$1.log"
-            local inspect_status logs_status
-            if capture_diagnostics "$status_file" docker inspect --format 'status={{.State.Status}} exit={{.State.ExitCode}} error={{.State.Error}}' "$name"; then
-              inspect_status=0
-            else
-              inspect_status="$?"
-            fi
-            if capture_diagnostics "$log_file" docker logs "$name"; then
-              logs_status=0
-            else
-              logs_status="$?"
-            fi
-            printf 'complete container diagnostics for %s:\n' "$name" >&2
-            if [[ "$inspect_status" -eq 0 || -s "$status_file" || -s "$status_file.stderr" ]]; then
-              cat -- "$status_file" >&2
-              cat -- "$status_file.stderr" >&2
-            else
-              echo 'container status unavailable' >&2
-            fi
-            if [[ "$logs_status" -eq 0 || -s "$log_file" || -s "$log_file.stderr" ]]; then
-              cat -- "$log_file" >&2
-              cat -- "$log_file.stderr" >&2
-            else
-              echo 'container logs unavailable' >&2
-            fi
-          }
-          docker_command run --detach --network host --name "$registration_name" --env SERVER_NAME=stage.telecrypt.io "$IMAGE_REF" /registration
-          docker_command run --detach --network host --name "$plan_name" --env SERVER_NAME=stage.telecrypt.io --env BILLING_ENVIRONMENT=test --env MAS_OIDC_CLIENT_ID=01J00000000000000000000000 --env MAS_OIDC_CLIENT_SECRET=smoke-secret --env MAS_ADMIN_CLIENT_ID=01J00000000000000000000000 --env MAS_ADMIN_CLIENT_SECRET=smoke-admin-secret --env PLAN_SESSION_KEY=ssssssssssssssssssssssssssssssss --env PLAN_ASSERTION_PRIVATE_KEY=AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyB5tVYuj-ZU-UB4sRLoqYunkB-FOuaVvtfg45ELrQSWZA "$IMAGE_REF" /plan
-          registration_status=""; registration_curl_status=1
-          for attempt in $(seq 1 30); do
-            registration_body="$diagnostics_dir/registration-readiness-$attempt.body"
-            registration_stderr="$diagnostics_dir/registration-readiness-$attempt.stderr"
-            set +e
-            registration_status="$(curl --no-progress-meter --show-error --connect-timeout 1 --max-time 3 \
-              --head --output "$registration_body" --write-out '%{http_code}' \
-              http://127.0.0.1:9009/agents 2>"$registration_stderr")"
-            registration_curl_status=$?
-            set -e
-            [[ "$registration_curl_status" -eq 0 && "$registration_status" == 405 ]] && break
-            sleep 1
-          done
-          for diagnostic in "$diagnostics_dir"/registration-readiness-*.body "$diagnostics_dir"/registration-readiness-*.stderr; do
-            [[ -s "$diagnostic" ]] && cat -- "$diagnostic" >&2
-          done
-          if [[ "$registration_status" != 405 ]]; then
-            echo "registration smoke readiness failed with curl status $registration_curl_status and HTTP status $registration_status" >&2
-            emit_container_diagnostics "$registration_name"
-            exit 1
-          fi
-          plan_status=""; plan_curl_status=1
-          for attempt in $(seq 1 30); do
-            plan_body="$diagnostics_dir/plan-readiness-$attempt.body"
-            plan_stderr="$diagnostics_dir/plan-readiness-$attempt.stderr"
-            set +e
-            plan_status="$(curl --no-progress-meter --show-error --connect-timeout 1 --max-time 3 \
-              --output "$plan_body" --write-out '%{http_code}' \
-              http://127.0.0.1:9012/plan 2>"$plan_stderr")"
-            plan_curl_status=$?
-            set -e
-            [[ "$plan_curl_status" -eq 0 && "$plan_status" == 200 ]] && break
-            sleep 1
-          done
-          for diagnostic in "$diagnostics_dir"/plan-readiness-*.body "$diagnostics_dir"/plan-readiness-*.stderr; do
-            [[ -s "$diagnostic" ]] && cat -- "$diagnostic" >&2
-          done
-          if [[ "$plan_status" != 200 ]]; then
-            echo "plan smoke readiness failed with curl status $plan_curl_status and HTTP status $plan_status" >&2
-            emit_container_diagnostics "$plan_name"
-            exit 1
-          fi
-          echo "image-id=$(docker_command image inspect "$IMAGE_REF" --format '{{.Id}}')" >>"$GITHUB_OUTPUT"
-      - name: Refuse a pre-existing exact version tag
-        if: env.RELEASE_REUSE != 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          BUILD_DIGEST: ${{ steps.build-image.outputs.digest }}
-          SMOKE_IMAGE_ID: ${{ steps.smoke-image.outputs.image-id }}
-        run: |
-          set -euo pipefail
-          scripts/check-release-source.sh
-          source scripts/release-helpers.sh
-          docker_command() { timeout --signal=TERM --kill-after=5s 120s docker "$@"; }
           [[ "$BUILD_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
-          [[ "$(docker_command image inspect "$IMAGE_BUILD_REF" --format '{{.Id}}')" == "$SMOKE_IMAGE_ID" ]]
-          staging_digest="$(docker_command buildx imagetools inspect "$IMAGE@$BUILD_DIGEST" --format '{{.Manifest.Digest}}')"
-          [[ "$staging_digest" == "$BUILD_DIGEST" ]]
-          package_owner="${GITHUB_REPOSITORY%%/*}"
-          # The image package keeps the stable controlplane name after the repository rename.
-          package_name="${IMAGE##*/}"
-          image_path="${IMAGE#ghcr.io/}"
-          [[ "$image_path" == "${package_owner,,}/$package_name" ]]
-          [[ "$package_owner" =~ ^[A-Za-z0-9_.-]+$ && "$package_name" =~ ^[A-Za-z0-9_.-]+$ ]]
-          package_page="$(mktemp)"; package_records="$(mktemp)"; package_diagnostics="$(mktemp -d)"
-          cleanup() {
-            local status=0
-            if ! rm -f -- "$package_page" "$package_page.stderr" "$package_records"; then status=1; fi
-            if ! rm -rf -- "$package_diagnostics"; then status=1; fi
-            return "$status"
-          }
-          cleanup_on_exit() {
-            local status=$?
-            trap - EXIT
-            if ! cleanup && [[ "$status" -eq 0 ]]; then status=1; fi
-            exit "$status"
-          }
-          trap cleanup_on_exit EXIT
-          replay_package_pages() {
-            local status=0 page_file
-            for page_file in "$package_diagnostics"/*.json; do
-              [[ -e "$page_file" ]] || continue
-              if ! cat -- "$page_file" >&2; then status=1; fi
-              if ! cat -- "$page_file.stderr" >&2; then status=1; fi
+          docker pull "$IMAGE_REF"
+          for expected in \
+            "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
+            "org.opencontainers.image.revision=$RELEASE_SHA" \
+            "org.opencontainers.image.version=$RELEASE_TAG" \
+            "org.opencontainers.image.licenses=BUSL-1.1" \
+            "org.opencontainers.image.title=TeleCrypt Controlplane" \
+            "org.opencontainers.image.description=TeleCrypt Registration, Janitor, and Plan services" \
+            "org.opencontainers.image.vendor=TeleCrypt.io" \
+            "io.telecrypt.config-contract=1" \
+            "org.telecrypt.controlplane.release=$RELEASE_TAG" \
+            "org.telecrypt.tier-controller.release=$RELEASE_TAG"; do
+            key="${expected%%=*}"
+            value="${expected#*=}"
+            [[ "$(docker image inspect --format "{{index .Config.Labels \"$key\"}}" "$IMAGE_REF")" == "$value" ]]
+          done
+          [[ "$(docker image inspect --format '{{.Config.User}}' "$IMAGE_REF")" == "991:991" ]]
+          [[ "$(docker image inspect --format '{{json .Config.Entrypoint}}' "$IMAGE_REF")" == "null" ]]
+          [[ "$(docker image inspect --format '{{json .Config.Cmd}}' "$IMAGE_REF")" == '["/registration"]' ]]
+          published_digest="$(docker buildx imagetools inspect "$IMAGE_REF" --format '{{.Manifest.Digest}}')"
+          [[ "$published_digest" == "$BUILD_DIGEST" ]]
+          registration_name=controlplane-registration-smoke
+          plan_name=controlplane-plan-smoke
+          cleanup() { docker rm -f "$registration_name" "$plan_name" >/dev/null 2>&1 || true; }
+          trap cleanup EXIT
+          docker run --detach --network host --name "$registration_name" \
+            --env SERVER_NAME=example.invalid "$IMAGE_REF" /registration
+          docker run --detach --network host --name "$plan_name" \
+            --env SERVER_NAME=example.invalid --env BILLING_ENVIRONMENT=test \
+            --env MAS_OIDC_CLIENT_ID=01J00000000000000000000000 \
+            --env MAS_OIDC_CLIENT_SECRET=smoke-secret \
+            --env MAS_ADMIN_CLIENT_ID=01J00000000000000000000000 \
+            --env MAS_ADMIN_CLIENT_SECRET=smoke-admin-secret \
+            --env PLAN_SESSION_KEY=ssssssssssssssssssssssssssssssss \
+            --env PLAN_ASSERTION_PRIVATE_KEY=AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyB5tVYuj-ZU-UB4sRLoqYunkB-FOuaVvtfg45ELrQSWZA \
+            "$IMAGE_REF" /plan
+          wait_for_status() {
+            local url="$1" expected="$2" status
+            for _ in $(seq 1 30); do
+              status="$(curl --no-progress-meter --connect-timeout 1 --max-time 3 --output /dev/null --write-out '%{http_code}' "$url" 2>/dev/null || true)"
+              [[ "$status" == "$expected" ]] && return 0
+              sleep 1
             done
-            return "$status"
+            return 1
           }
-          declare -A package_ids=() package_digests=()
-          exact_tag_matches=0; exact_digest_matches=0; pages_complete=false
-          for (( page=1; ; page++ )); do
-            capture_command "$package_page" 120 gh api --hostname github.com \
-              -H 'Accept: application/vnd.github+json' -H 'X-GitHub-Api-Version: 2026-03-10' \
-              "orgs/$package_owner/packages/container/$package_name/versions?per_page=100&page=$page"
-            if ! cp -- "$package_page" "$package_diagnostics/page-$page.json" ||
-              ! cp -- "$package_page.stderr" "$package_diagnostics/page-$page.json.stderr"; then
-              echo 'GHCR package response retention failed' >&2
-              replay_capture "$package_page" || echo 'GHCR package response diagnostics could not be replayed' >&2
-              exit 1
-            fi
-            if ghcr_version_records "$package_page" "$RELEASE_TAG" "$BUILD_DIGEST" >"$package_records"; then
-              :
-            else
-              package_status="$?"
-              echo 'GHCR package version response failed strict schema validation' >&2
-              replay_package_pages || echo 'GHCR package response diagnostics could not be replayed' >&2
-              exit "$package_status"
-            fi
-            while IFS=$'\t' read -r version_id version_digest tag_count digest_match; do
-              [[ "$version_id" =~ ^[1-9][0-9]*$ && "$version_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
-              [[ "$tag_count" =~ ^[0-9]+$ && "$digest_match" =~ ^[01]$ ]]
-              if [[ -n "${package_ids[$version_id]+seen}" || -n "${package_digests[$version_digest]+seen}" ]]; then
-                echo 'GHCR package version pagination returned a duplicate ID or digest' >&2
-                replay_package_pages || echo 'GHCR package response diagnostics could not be replayed' >&2
-                exit 1
-              fi
-              package_ids[$version_id]=seen; package_digests[$version_digest]=seen
-              if (( tag_count > 0 )); then
-                exact_tag_matches=$((exact_tag_matches + tag_count))
-              fi
-              if [[ "$digest_match" == 1 ]]; then
-                exact_digest_matches=$((exact_digest_matches + 1))
-              fi
-            done <"$package_records"
-            page_size="$(jq -er 'length' "$package_page")"
-            if (( page_size < 100 )); then
-              pages_complete=true
-              break
-            fi
-          done
-          [[ "$pages_complete" == "true" ]]
-          [[ "$exact_tag_matches" -eq 0 ]] || {
-            echo "refusing to replace existing immutable image tag $IMAGE:$RELEASE_TAG" >&2
-            replay_package_pages || echo 'GHCR package response diagnostics could not be replayed' >&2
+          if ! wait_for_status http://127.0.0.1:9009/agents 405; then
+            docker logs "$registration_name" || true
             exit 1
-          }
-          [[ "$exact_digest_matches" -eq 1 ]] || {
-            echo 'GHCR build digest was not classified exactly once' >&2
-            replay_package_pages || echo 'GHCR package response diagnostics could not be replayed' >&2
+          fi
+          if ! wait_for_status http://127.0.0.1:9012/plan 200; then
+            docker logs "$plan_name" || true
             exit 1
-          }
-          echo "confirmed immutable image tag is unused and build digest is unique: $IMAGE:$RELEASE_TAG"
-          docker_command buildx imagetools create --prefer-index=false --tag "$IMAGE:$RELEASE_TAG" "$IMAGE@$BUILD_DIGEST"
-          final_digest="$(docker_command buildx imagetools inspect "$IMAGE:$RELEASE_TAG" --format '{{.Manifest.Digest}}')"
-          [[ "$final_digest" == "$BUILD_DIGEST" ]]
-          printf 'RELEASE_IMAGE_DIGEST=%s\n' "$final_digest" >>"$GITHUB_ENV"
-      - name: Write the exact image digest asset
-        if: env.RELEASE_REUSE != 'true'
-        env:
-          RELEASE_METADATA_DIR: ${{ runner.temp }}/controlplane-release-assets
-        run: |
-          set -euo pipefail
-          mkdir -p "$RELEASE_METADATA_DIR"
-          tag_object="$ANNOTATED_TAG_SHA"
-          jq -cS -n --arg image "$IMAGE" --arg tag "$RELEASE_TAG" --arg source_commit "$RELEASE_SHA" --arg annotated_tag_sha "$tag_object" --arg digest "$RELEASE_IMAGE_DIGEST" \
-            '{schema_version: 1, image: $image, tag: $tag, source_commit: $source_commit, annotated_tag_sha: $annotated_tag_sha, digest: $digest}' >"$RELEASE_METADATA_DIR/$RELEASE_BINDING"
-      - name: Recheck image digest and source before Release
-        if: env.RELEASE_REUSE != 'true'
-        run: |
-          set -euo pipefail
-          source scripts/release-helpers.sh
-          docker_command() { timeout --signal=TERM --kill-after=5s 120s docker "$@"; }
-          test "$(docker_command buildx imagetools inspect "$IMAGE:$RELEASE_TAG" --format '{{.Manifest.Digest}}')" = "$RELEASE_IMAGE_DIGEST"
-          scripts/check-release-source.sh
-      - name: Create the exact immutable Release
-        if: env.RELEASE_REUSE != 'true'
+          fi
+      - name: Create release assets
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_METADATA_DIR: ${{ runner.temp }}/controlplane-release-assets
+          IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
         run: |
           set -euo pipefail
-          source scripts/release-helpers.sh
-          scripts/check-release-source.sh
-          shopt -s nullglob; wheels=(dist/tier-controller/*.whl); [[ "${#wheels[@]}" -eq 1 ]]
-          assets=("${wheels[0]}" "$RELEASE_METADATA_DIR/$RELEASE_BINDING")
-          timeout --signal=TERM --kill-after=5s 120s gh release create "$RELEASE_TAG" "${assets[@]}" --repo "github.com/$GITHUB_REPOSITORY" --verify-tag --draft --title "$RELEASE_TAG" --notes "Exact Controlplane release $RELEASE_TAG."
-          printf 'RELEASE_DRAFT_PENDING=true\n' >>"$GITHUB_ENV"
-
-      - name: Verify exact draft before publishing
-        if: env.RELEASE_DRAFT_ID != '' || env.RELEASE_DRAFT_PENDING == 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_METADATA_DIR: ${{ runner.temp }}/controlplane-release-assets
-        run: |
-          set -euo pipefail
-          source scripts/release-helpers.sh
-          draft_json="$(mktemp)"; page_json="$(mktemp)"; page_diagnostics="$(mktemp -d)"; download_dir="$(mktemp -d)"
-          cleanup() {
-            local status=0
-            if ! rm -f -- "$draft_json" "$draft_json.stderr" "$page_json" "$page_json.stderr"; then status=1; fi
-            if ! rm -rf -- "$page_diagnostics"; then status=1; fi
-            if ! rm -rf -- "$download_dir"; then status=1; fi
-            return "$status"
-          }
-          cleanup_on_exit() {
-            local status=$?
-            trap - EXIT
-            if ! cleanup && [[ "$status" -eq 0 ]]; then status=1; fi
-            exit "$status"
-          }
-          trap cleanup_on_exit EXIT
-          replay_draft_pages() {
-            local status=0 page_file
-            for page_file in "$page_diagnostics"/*.json; do
-              [[ -e "$page_file" ]] || continue
-              if ! cat -- "$page_file" >&2; then status=1; fi
-              if ! cat -- "$page_file.stderr" >&2; then status=1; fi
-            done
-            return "$status"
-          }
-          found=false
-          for attempt in $(seq 1 5); do
-            found=false
-            for (( page=1; ; page++ )); do
-              capture_command "$page_json" 120 gh api --hostname github.com -H 'Accept: application/vnd.github+json' -H 'X-GitHub-Api-Version: 2026-03-10' \
-                "repos/$GITHUB_REPOSITORY/releases?per_page=100&page=$page"
-              if ! cp -- "$page_json" "$page_diagnostics/page-$page.json" ||
-                ! cp -- "$page_json.stderr" "$page_diagnostics/page-$page.json.stderr"; then
-                echo 'draft Release response retention failed' >&2
-                replay_capture "$page_json" || echo 'draft list response diagnostics could not be replayed' >&2
-                exit 1
-              fi
-              capture_jq "$page_json" 'type == "array" and length <= 100'
-              matches="$(jq --arg tag "$RELEASE_TAG" '[.[] | select(.draft == true and .tag_name == $tag)]' "$page_json")"
-              match_count="$(jq length <<<"$matches")"
-              if [[ "$match_count" -gt 1 ]]; then
-                echo 'multiple matching draft Releases on one page' >&2
-                replay_draft_pages || echo 'draft list response diagnostics could not be replayed' >&2
-                exit 1
-              fi
-              if [[ "$match_count" -eq 1 ]]; then
-                if [[ "$found" == "true" ]]; then
-                  echo 'matching draft Release appeared on multiple pages' >&2
-                  replay_draft_pages || echo 'draft list response diagnostics could not be replayed' >&2
-                  exit 1
-                fi
-                jq -e '.[0]' <<<"$matches" >"$draft_json"; found=true
-              fi
-              [[ "$(jq length "$page_json")" -lt 100 ]] && break
-            done
-            [[ "$found" == "true" ]] && break
-            [[ "$attempt" -lt 5 ]] && sleep 2
-          done
-          if [[ "$found" != "true" ]]; then
-            echo 'exact matching draft Release was not found' >&2
-            replay_draft_pages || echo 'draft list response diagnostics could not be replayed' >&2
-            exit 1
-          fi
-          capture_extract release_id "$draft_json" '.id | select(type == "number" and . > 0 and . == floor)'
-          if [[ -n "${RELEASE_DRAFT_ID:-}" && "$RELEASE_DRAFT_ID" != "$release_id" ]]; then
-            echo 'draft Release identity changed during verification' >&2
-            replay_capture "$draft_json" || echo 'draft response diagnostics could not be replayed' >&2
-            exit 1
-          fi
-          printf 'RELEASE_ID=%s\nRELEASE_DRAFT_ID=%s\n' "$release_id" "$release_id" >>"$GITHUB_ENV"
-          capture_jq "$draft_json" --arg tag "$RELEASE_TAG" --arg wheel "$RELEASE_WHEEL" --arg binding "$RELEASE_BINDING" \
-            '.tag_name == $tag and .name == $tag and .draft == true and .prerelease == false and (.assets | type == "array" and length == 2 and ([.[].name] | sort) == ([$wheel, $binding] | sort) and all(.[];
-              (.id | type == "number" and . > 0 and . == floor) and
-              (.size | type == "number" and . > 0 and . <= 67108864) and
-              (.digest | type == "string" and test("^sha256:[0-9a-f]{64}$"))))'
-          for asset in "$RELEASE_WHEEL" "$RELEASE_BINDING"; do
-            capture_extract asset_id "$draft_json" --arg name "$asset" '.assets[] | select(.name == $name) | .id'
-            capture_extract asset_size "$draft_json" --arg name "$asset" '.assets[] | select(.name == $name) | .size'
-            capture_extract asset_digest "$draft_json" --arg name "$asset" '.assets[] | select(.name == $name) | .digest'
-            if [[ "$asset" == "$RELEASE_WHEEL" ]]; then
-              capture_command --binary-output "$download_dir/$asset" 120 gh api --hostname github.com -H 'Accept: application/octet-stream' -H 'X-GitHub-Api-Version: 2026-03-10' "repos/$GITHUB_REPOSITORY/releases/assets/$asset_id"
-            else
-              capture_command "$download_dir/$asset" 120 gh api --hostname github.com -H 'Accept: application/octet-stream' -H 'X-GitHub-Api-Version: 2026-03-10' "repos/$GITHUB_REPOSITORY/releases/assets/$asset_id"
-            fi
-            if [[ "$(wc -c <"$download_dir/$asset")" -ne "$asset_size" || \
-              "sha256:$(sha256sum "$download_dir/$asset" | awk '{print $1}')" != "$asset_digest" ]]; then
-              echo "draft Release asset $asset did not match its complete API metadata" >&2
-              replay_capture "$draft_json" || echo 'draft response diagnostics could not be replayed' >&2
-              if [[ "$asset" != "$RELEASE_WHEEL" ]]; then
-                replay_capture "$download_dir/$asset" || echo 'draft asset diagnostics could not be replayed' >&2
-              fi
-              exit 1
-            fi
-          done
-          if ! cmp -- "dist/tier-controller/$RELEASE_WHEEL" "$download_dir/$RELEASE_WHEEL"; then
-            echo 'draft Release wheel asset did not match the tested wheel' >&2
-            replay_capture "$draft_json" || echo 'draft response diagnostics could not be replayed' >&2
-            exit 1
-          fi
-          if ! cmp -- "$RELEASE_METADATA_DIR/$RELEASE_BINDING" "$download_dir/$RELEASE_BINDING"; then
-            echo 'draft Release binding asset did not match the tested binding' >&2
-            replay_capture "$draft_json" || echo 'draft response diagnostics could not be replayed' >&2
-            replay_capture "$download_dir/$RELEASE_BINDING" || echo 'draft binding diagnostics could not be replayed' >&2
-            exit 1
-          fi
-
-      - name: Publish verified draft as immutable Release
-        if: env.RELEASE_DRAFT_ID != ''
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          source scripts/release-helpers.sh
-          scripts/check-release-source.sh
-          timeout --signal=TERM --kill-after=5s 120s gh api --hostname github.com --method PATCH \
-            -H 'Accept: application/vnd.github+json' -H 'X-GitHub-Api-Version: 2026-03-10' \
-            --field draft=false "repos/$GITHUB_REPOSITORY/releases/$RELEASE_DRAFT_ID"
-      - name: Verify the final immutable Release, exact assets, and source
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          source scripts/release-helpers.sh
-          docker_command() { timeout --signal=TERM --kill-after=5s 120s docker "$@"; }
-          final_json="$(mktemp)"; download_dir="$(mktemp -d)"
-          cleanup() {
-            local status=0
-            if ! rm -f -- "$final_json" "$final_json.stderr"; then status=1; fi
-            if ! rm -rf -- "$download_dir"; then status=1; fi
-            return "$status"
-          }
-          cleanup_on_exit() {
-            local status=$?
-            trap - EXIT
-            if ! cleanup && [[ "$status" -eq 0 ]]; then status=1; fi
-            exit "$status"
-          }
-          trap cleanup_on_exit EXIT
-          capture_command "$final_json" 120 gh api --hostname github.com -H 'Accept: application/vnd.github+json' -H 'X-GitHub-Api-Version: 2026-03-10' \
-            "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID"
-          capture_jq "$final_json" --arg tag "$RELEASE_TAG" --arg wheel "$RELEASE_WHEEL" --arg binding "$RELEASE_BINDING" \
-            '.tag_name == $tag and .name == $tag and .draft == false and .prerelease == false and .immutable == true and
-             (.assets | type == "array" and length == 2 and ([.[].name] | sort) == ([$wheel, $binding] | sort) and
-              all(.[];
-                (.id | type == "number" and . > 0 and . == floor) and
-                (.size | type == "number" and . > 0 and . <= 67108864) and
-                (.digest | type == "string" and test("^sha256:[0-9a-f]{64}$"))))'
-          capture_extract final_id "$final_json" '.id'
-          if [[ "${RELEASE_EXISTS:-false}" == "true" && "$final_id" != "$RELEASE_ID" ]]; then
-            echo 'final Release identity did not match the reused Release' >&2
-            replay_capture "$final_json" || echo 'final Release diagnostics could not be replayed' >&2
-            exit 1
-          fi
-          expected_digest="$RELEASE_IMAGE_DIGEST"
-          for asset in "$RELEASE_WHEEL" "$RELEASE_BINDING"; do
-            capture_extract asset_id "$final_json" --arg name "$asset" '.assets[] | select(.name == $name) | .id'
-            capture_extract asset_size "$final_json" --arg name "$asset" '.assets[] | select(.name == $name) | .size'
-            capture_extract asset_digest "$final_json" --arg name "$asset" '.assets[] | select(.name == $name) | .digest'
-            if [[ "$asset" == "$RELEASE_WHEEL" ]]; then
-              capture_command --binary-output "$download_dir/$asset" 120 gh api --hostname github.com -H 'Accept: application/octet-stream' -H 'X-GitHub-Api-Version: 2026-03-10' "repos/$GITHUB_REPOSITORY/releases/assets/$asset_id"
-            else
-              capture_command "$download_dir/$asset" 120 gh api --hostname github.com -H 'Accept: application/octet-stream' -H 'X-GitHub-Api-Version: 2026-03-10' "repos/$GITHUB_REPOSITORY/releases/assets/$asset_id"
-            fi
-            if [[ "$(wc -c <"$download_dir/$asset")" -ne "$asset_size" || \
-              "sha256:$(sha256sum "$download_dir/$asset" | awk '{print $1}')" != "$asset_digest" ]]; then
-              echo "final Release asset $asset did not match its complete API metadata" >&2
-              replay_capture "$final_json" || echo 'final Release response diagnostics could not be replayed' >&2
-              if [[ "$asset" != "$RELEASE_WHEEL" ]]; then
-                replay_capture "$download_dir/$asset" || echo 'final asset diagnostics could not be replayed' >&2
-              fi
-              exit 1
-            fi
-          done
-          if ! cmp -- "dist/tier-controller/$RELEASE_WHEEL" "$download_dir/$RELEASE_WHEEL"; then
-            echo 'final Release wheel asset did not match the tested wheel' >&2
-            replay_capture "$final_json" || echo 'final Release response diagnostics could not be replayed' >&2
-            exit 1
-          fi
-          tag_object="$ANNOTATED_TAG_SHA"
-          capture_jq "$download_dir/$RELEASE_BINDING" --arg image "$IMAGE" --arg tag "$RELEASE_TAG" --arg source "$RELEASE_SHA" --arg tag_object "$tag_object" --arg image_digest "$RELEASE_IMAGE_DIGEST" \
-            'type == "object" and (keys | sort) == ["annotated_tag_sha", "digest", "image", "schema_version", "source_commit", "tag"] and .schema_version == 1 and .image == $image and .tag == $tag and .source_commit == $source and .annotated_tag_sha == $tag_object and .digest == $image_digest'
-          capture_extract expected_digest "$download_dir/$RELEASE_BINDING" '.digest'
-          if [[ "$expected_digest" != "$RELEASE_IMAGE_DIGEST" ]]; then
-            echo 'final image binding digest did not match the release image digest' >&2
-            replay_capture "$download_dir/$RELEASE_BINDING" || echo 'final binding diagnostics could not be replayed' >&2
-            exit 1
-          fi
-          [[ "$(docker_command buildx imagetools inspect "$IMAGE:$RELEASE_TAG" --format '{{.Manifest.Digest}}')" == "$expected_digest" ]]
-          scripts/check-release-source.sh
+          [[ "$IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+          release_dir="$RUNNER_TEMP/controlplane-release"
+          mkdir -p "$release_dir"
+          jq -cn \
+            --arg image "$IMAGE" --arg tag "$RELEASE_TAG" --arg source "$RELEASE_SHA" \
+            --arg tag_object "$ANNOTATED_TAG_SHA" --arg digest "$IMAGE_DIGEST" \
+            '{schema_version: 1, image: $image, tag: $tag, source_commit: $source, annotated_tag_sha: $tag_object, digest: $digest}' \
+            >"$release_dir/$RELEASE_BINDING"
+          gh release create "$RELEASE_TAG" \
+            "dist/tier-controller/$RELEASE_WHEEL" "$release_dir/$RELEASE_BINDING" \
+            --repo "$GITHUB_REPOSITORY" --verify-tag --title "Control-plane $RELEASE_TAG" --generate-notes
+          mapfile -t assets < <(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' | sort)
+          [[ "${#assets[@]}" -eq 2 ]]
+          [[ "${assets[0]}" == "$RELEASE_BINDING" ]]
+          [[ "${assets[1]}" == "$RELEASE_WHEEL" ]]

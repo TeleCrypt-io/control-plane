@@ -88,14 +88,15 @@ func ValidateJanitorSchemaACL(ctx context.Context, pool *pgxpool.Pool) error {
 	if unexpected {
 		return fmt.Errorf("Janitor schema grants must be limited to its owner")
 	}
-	return validateJanitorRelationOwnershipAndACL(ctx, pool, false)
+	return validateJanitorRelationOwnershipAndACL(ctx, pool)
 }
 
 // ValidateJanitorDatabaseContract verifies Janitor's private tables and exactly two Cashier
 // owner-rights views. Cashier base tables are never granted to or queried by this role.
-func ValidateJanitorDatabaseContract(ctx context.Context, pool *pgxpool.Pool, expectedCashierOwner string) error {
-	if expectedCashierOwner == "" {
-		return fmt.Errorf("expected Cashier owner must not be empty")
+func ValidateJanitorDatabaseContract(ctx context.Context, pool *pgxpool.Pool) error {
+	var cashierOwner string
+	if err := pool.QueryRow(ctx, `SELECT r.rolname FROM pg_catalog.pg_namespace n JOIN pg_catalog.pg_roles r ON r.oid = n.nspowner WHERE n.nspname = 'cashier'`).Scan(&cashierOwner); err != nil {
+		return fmt.Errorf("inspect Cashier schema owner: %w", err)
 	}
 	var problem string
 	err := pool.QueryRow(ctx, `SELECT COALESCE(CASE
@@ -108,29 +109,28 @@ func ValidateJanitorDatabaseContract(ctx context.Context, pool *pgxpool.Pool, ex
 	 WHEN NOT EXISTS (SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace JOIN pg_roles r ON r.oid=c.relowner WHERE n.nspname='cashier' AND c.relname='janitor_deployment_identity' AND c.relkind='v' AND r.rolname=$1) THEN 'janitor_deployment_identity view is missing or has wrong owner'
 	 WHEN NOT has_table_privilege(current_user, 'cashier.janitor_lock_exclusions', 'SELECT') THEN 'janitor_lock_exclusions is not readable'
 	 WHEN NOT has_table_privilege(current_user, 'cashier.janitor_deployment_identity', 'SELECT') THEN 'janitor_deployment_identity is not readable'
-	 ELSE NULL END, '')`, expectedCashierOwner).Scan(&problem)
+	 ELSE NULL END, '')`, cashierOwner).Scan(&problem)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return fmt.Errorf("validate Janitor database contract: %w", err)
 	}
 	if problem != "" {
 		return fmt.Errorf("Janitor database contract: %s", problem)
 	}
-	if err := validateJanitorRelationOwnershipAndACL(ctx, pool, true); err != nil {
+	if err := validateJanitorRelationOwnershipAndACL(ctx, pool); err != nil {
 		return err
 	}
-	if err := validateJanitorCashierACL(ctx, pool, expectedCashierOwner); err != nil {
+	if err := validateJanitorCashierACL(ctx, pool, cashierOwner); err != nil {
 		return err
 	}
 	return validateJanitorCashierViewColumns(ctx, pool)
 }
 
-func validateJanitorRelationOwnershipAndACL(ctx context.Context, pool *pgxpool.Pool, requireExact bool) error {
+func validateJanitorRelationOwnershipAndACL(ctx context.Context, pool *pgxpool.Pool) error {
 	var problem string
 	err := pool.QueryRow(ctx, `SELECT COALESCE(CASE
-	 WHEN $1 AND EXISTS (SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='janitor' AND c.relkind NOT IN ('i','I') AND c.relname NOT IN ('schema_migrations','janitor_digest_cursor','run_events')) THEN 'unexpected Janitor relation'
-	 WHEN EXISTS (SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace JOIN pg_roles r ON r.oid=c.relowner WHERE n.nspname='janitor' AND c.relkind NOT IN ('i','I') AND r.rolname <> current_user) THEN 'Janitor relation has the wrong owner'
-	 WHEN EXISTS (SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace CROSS JOIN LATERAL aclexplode(c.relacl) acl WHERE n.nspname='janitor' AND c.relkind NOT IN ('i','I') AND c.relacl IS NOT NULL AND acl.grantee <> c.relowner) THEN 'Janitor relation has PUBLIC or other-role ACLs'
-	 ELSE NULL END, '')`, requireExact).Scan(&problem)
+		 WHEN EXISTS (SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace JOIN pg_roles r ON r.oid=c.relowner WHERE n.nspname='janitor' AND c.relkind NOT IN ('i','I') AND r.rolname <> current_user) THEN 'Janitor relation has the wrong owner'
+		 WHEN EXISTS (SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace CROSS JOIN LATERAL aclexplode(c.relacl) acl WHERE n.nspname='janitor' AND c.relkind NOT IN ('i','I') AND c.relacl IS NOT NULL AND acl.grantee <> c.relowner) THEN 'Janitor relation has PUBLIC or other-role ACLs'
+		 ELSE NULL END, '')`).Scan(&problem)
 	if err != nil {
 		return fmt.Errorf("inspect Janitor relation ownership and ACLs: %w", err)
 	}
@@ -145,6 +145,7 @@ func validateJanitorCashierACL(ctx context.Context, pool *pgxpool.Pool, expected
 	err := pool.QueryRow(ctx, `WITH role_ids AS (SELECT (SELECT oid FROM pg_roles WHERE rolname=current_user) janitor_oid, (SELECT oid FROM pg_roles WHERE rolname=$1) cashier_oid)
 	 SELECT COALESCE(CASE
 	 WHEN NOT EXISTS (SELECT 1 FROM role_ids WHERE cashier_oid IS NOT NULL) THEN 'expected Cashier role does not exist'
+	 WHEN EXISTS (SELECT 1 FROM role_ids WHERE cashier_oid = janitor_oid) THEN 'Cashier owner must differ from Janitor role'
 	 WHEN EXISTS (SELECT 1 FROM pg_namespace n JOIN pg_roles r ON r.oid=n.nspowner WHERE n.nspname='cashier' AND r.rolname <> $1) THEN 'Cashier schema has the wrong owner'
 	 WHEN EXISTS (SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace JOIN pg_roles r ON r.oid=c.relowner WHERE n.nspname='cashier' AND c.relkind NOT IN ('i','I') AND r.rolname <> $1) THEN 'Cashier relation has the wrong owner'
 	 WHEN EXISTS (SELECT 1 FROM pg_namespace n CROSS JOIN LATERAL aclexplode(COALESCE(n.nspacl,acldefault('n',n.nspowner))) acl CROSS JOIN role_ids WHERE n.nspname='cashier' AND acl.grantee NOT IN (role_ids.cashier_oid,role_ids.janitor_oid)) THEN 'Cashier schema has PUBLIC or other-role ACLs'

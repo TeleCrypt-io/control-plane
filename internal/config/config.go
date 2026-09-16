@@ -69,7 +69,6 @@ type JanitorConfig struct {
 	MASAdminClientID     string
 	MASAdminClientSecret string
 	JanitorDBURL         string
-	CashierDBRole        string
 	ServerName           string
 	OwnerEmail           string
 	SMTPHost             string
@@ -83,17 +82,12 @@ func LoadJanitor() (*JanitorConfig, error) {
 	if err != nil {
 		return nil, err
 	}
-	databaseIdentity, err := expectedDatabaseIdentity(serverName)
-	if err != nil {
-		return nil, err
-	}
 	c := &JanitorConfig{
 		BillingEnvironment:   billingEnvironment,
 		MASAdminURL:          masAdminURL,
 		MASAdminClientID:     os.Getenv("MAS_ADMIN_CLIENT_ID"),
 		MASAdminClientSecret: os.Getenv("MAS_ADMIN_CLIENT_SECRET"),
 		JanitorDBURL:         os.Getenv("JANITOR_DB_URL"),
-		CashierDBRole:        databaseIdentity.cashierRole,
 		ServerName:           serverName,
 		OwnerEmail:           os.Getenv("OWNER_EMAIL"),
 		SMTPHost:             os.Getenv("SMTP_HOST"),
@@ -141,9 +135,6 @@ func LoadJanitor() (*JanitorConfig, error) {
 		if c.SMTPFrom, err = parseMailbox("SMTP_FROM", c.SMTPFrom); err != nil {
 			return nil, err
 		}
-	}
-	if err := validateJanitorDBURL(c.JanitorDBURL, c.ServerName); err != nil {
-		return nil, err
 	}
 	return c, nil
 }
@@ -294,8 +285,7 @@ func loadServerIdentity() (string, backendEndpoints, error) {
 
 // loadBillingIdentity is used only by Plan and Janitor. Registration is topology-only and may
 // derive a public endpoint before a billing profile exists, but these two services hold
-// billing-sensitive behavior and therefore require exactly one of the three frozen
-// server/billing profiles: telecrypt.io/test, stage.telecrypt.io/test, or telecrypt.io/live. The
+// billing-sensitive behavior and therefore require an explicit server name and billing mode. The
 // nonsecret billing value is never inferred from credentials or hostname.
 func loadBillingIdentity() (string, string, backendEndpoints, error) {
 	serverName, endpoints, err := loadServerIdentity()
@@ -328,7 +318,7 @@ func loadBillingIdentity() (string, string, backendEndpoints, error) {
 }
 
 func deriveBackendEndpoints(serverName string) (backendEndpoints, error) {
-	if err := validateServerName(serverName); err != nil {
+	if err := db.ValidateServerName(serverName); err != nil {
 		return backendEndpoints{}, err
 	}
 	backendHost := "backend." + serverName
@@ -338,13 +328,6 @@ func deriveBackendEndpoints(serverName string) (backendEndpoints, error) {
 		mas:    origin + "/auth",
 		plan:   origin + "/plan",
 	}, nil
-}
-
-func validateServerName(serverName string) error {
-	if serverName == "telecrypt.io" || serverName == "stage.telecrypt.io" {
-		return nil
-	}
-	return fmt.Errorf("SERVER_NAME must be exactly telecrypt.io or stage.telecrypt.io")
 }
 
 func requireNonEmptyNoSurroundingWhitespace(name, value string) error {
@@ -373,49 +356,6 @@ func validatePlanAssertionPrivateKey(value string) error {
 		return fmt.Errorf("PLAN_ASSERTION_PRIVATE_KEY must contain a seed-matching Ed25519 private key")
 	}
 	return nil
-}
-
-func validateJanitorDBURL(raw, serverName string) error {
-	databaseIdentity, err := expectedDatabaseIdentity(serverName)
-	if err != nil {
-		return err
-	}
-	if err := db.ValidateJanitorDatabaseURL(raw); err != nil {
-		return err
-	}
-	dbURL, err := url.Parse(raw)
-	if err != nil {
-		return fmt.Errorf("JANITOR_DB_URL must be an explicit Postgres URL")
-	}
-	if dbURL.Path != "/"+databaseIdentity.database || dbURL.User.Username() != databaseIdentity.janitorRole {
-		return fmt.Errorf("JANITOR_DB_URL must use database %q and user %q for SERVER_NAME %q", databaseIdentity.database, databaseIdentity.janitorRole, serverName)
-	}
-	return nil
-}
-
-type databaseIdentity struct {
-	database    string
-	janitorRole string
-	cashierRole string
-}
-
-func expectedDatabaseIdentity(serverName string) (databaseIdentity, error) {
-	switch serverName {
-	case "telecrypt.io":
-		return databaseIdentity{
-			database:    "telecrypt_billing",
-			janitorRole: "telecrypt_janitor_user",
-			cashierRole: "telecrypt_cashier_user",
-		}, nil
-	case "stage.telecrypt.io":
-		return databaseIdentity{
-			database:    "stage_telecrypt_billing",
-			janitorRole: "stage_telecrypt_janitor_user",
-			cashierRole: "stage_telecrypt_cashier_user",
-		}, nil
-	default:
-		return databaseIdentity{}, fmt.Errorf("SERVER_NAME must be telecrypt.io or stage.telecrypt.io for Janitor")
-	}
 }
 
 func validatePublicHTTPSURL(raw, name string) error {

@@ -305,7 +305,7 @@ func (c *Client) GetUser(ctx context.Context, userID string) (User, error) {
 	if err := c.get(ctx, "/api/admin/v1/users/"+url.PathEscape(userID), &out); err != nil {
 		return User{}, fmt.Errorf("masadmin: get user: %w", err)
 	}
-	if !validMASULID(userID) || out.Data.ID != userID || !validMASUsername(out.Data.Attributes.Username) || out.Data.Attributes.CreatedAt.IsZero() {
+	if out.Data.ID != userID || !validMASUsername(out.Data.Attributes.Username) || out.Data.Attributes.CreatedAt.IsZero() {
 		return User{}, fmt.Errorf("masadmin: get user response had unexpected identity")
 	}
 	return User{

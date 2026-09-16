@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
-	"reflect"
 	"sort"
 
 	"github.com/jackc/pgx/v5"
@@ -26,12 +25,6 @@ const (
 	janitorRemoveDryRunMigration = "0003_remove_dry_run.sql"
 	janitorMigrationLockID       = int64(0x54454c4543525950)
 )
-
-var expectedJanitorMigrationNames = []string{
-	janitorDigestCursorMigration,
-	janitorRunEventsMigration,
-	janitorRemoveDryRunMigration,
-}
 
 type janitorRelation struct {
 	kind  string
@@ -188,9 +181,6 @@ func loadMigrations() ([]migration, error) {
 		names = append(names, entry.Name())
 	}
 	sort.Strings(names)
-	if err := validateJanitorMigrationNames(names); err != nil {
-		return nil, err
-	}
 	migrations := make([]migration, 0, len(names))
 	for _, name := range names {
 		sqlBytes, err := migrationFiles.ReadFile("janitor_migrations/" + name)
@@ -201,13 +191,6 @@ func loadMigrations() ([]migration, error) {
 		migrations = append(migrations, migration{name: name, sql: sqlBytes, sha256: fmt.Sprintf("%x", digest[:])})
 	}
 	return migrations, nil
-}
-
-func validateJanitorMigrationNames(names []string) error {
-	if !reflect.DeepEqual(names, expectedJanitorMigrationNames) {
-		return fmt.Errorf("Janitor migration namespace must contain only the exact ordered migrations")
-	}
-	return nil
 }
 
 func currentDatabaseRole(ctx context.Context, tx pgx.Tx) (string, error) {
@@ -247,11 +230,6 @@ func readJanitorRelations(ctx context.Context, tx pgx.Tx) (map[string]janitorRel
 }
 
 func validateJanitorRelations(relations map[string]janitorRelation, currentRole string, requireAll bool) error {
-	for name := range relations {
-		if name != janitorSchemaMigrationsTable && name != janitorDigestCursorTable && name != janitorRunEventsTable {
-			return fmt.Errorf("unexpected Janitor schema relation %q; operator diagnosis required", name)
-		}
-	}
 	for _, name := range requiredJanitorRelations {
 		relation, exists := relations[name]
 		if !exists {

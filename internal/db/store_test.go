@@ -14,8 +14,8 @@ func TestValidateDeploymentProfile(t *testing.T) {
 		server, billing string
 		valid           bool
 	}{
-		{"telecrypt.io", "test", true}, {"stage.telecrypt.io", "test", true}, {"telecrypt.io", "live", true},
-		{"stage.telecrypt.io", "live", false}, {"preview.telecrypt.io", "test", false}, {"telecrypt.io", "production", false},
+		{"example.invalid", "test", true}, {"preview.example.invalid", "test", true}, {"example.invalid", "live", true},
+		{"bad host", "test", false}, {"", "test", false}, {"example.invalid", "production", false},
 	} {
 		t.Run(tc.server+"/"+tc.billing, func(t *testing.T) {
 			if (ValidateDeploymentProfile(tc.server, tc.billing) == nil) != tc.valid {
@@ -26,7 +26,7 @@ func TestValidateDeploymentProfile(t *testing.T) {
 }
 
 func TestValidateRunEventStatesAndLabels(t *testing.T) {
-	base := RunEvent{EventID: uuid.New(), RunID: uuid.New(), ServerName: "stage.telecrypt.io", BillingEnvironment: "test", NotificationStatus: "not_attempted"}
+	base := RunEvent{EventID: uuid.New(), RunID: uuid.New(), ServerName: "example.invalid", BillingEnvironment: "test", NotificationStatus: "not_attempted"}
 	if err := validateRunEvent(RunEvent{EventID: base.EventID, RunID: base.RunID, EventKind: "started", Status: "started", Outcome: "pending", Reason: "pending", ServerName: base.ServerName, BillingEnvironment: base.BillingEnvironment, NotificationStatus: "not_attempted"}); err != nil {
 		t.Fatalf("valid started event: %v", err)
 	}
@@ -50,8 +50,8 @@ func TestValidateRunEventAllowsMutationForAnyBillingProfile(t *testing.T) {
 	for _, profile := range []struct {
 		server, billing string
 	}{
-		{server: "stage.telecrypt.io", billing: "test"},
-		{server: "telecrypt.io", billing: "live"},
+		{server: "example.invalid", billing: "test"},
+		{server: "production.example.invalid", billing: "live"},
 	} {
 		t.Run(profile.server+"/"+profile.billing, func(t *testing.T) {
 			event := RunEvent{

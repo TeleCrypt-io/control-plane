@@ -97,7 +97,8 @@ const (
 )
 
 // NewClient targets the exact public MAS origin (for example,
-// https://backend.stage.telecrypt.io/auth); registration binds all browser and OAuth calls to it.
+// the configured backend origin (for example, https://backend.example.invalid/auth); registration
+// binds all browser and OAuth calls to it.
 func NewClient(baseURL string) *Client {
 	return &Client{baseURL: strings.TrimRight(baseURL, "/")}
 }

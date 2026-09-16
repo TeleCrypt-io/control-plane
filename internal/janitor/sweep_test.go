@@ -11,7 +11,7 @@ import (
 	"github.com/TeleCrypt-io/controlplane/internal/masadmin"
 )
 
-const testServerName = "stage.telecrypt.io"
+const testServerName = "example.invalid"
 
 func testID(n byte) string { return "01J0000000000000000000000" + string('0'+n) }
 
@@ -306,7 +306,7 @@ func TestSweepRequiredAuditWriteFailureIsNonSuccess(t *testing.T) {
 }
 
 func TestSweepRejectsUnsupportedOrMismatchedProfile(t *testing.T) {
-	for _, cfg := range []Config{{ServerName: "preview.telecrypt.io", BillingEnvironment: "test"}, {ServerName: testServerName, BillingEnvironment: "live"}} {
+	for _, cfg := range []Config{{ServerName: "bad host", BillingEnvironment: "test"}, {ServerName: testServerName, BillingEnvironment: "production"}} {
 		store := &fakeStore{}
 		if err := NewSweeper(&fakeMAS{}, store, &fakeMailer{}, cfg).Sweep(context.Background()); err == nil {
 			t.Fatal("Sweep accepted invalid billing profile")

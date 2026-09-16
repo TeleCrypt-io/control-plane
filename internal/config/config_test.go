@@ -24,7 +24,7 @@ func testPlanPrivateKey() string {
 func setRequiredPlanEnv(t *testing.T) {
 	t.Helper()
 	for key, value := range map[string]string{
-		"SERVER_NAME":                "stage.telecrypt.io",
+		"SERVER_NAME":                "example.invalid",
 		"BILLING_ENVIRONMENT":        "test",
 		"MAS_OIDC_CLIENT_ID":         testPlanClientID,
 		"MAS_ADMIN_CLIENT_ID":        testPlanClientID,
@@ -42,8 +42,8 @@ func setRequiredJanitorEnv(t *testing.T) {
 	for key, value := range map[string]string{
 		"MAS_ADMIN_CLIENT_ID":     testJanitorClientID,
 		"MAS_ADMIN_CLIENT_SECRET": "secret",
-		"JANITOR_DB_URL":          "postgres://stage_telecrypt_janitor_user:secret@db/stage_telecrypt_billing",
-		"SERVER_NAME":             "stage.telecrypt.io",
+		"JANITOR_DB_URL":          "postgres://janitor:secret@db/database",
+		"SERVER_NAME":             "example.invalid",
 		"BILLING_ENVIRONMENT":     "test",
 		"SMTP_HOST":               "smtp.example.test",
 		"SMTP_USERNAME":           "janitor@example.test",
@@ -58,9 +58,9 @@ func setRequiredJanitorEnv(t *testing.T) {
 func setLiveJanitorEnv(t *testing.T) {
 	t.Helper()
 	setRequiredJanitorEnv(t)
-	t.Setenv("SERVER_NAME", "telecrypt.io")
+	t.Setenv("SERVER_NAME", "production.example.invalid")
 	t.Setenv("BILLING_ENVIRONMENT", "live")
-	t.Setenv("JANITOR_DB_URL", "postgres://telecrypt_janitor_user:secret@db/telecrypt_billing")
+	t.Setenv("JANITOR_DB_URL", "postgres://janitor:secret@db/database")
 	t.Setenv("SMTP_HOST", "smtp.example.test")
 	t.Setenv("SMTP_USERNAME", "janitor@example.test")
 	t.Setenv("SMTP_PASSWORD", "smtp-secret")
@@ -74,10 +74,10 @@ func TestLoadPlanDerivesPublicURLsFromServerName(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadPlan: %v", err)
 	}
-	if got, want := cfg.BackendPublicURL, "https://backend.stage.telecrypt.io"; got != want {
+	if got, want := cfg.BackendPublicURL, "https://backend.example.invalid"; got != want {
 		t.Fatalf("BackendPublicURL = %q, want %q", got, want)
 	}
-	if got, want := cfg.PlanPublicURL, "https://backend.stage.telecrypt.io/plan"; got != want {
+	if got, want := cfg.PlanPublicURL, "https://backend.example.invalid/plan"; got != want {
 		t.Fatalf("PlanPublicURL = %q, want %q", got, want)
 	}
 	if got, want := cfg.MASInternalURL, "http://127.0.0.1:8082"; got != want {
@@ -88,13 +88,13 @@ func TestLoadPlanDerivesPublicURLsFromServerName(t *testing.T) {
 	}
 }
 
-func TestLoadPlanRequiresExactBillingProfiles(t *testing.T) {
+func TestLoadPlanRequiresValidHostnameAndBillingEnvironment(t *testing.T) {
 	for _, tc := range []struct {
 		server, billing string
 		valid           bool
 	}{
-		{"telecrypt.io", "test", true}, {"stage.telecrypt.io", "test", true}, {"telecrypt.io", "live", true},
-		{"stage.telecrypt.io", "live", false}, {"preview.telecrypt.io", "test", false}, {"telecrypt.io", "production", false},
+		{"example.invalid", "test", true}, {"preview.example.invalid", "live", true},
+		{"bad host", "test", false}, {"example.invalid", "production", false},
 	} {
 		t.Run(tc.server+"/"+tc.billing, func(t *testing.T) {
 			setRequiredPlanEnv(t)
@@ -196,58 +196,34 @@ func TestLoadPlanRejectsInvalidPrivateKeyMaterial(t *testing.T) {
 	}
 }
 
-func TestServerIdentityDerivesFrozenPublicHostnames(t *testing.T) {
-	tests := []struct {
-		name       string
-		serverName string
-		valid      bool
-		wantOrigin string
+func TestServerIdentityDerivesPublicHostnames(t *testing.T) {
+	for _, tt := range []struct {
+		name, serverName, wantOrigin string
 	}{
-		{"production", "telecrypt.io", true, "https://backend.telecrypt.io"},
-		{"stage", "stage.telecrypt.io", true, "https://backend.stage.telecrypt.io"},
-		{"nested hostname", "foo.stage.telecrypt.io", false, "SERVER_NAME"},
-		{"wrong suffix", "stage.example.com", false, "SERVER_NAME"},
-		{"uppercase label", "Stage.telecrypt.io", false, "SERVER_NAME"},
-	}
-	for _, tt := range tests {
+		{"single label", "example.invalid", "https://backend.example.invalid"},
+		{"nested hostname", "preview.example.invalid", "https://backend.preview.example.invalid"},
+		{"uppercase label", "Preview.Example.Invalid", "https://backend.Preview.Example.Invalid"},
+	} {
 		t.Run(tt.name, func(t *testing.T) {
 			endpoints, err := deriveBackendEndpoints(tt.serverName)
-			if tt.valid {
-				if err != nil {
-					t.Fatalf("deriveBackendEndpoints: %v", err)
-				}
-				if endpoints.origin != tt.wantOrigin {
-					t.Fatalf("backend = %q, want %q", endpoints.origin, tt.wantOrigin)
-				}
-				if endpoints.mas != endpoints.origin+"/auth" || endpoints.plan != endpoints.origin+"/plan" {
-					t.Fatalf("derived endpoints = %#v", endpoints)
-				}
-				return
-			}
-			if err == nil || !strings.Contains(err.Error(), tt.wantOrigin) {
-				t.Fatalf("error = %v, want %q", err, tt.wantOrigin)
+			if err != nil || endpoints.origin != tt.wantOrigin {
+				t.Fatalf("deriveBackendEndpoints(%q) = %#v, %v; want %q", tt.serverName, endpoints, err, tt.wantOrigin)
 			}
 		})
 	}
 }
 
-func TestServerIdentityRejectsUnprovisionedSubdomains(t *testing.T) {
-	for _, serverName := range []string{
-		"preview.telecrypt.io",
-		"foo.stage.telecrypt.io",
-		"stage.example.com",
-		"Stage.telecrypt.io",
-		"telecrypt.io.example.com",
-	} {
+func TestServerIdentityRejectsInvalidHostnames(t *testing.T) {
+	for _, serverName := range []string{"", "bad host", "-example.invalid", "example_.invalid", "example.invalid."} {
 		t.Run(serverName, func(t *testing.T) {
 			if _, err := deriveBackendEndpoints(serverName); err == nil {
-				t.Fatalf("deriveBackendEndpoints(%q) accepted an unprovisioned hostname", serverName)
+				t.Fatalf("deriveBackendEndpoints(%q) accepted invalid hostname", serverName)
 			}
 		})
 	}
 }
 
-func TestLoadJanitorUsesExactDatabaseIdentity(t *testing.T) {
+func TestLoadJanitorLoadsPrivateDatabaseURL(t *testing.T) {
 	setRequiredJanitorEnv(t)
 	cfg, err := LoadJanitor()
 	if err != nil {
@@ -256,17 +232,8 @@ func TestLoadJanitorUsesExactDatabaseIdentity(t *testing.T) {
 	if got, want := cfg.MASAdminURL, "http://127.0.0.1:8081"; got != want {
 		t.Fatalf("MASAdminURL = %q, want %q", got, want)
 	}
-	if got, want := cfg.CashierDBRole, "stage_telecrypt_cashier_user"; got != want {
-		t.Fatalf("CashierDBRole = %q, want %q", got, want)
-	}
-
-	t.Setenv("JANITOR_DB_URL", "postgres://wrong_user:secret@db/stage_telecrypt_billing")
-	if _, err := LoadJanitor(); err == nil || !strings.Contains(err.Error(), "JANITOR_DB_URL") {
-		t.Fatalf("LoadJanitor error = %v, want identity error", err)
-	}
-	t.Setenv("JANITOR_DB_URL", "postgres://stage_telecrypt_janitor:secret@db/wrong_database")
-	if _, err := LoadJanitor(); err == nil || !strings.Contains(err.Error(), "JANITOR_DB_URL") {
-		t.Fatalf("LoadJanitor error = %v, want database error", err)
+	if got, want := cfg.JanitorDBURL, "postgres://janitor:secret@db/database"; got != want {
+		t.Fatalf("JanitorDBURL = %q, want %q", got, want)
 	}
 }
 
@@ -355,46 +322,42 @@ func TestLoadJanitorRejectsInvalidSMTPFrom(t *testing.T) {
 	}
 }
 
-func TestLoadJanitorRejectsUnsupportedServerProfile(t *testing.T) {
+func TestLoadJanitorRejectsInvalidProfileValues(t *testing.T) {
 	setRequiredJanitorEnv(t)
-	t.Setenv("SERVER_NAME", "preview.telecrypt.io")
-	t.Setenv("BILLING_ENVIRONMENT", "test")
+	t.Setenv("SERVER_NAME", "bad host")
 	if _, err := LoadJanitor(); err == nil {
-		t.Fatal("LoadJanitor accepted an unsupported billing profile")
+		t.Fatal("LoadJanitor accepted an invalid hostname")
+	}
+	setRequiredJanitorEnv(t)
+	t.Setenv("BILLING_ENVIRONMENT", "production")
+	if _, err := LoadJanitor(); err == nil {
+		t.Fatal("LoadJanitor accepted an invalid billing environment")
 	}
 }
 
 func TestLoadJanitorUsesProductionDatabaseIdentity(t *testing.T) {
 	setLiveJanitorEnv(t)
-	t.Setenv("SERVER_NAME", "telecrypt.io")
+	t.Setenv("SERVER_NAME", "production.example.invalid")
 	t.Setenv("BILLING_ENVIRONMENT", "live")
-	t.Setenv("JANITOR_DB_URL", "postgres://telecrypt_janitor_user:secret@db/telecrypt_billing")
+	t.Setenv("JANITOR_DB_URL", "postgres://janitor:secret@db/database")
 	if _, err := LoadJanitor(); err != nil {
 		t.Fatalf("LoadJanitor in production: %v", err)
 	}
 }
 
-func TestLoadJanitorRejectsInvalidDatabaseURL(t *testing.T) {
-	setRequiredJanitorEnv(t)
-	t.Setenv("JANITOR_DB_URL", "https://db.invalid")
-	if _, err := LoadJanitor(); err == nil || !strings.Contains(err.Error(), "JANITOR_DB_URL") {
-		t.Fatalf("LoadJanitor error = %v, want explicit Postgres URL error", err)
-	}
-}
-
 func TestLoadAndValidateRegistrationDerivesPublicURLs(t *testing.T) {
-	t.Setenv("SERVER_NAME", "telecrypt.io")
+	t.Setenv("SERVER_NAME", "production.example.invalid")
 	cfg, err := Load()
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if got, want := cfg.BackendPublicURL, "https://backend.telecrypt.io"; got != want {
+	if got, want := cfg.BackendPublicURL, "https://backend.production.example.invalid"; got != want {
 		t.Fatalf("BackendPublicURL = %q, want %q", got, want)
 	}
-	if got, want := cfg.MASPublicURL, "https://backend.telecrypt.io/auth"; got != want {
+	if got, want := cfg.MASPublicURL, "https://backend.production.example.invalid/auth"; got != want {
 		t.Fatalf("MASPublicURL = %q, want %q", got, want)
 	}
-	if got, want := cfg.PlanPublicURL, "https://backend.telecrypt.io/plan"; got != want {
+	if got, want := cfg.PlanPublicURL, "https://backend.production.example.invalid/plan"; got != want {
 		t.Fatalf("PlanPublicURL = %q, want %q", got, want)
 	}
 	if err := cfg.ValidateRegistration(); err != nil {
@@ -406,55 +369,10 @@ func TestLoadAndValidateRegistrationDerivesPublicURLs(t *testing.T) {
 	}
 }
 
-func TestRegistrationLoadRejectsUnprovisionedSubdomain(t *testing.T) {
-	t.Setenv("SERVER_NAME", "preview.telecrypt.io")
+func TestRegistrationLoadRejectsInvalidHostname(t *testing.T) {
+	t.Setenv("SERVER_NAME", "bad host")
 	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "SERVER_NAME") {
-		t.Fatalf("Load accepted an unprovisioned registration hostname: %v", err)
-	}
-}
-
-func TestLoadJanitorRejectsUnsafeDatabaseQuery(t *testing.T) {
-	base := "postgres://stage_telecrypt_janitor_user:secret@db/stage_telecrypt_billing"
-	for _, query := range []string{
-		"host=other.example",
-		"hostaddr=127.0.0.1",
-		"port=6543",
-		"user=other_user",
-		"database=other_db",
-		"dbname=other_db",
-		"service=other_service",
-		"host=first&host=second",
-		"%68ost=other.example",
-		"%68%6f%73%74=other.example",
-		"HOST=other.example",
-		"servicefile=/tmp/service.conf",
-		"passfile=/tmp/passfile",
-		"sslkey=/tmp/client.key",
-		"sslcert=/tmp/client.crt",
-		"sslrootcert=/tmp/root.crt",
-		"options=-c%20search_path%3Dpublic",
-		"search_path=public",
-		"unknown=value",
-		"sslmode=require&sslmode=disable",
-		"sslmode=",
-		"sslmode=%20",
-		"sslmode=require&application_name=%20janitor",
-	} {
-		t.Run(query, func(t *testing.T) {
-			setRequiredJanitorEnv(t)
-			t.Setenv("JANITOR_DB_URL", base+"?"+query)
-			if _, err := LoadJanitor(); err == nil || !strings.Contains(err.Error(), "query") {
-				t.Fatalf("LoadJanitor error = %v, want query-target rejection", err)
-			}
-		})
-	}
-}
-
-func TestLoadJanitorAllowsSafeDatabaseConnectionOptions(t *testing.T) {
-	setRequiredJanitorEnv(t)
-	t.Setenv("JANITOR_DB_URL", "postgres://stage_telecrypt_janitor_user:secret@db/stage_telecrypt_billing?sslmode=require&connect_timeout=5&application_name=janitor-sweep")
-	if _, err := LoadJanitor(); err != nil {
-		t.Fatalf("LoadJanitor rejected safe query options: %v", err)
+		t.Fatalf("Load accepted an invalid hostname: %v", err)
 	}
 }
 
@@ -472,13 +390,5 @@ func TestLoadPlanRequiresMASAccountCredential(t *testing.T) {
 	cfg, err := LoadPlan()
 	if err != nil || cfg.MASAdminURL != "http://127.0.0.1:8081" || cfg.MASAdminClientID != testPlanClientID || cfg.MASAdminClientSecret != "admin-test-secret" {
 		t.Fatalf("Plan MAS admin configuration = %#v, %v", cfg, err)
-	}
-}
-
-func TestLoadJanitorAcceptsEncodedMatchingDatabaseIdentity(t *testing.T) {
-	setRequiredJanitorEnv(t)
-	t.Setenv("JANITOR_DB_URL", "postgres://stage%5Ftelecrypt_janitor_user:secret@DB:05432/stage%5Ftelecrypt_billing?%73slmode=require")
-	if _, err := LoadJanitor(); err != nil {
-		t.Fatalf("LoadJanitor: %v", err)
 	}
 }

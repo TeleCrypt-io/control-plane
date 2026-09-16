@@ -1,7 +1,6 @@
 package db
 
 import (
-	"context"
 	"strings"
 	"testing"
 )
@@ -46,11 +45,5 @@ func TestValidateJanitorRoleAttributes(t *testing.T) {
 				t.Fatalf("validateJanitorRoleAttributes() error = %v, want substring %q", err, test.wantErr)
 			}
 		})
-	}
-}
-
-func TestValidateJanitorDatabaseContractRequiresExpectedCashierOwner(t *testing.T) {
-	if err := ValidateJanitorDatabaseContract(context.Background(), nil, ""); err == nil || !strings.Contains(err.Error(), "must not be empty") {
-		t.Fatalf("ValidateJanitorDatabaseContract empty owner error = %v", err)
 	}
 }

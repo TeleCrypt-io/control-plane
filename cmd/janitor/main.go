@@ -72,7 +72,7 @@ func run() (runErr error) {
 		slog.Error("deployment identity", "error", err.Error())
 		return err
 	}
-	if err := db.ValidateJanitorDatabaseContract(ctx, pool, cfg.CashierDBRole); err != nil {
+	if err := db.ValidateJanitorDatabaseContract(ctx, pool); err != nil {
 		slog.Error("db contract", "error", err.Error())
 		return err
 	}
