@@ -39,7 +39,7 @@ capture_command_signal() {
       printf 'captured command child exited successfully while handling %s\n' "$signal_name" >&2
     fi
   fi
-  if [[ -n "$capture_active_output" && "$capture_active_replay_output" == true ]] && ! cat -- "$capture_active_output" >&2; then
+  if [[ -n "$capture_active_output" && "$capture_active_replay_output" == "true" ]] && ! cat -- "$capture_active_output" >&2; then
     replay_status=1
   fi
   if [[ -n "$capture_active_stderr" ]] && ! cat -- "$capture_active_stderr" >&2; then
@@ -86,7 +86,7 @@ capture_command() {
   if [[ -n "$previous_int" ]]; then eval "$previous_int"; else trap - INT; fi
   if [[ -n "$previous_term" ]]; then eval "$previous_term"; else trap - TERM; fi
   if (( status != 0 )); then
-    if [[ "$replay_output" == true ]] && ! cat -- "$output" >&2; then
+    if [[ "$replay_output" == "true" ]] && ! cat -- "$output" >&2; then
       replay_status=1
     fi
     if ! cat -- "$stderr_file" >&2; then

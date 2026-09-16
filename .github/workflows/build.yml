@@ -239,7 +239,7 @@ jobs:
             matches="$(jq --arg tag "$RELEASE_TAG" '[.[] | select(.tag_name == $tag)]' "$page_json")"
             [[ "$(jq length <<<"$matches")" -le 1 ]]
             if [[ "$(jq length <<<"$matches")" -eq 1 ]]; then
-              if [[ "$found" == true ]]; then
+              if [[ "$found" == "true" ]]; then
                 echo 'release tag appeared twice' >&2
                 replay_release_pages || echo 'Release list response diagnostics could not be replayed' >&2
                 exit 1
@@ -248,7 +248,7 @@ jobs:
             fi
             [[ "$(jq length "$page_json")" -lt 100 ]] && break
           done
-          if [[ "$found" != true ]]; then
+          if [[ "$found" != "true" ]]; then
             printf 'RELEASE_EXISTS=false\nRELEASE_REUSE=false\n' >>"$GITHUB_ENV"; exit 0
           fi
           capture_extract release_id "$release_json" '.id | select(type == "number" and . > 0 and . == floor)'
@@ -265,7 +265,7 @@ jobs:
             (.size | type == "number" and . > 0 and . <= 67108864) and
             (.digest | type == "string" and test("^sha256:[0-9a-f]{64}$")))'
           printf 'RELEASE_EXISTS=true\nRELEASE_ID=%s\n' "$release_id" >>"$GITHUB_ENV"
-          if [[ "$(jq -er '.draft' "$release_json")" == true ]]; then
+          if [[ "$(jq -er '.draft' "$release_json")" == "true" ]]; then
             printf 'RELEASE_DRAFT_ID=%s\n' "$release_id" >>"$GITHUB_ENV"
           fi
           expected_assets="$(printf '%s\n' "$RELEASE_BINDING" "$RELEASE_WHEEL" | sort)"
@@ -597,7 +597,7 @@ jobs:
               break
             fi
           done
-          [[ "$pages_complete" == true ]]
+          [[ "$pages_complete" == "true" ]]
           [[ "$exact_tag_matches" -eq 0 ]] || {
             echo "refusing to replace existing immutable image tag $IMAGE:$RELEASE_TAG" >&2
             replay_package_pages || echo 'GHCR package response diagnostics could not be replayed' >&2
@@ -698,7 +698,7 @@ jobs:
                 exit 1
               fi
               if [[ "$match_count" -eq 1 ]]; then
-                if [[ "$found" == true ]]; then
+                if [[ "$found" == "true" ]]; then
                   echo 'matching draft Release appeared on multiple pages' >&2
                   replay_draft_pages || echo 'draft list response diagnostics could not be replayed' >&2
                   exit 1
@@ -707,10 +707,10 @@ jobs:
               fi
               [[ "$(jq length "$page_json")" -lt 100 ]] && break
             done
-            [[ "$found" == true ]] && break
+            [[ "$found" == "true" ]] && break
             [[ "$attempt" -lt 5 ]] && sleep 2
           done
-          if [[ "$found" != true ]]; then
+          if [[ "$found" != "true" ]]; then
             echo 'exact matching draft Release was not found' >&2
             replay_draft_pages || echo 'draft list response diagnostics could not be replayed' >&2
             exit 1
@@ -800,7 +800,7 @@ jobs:
                 (.size | type == "number" and . > 0 and . <= 67108864) and
                 (.digest | type == "string" and test("^sha256:[0-9a-f]{64}$"))))'
           capture_extract final_id "$final_json" '.id'
-          if [[ "${RELEASE_EXISTS:-false}" == true && "$final_id" != "$RELEASE_ID" ]]; then
+          if [[ "${RELEASE_EXISTS:-false}" == "true" && "$final_id" != "$RELEASE_ID" ]]; then
             echo 'final Release identity did not match the reused Release' >&2
             replay_capture "$final_json" || echo 'final Release diagnostics could not be replayed' >&2
             exit 1
