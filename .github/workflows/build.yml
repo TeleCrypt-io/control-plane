@@ -279,7 +279,7 @@ jobs:
           [[ "$IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
           release_dir="$RUNNER_TEMP/controlplane-release"
           mkdir -p "$release_dir"
-          jq -cn \
+          jq -cS -n \
             --arg image "$IMAGE" --arg tag "$RELEASE_TAG" --arg source "$RELEASE_SHA" \
             --arg tag_object "$ANNOTATED_TAG_SHA" --arg digest "$IMAGE_DIGEST" \
             '{schema_version: 1, image: $image, tag: $tag, source_commit: $source, annotated_tag_sha: $tag_object, digest: $digest}' \
