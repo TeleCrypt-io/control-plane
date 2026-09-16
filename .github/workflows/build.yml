@@ -286,7 +286,8 @@ jobs:
             >"$release_dir/$RELEASE_BINDING"
           gh release create "$RELEASE_TAG" \
             "dist/tier-controller/$RELEASE_WHEEL" "$release_dir/$RELEASE_BINDING" \
-            --repo "$GITHUB_REPOSITORY" --verify-tag --title "Control-plane $RELEASE_TAG" --generate-notes
+            --repo "$GITHUB_REPOSITORY" --verify-tag --title "$RELEASE_TAG" \
+            --notes "Exact Controlplane release $RELEASE_TAG."
           mapfile -t assets < <(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' | sort)
           [[ "${#assets[@]}" -eq 2 ]]
           [[ "${assets[0]}" == "$RELEASE_BINDING" ]]
