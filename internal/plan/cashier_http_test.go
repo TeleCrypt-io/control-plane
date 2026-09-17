@@ -36,7 +36,7 @@ func TestHTTPCashierClientPreservesPrivatePlanCreationProtocol(t *testing.T) {
 		t.Fatalf("generate Ed25519 key: %v", err)
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost || r.URL.Path != "/internal/v1/teams" {
+		if r.Method != http.MethodPost || r.URL.Path != "/internal/cashier/team/create" {
 			http.Error(w, "wrong route", http.StatusBadRequest)
 			return
 		}
@@ -76,7 +76,7 @@ func TestHTTPCashierClientReadsPrivatePlanState(t *testing.T) {
 		t.Fatalf("generate Ed25519 key: %v", err)
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet || r.URL.Path != "/internal/v1/plan-state" {
+		if r.Method != http.MethodGet || r.URL.Path != "/internal/cashier/plan/state" {
 			http.Error(w, "wrong route", http.StatusBadRequest)
 			return
 		}
@@ -108,12 +108,12 @@ func TestHTTPCashierClientReadsPrivatePlanState(t *testing.T) {
 	}
 }
 
-func TestHTTPCashierClientCanonicalizesEscapedSeatDeletePath(t *testing.T) {
+func TestHTTPCashierClientCanonicalizesEscapedMemberRemovalPath(t *testing.T) {
 	_, private, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatalf("generate Ed25519 key: %v", err)
 	}
-	const pathPrefix = "/internal/v1/team/seats/"
+	const pathPrefix = "/internal/cashier/team/members/"
 	cases := []struct {
 		name      string
 		mxid      string
@@ -128,7 +128,7 @@ func TestHTTPCashierClientCanonicalizesEscapedSeatDeletePath(t *testing.T) {
 		requestID string
 	})
 	for _, tc := range cases {
-		escapedPath := pathPrefix + url.PathEscape(tc.mxid)
+		escapedPath := pathPrefix + url.PathEscape(tc.mxid) + "/remove"
 		wants[escapedPath] = struct {
 			path      string
 			requestID string
@@ -136,7 +136,7 @@ func TestHTTPCashierClientCanonicalizesEscapedSeatDeletePath(t *testing.T) {
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		want, ok := wants[r.URL.EscapedPath()]
-		if !ok || r.Method != http.MethodDelete {
+		if !ok || r.Method != http.MethodPost {
 			http.Error(w, "wrong escaped route", http.StatusBadRequest)
 			return
 		}
@@ -231,8 +231,8 @@ func TestHTTPCashierClientCreatePlanResponseContract(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			httpClient := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
-				if r.Method != http.MethodPost || r.URL.Path != "/internal/v1/teams" {
-					t.Errorf("request = %s %s, want POST /internal/v1/teams", r.Method, r.URL.Path)
+				if r.Method != http.MethodPost || r.URL.Path != "/internal/cashier/team/create" {
+					t.Errorf("request = %s %s, want POST /internal/cashier/team/create", r.Method, r.URL.Path)
 				}
 				return &http.Response{
 					StatusCode: tc.status,
@@ -259,8 +259,8 @@ func TestHTTPCashierClientOtherMutationsRejectCreateStatus(t *testing.T) {
 		t.Fatalf("generate Ed25519 key: %v", err)
 	}
 	httpClient := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
-		if r.Method != http.MethodPost || r.URL.Path != "/internal/v1/team/seats" {
-			t.Errorf("request = %s %s, want POST /internal/v1/team/seats", r.Method, r.URL.Path)
+		if r.Method != http.MethodPost || r.URL.Path != "/internal/cashier/team/members/add" {
+			t.Errorf("request = %s %s, want POST /internal/cashier/team/members/add", r.Method, r.URL.Path)
 		}
 		return &http.Response{
 			StatusCode: http.StatusCreated,

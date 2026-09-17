@@ -24,7 +24,7 @@ func main() {
 			fmt.Fprintln(os.Stderr, "usage: plan [healthcheck]")
 			os.Exit(2)
 		}
-		if err := healthcheck.Check("http://" + planListenAddr + "/internal/plan_health"); err != nil {
+		if err := healthcheck.Check("http://" + planListenAddr + "/health"); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}

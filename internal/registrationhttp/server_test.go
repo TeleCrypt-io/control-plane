@@ -234,10 +234,10 @@ func TestHandleRegistration_MapsEveryBoundedStageAndKind(t *testing.T) {
 }
 
 // Probing health must not create an account or call billing services.
-func TestInternalHealth(t *testing.T) {
+func TestHealth(t *testing.T) {
 	srv := New(nil, "")
 	response := httptest.NewRecorder()
-	srv.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/internal/registration_health", nil))
+	srv.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/health", nil))
 	if response.Code != http.StatusOK {
 		t.Fatalf("health status = %d, want 200", response.Code)
 	}

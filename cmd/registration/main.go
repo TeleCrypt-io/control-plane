@@ -27,7 +27,7 @@ func main() {
 			fmt.Fprintln(os.Stderr, "usage: registration [healthcheck]")
 			os.Exit(2)
 		}
-		if err := healthcheck.Check("http://" + registrationListenAddr + "/internal/registration_health"); err != nil {
+		if err := healthcheck.Check("http://" + registrationListenAddr + "/health"); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}

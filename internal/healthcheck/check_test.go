@@ -12,7 +12,7 @@ func TestCheckRequiresOKWithoutFollowingRedirects(t *testing.T) {
 			calls := 0
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				calls++
-				if r.URL.Path != "/internal/plan_health" {
+				if r.URL.Path != "/health" {
 					w.WriteHeader(http.StatusOK)
 					return
 				}
@@ -20,7 +20,7 @@ func TestCheckRequiresOKWithoutFollowingRedirects(t *testing.T) {
 				w.WriteHeader(status)
 			}))
 			defer server.Close()
-			err := Check(server.URL + "/internal/plan_health")
+			err := Check(server.URL + "/health")
 			if (err == nil) != (status == http.StatusOK) {
 				t.Fatalf("status %d: error = %v", status, err)
 			}

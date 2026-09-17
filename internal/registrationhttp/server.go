@@ -41,7 +41,7 @@ func New(p provisioner, planURL string) *Server {
 		mux:         http.NewServeMux(),
 	}
 	s.mux.HandleFunc("POST /redpill", s.handleRegistration)
-	s.mux.HandleFunc("GET /internal/registration_health", func(w http.ResponseWriter, _ *http.Request) {
+	s.mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
 	return s
