@@ -116,9 +116,9 @@ func TestHandleRegistration_HappyPath(t *testing.T) {
 		ExpiresIn:          3600,
 		DeviceID:           "AGTDEADBEEF",
 		Homeserver:         "https://telecrypt.io",
-		OAuthIssuer:        "https://telecrypt.io/auth",
+		OAuthIssuer:        "https://telecrypt.io/",
 		OAuthClientID:      "dynamic-client",
-		OAuthTokenEndpoint: "https://telecrypt.io/auth/oauth2/token",
+		OAuthTokenEndpoint: "https://telecrypt.io/oauth2/token",
 	}}
 	s := New(p, "https://backend.telecrypt.io/plan")
 
@@ -140,7 +140,7 @@ func TestHandleRegistration_HappyPath(t *testing.T) {
 	if resp["password"] != "generated-password" || resp["access_token"] != "oauth-access" || resp["refresh_token"] != "oauth-refresh" || resp["expires_in"] != float64(3600) {
 		t.Errorf("credential response = %v, want complete refreshable OAuth credentials", resp)
 	}
-	if resp["issuer"] != "https://telecrypt.io/auth" || resp["client_id"] != "dynamic-client" || resp["token_endpoint"] != "https://telecrypt.io/auth/oauth2/token" {
+	if resp["issuer"] != "https://telecrypt.io/" || resp["client_id"] != "dynamic-client" || resp["token_endpoint"] != "https://telecrypt.io/oauth2/token" {
 		t.Errorf("OAuth refresh metadata = %v", resp)
 	}
 	if w.Header().Get("Cache-Control") != "no-store" {

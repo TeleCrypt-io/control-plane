@@ -62,7 +62,7 @@ func NewServer(cfg Config, cashier CashierClient, accounts AccountAdmin) *Server
 	s.mux.HandleFunc("GET /plan/assets/plan.js", s.handlePlanJS)
 	s.mux.HandleFunc("GET /plan/login", s.handleLogin)
 	s.mux.HandleFunc("GET /plan/callback", s.handleCallback)
-	s.registerPlanCommands("/api/plan", s.handleCreatePlan)
+	s.registerPlanCommands("/plan/api", s.handleCreatePlan)
 	return s
 }
 
@@ -129,7 +129,7 @@ func (s *Server) client() (CashierClient, error) {
 func (s *Server) handlePlan(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	mxid, err := s.session.MXID(r)
-	data := pageData{LoggedIn: err == nil, TestMode: s.cfg.BillingEnvironment == "test", MXID: mxid, RegisterURL: strings.TrimRight(s.cfg.BackendPublicURL, "/") + "/auth/register", SeatPrice: planSeatPrice}
+	data := pageData{LoggedIn: err == nil, TestMode: s.cfg.BillingEnvironment == "test", MXID: mxid, RegisterURL: strings.TrimRight(s.cfg.BackendPublicURL, "/") + "/register", SeatPrice: planSeatPrice}
 	if data.LoggedIn {
 		client, err := s.client()
 		if err != nil {

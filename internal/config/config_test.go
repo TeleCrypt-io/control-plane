@@ -354,7 +354,7 @@ func TestLoadAndValidateRegistrationDerivesPublicURLs(t *testing.T) {
 	if got, want := cfg.BackendPublicURL, "https://backend.production.example.invalid"; got != want {
 		t.Fatalf("BackendPublicURL = %q, want %q", got, want)
 	}
-	if got, want := cfg.MASPublicURL, "https://backend.production.example.invalid/auth"; got != want {
+	if got, want := cfg.MASPublicURL, "https://backend.production.example.invalid"; got != want {
 		t.Fatalf("MASPublicURL = %q, want %q", got, want)
 	}
 	if got, want := cfg.PlanPublicURL, "https://backend.production.example.invalid/plan"; got != want {

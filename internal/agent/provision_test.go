@@ -35,7 +35,7 @@ func (f *fakeMASReg) RegisterAndAuthorizeDevice(_ context.Context, username, _, 
 func TestProvisionAgent_ReturnsRefreshableOAuthCredentials(t *testing.T) {
 	m := &fakeMASReg{result: &masreg.DeviceTokens{
 		AccessToken: "access", RefreshToken: "refresh", ExpiresIn: 3600,
-		ClientID: "dynamic-client", Issuer: "https://mas.example/auth", TokenEndpoint: "https://mas.example/auth/oauth2/token",
+		ClientID: "dynamic-client", Issuer: "https://mas.example/", TokenEndpoint: "https://mas.example/oauth2/token",
 	}}
 	p, err := NewProvisioner(m, "https://backend.telecrypt.io", "telecrypt.io")
 	if err != nil {
@@ -48,7 +48,7 @@ func TestProvisionAgent_ReturnsRefreshableOAuthCredentials(t *testing.T) {
 	if got.Password == "" || got.AccessToken != "access" || got.RefreshToken != "refresh" || got.ExpiresIn != 3600 {
 		t.Fatalf("credential result = %#v, want password and complete refreshable token set", got)
 	}
-	if got.OAuthClientID != "dynamic-client" || got.OAuthIssuer != "https://mas.example/auth" || got.OAuthTokenEndpoint != "https://mas.example/auth/oauth2/token" {
+	if got.OAuthClientID != "dynamic-client" || got.OAuthIssuer != "https://mas.example/" || got.OAuthTokenEndpoint != "https://mas.example/oauth2/token" {
 		t.Fatalf("OAuth metadata = %#v", got)
 	}
 	if m.calls != 1 {

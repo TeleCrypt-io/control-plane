@@ -539,12 +539,12 @@ func TestPlanCommandsRequireAuthenticatedBrowserSession(t *testing.T) {
 		method string
 		path   string
 	}{
-		{http.MethodPost, "/api/plan"},
-		{http.MethodPost, "/api/plan/seats"},
-		{http.MethodDelete, "/api/plan/seats/@member:stage.telecrypt.io"},
-		{http.MethodPost, "/api/plan/checkout"},
-		{http.MethodPost, "/api/plan/portal"},
-		{http.MethodPost, "/api/plan/seat-count"},
+		{http.MethodPost, "/plan/api"},
+		{http.MethodPost, "/plan/api/seats"},
+		{http.MethodDelete, "/plan/api/seats/@member:stage.telecrypt.io"},
+		{http.MethodPost, "/plan/api/checkout"},
+		{http.MethodPost, "/plan/api/portal"},
+		{http.MethodPost, "/plan/api/seat-count"},
 	} {
 		srv := testServer()
 		req := httptest.NewRequest(command.method, command.path, nil)
@@ -563,7 +563,7 @@ func TestPlanRejectsSessionForForeignHomeserver(t *testing.T) {
 	srv := testServer()
 	cookieRecorder := httptest.NewRecorder()
 	srv.session.Set(cookieRecorder, "@alice:other.example")
-	req := httptest.NewRequest(http.MethodPost, "/api/plan", nil)
+	req := httptest.NewRequest(http.MethodPost, "/plan/api", nil)
 	req.AddCookie(cookieRecorder.Result().Cookies()[0])
 	req.Header.Set("Origin", "https://backend.stage.telecrypt.io")
 	rec := httptest.NewRecorder()
@@ -575,7 +575,7 @@ func TestPlanRejectsSessionForForeignHomeserver(t *testing.T) {
 }
 
 func TestRetiredPlanRoutesAreNotExposed(t *testing.T) {
-	for _, path := range []string{"/api/team", "/api/team/seats", "/api/plan/downgrade-request"} {
+	for _, path := range []string{"/api/team", "/api/team/seats", "/plan/api/downgrade-request"} {
 		rec := httptest.NewRecorder()
 		testServer().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, path, nil))
 		if got, want := rec.Code, http.StatusNotFound; got != want {
@@ -592,7 +592,7 @@ func TestCreatePlanUsesAuthenticatedPrincipalAndRequestID(t *testing.T) {
 	srv.session.Set(cookieRecorder, "@alice:stage.telecrypt.io")
 	cookie := cookieRecorder.Result().Cookies()[0]
 	requestID := "b3987ed2-51a4-4b04-b5f5-b915683d0cf5"
-	req := httptest.NewRequest(http.MethodPost, "/api/plan", nil)
+	req := httptest.NewRequest(http.MethodPost, "/plan/api", nil)
 	req.AddCookie(cookie)
 	req.Header.Set("Origin", "https://backend.stage.telecrypt.io")
 	req.Header.Set("X-TeleCrypt-Request-ID", requestID)
@@ -601,7 +601,7 @@ func TestCreatePlanUsesAuthenticatedPrincipalAndRequestID(t *testing.T) {
 	srv.ServeHTTP(rec, req)
 
 	if got, want := rec.Code, http.StatusNoContent; got != want {
-		t.Fatalf("POST /api/plan status = %d, want %d", got, want)
+		t.Fatalf("POST /plan/api status = %d, want %d", got, want)
 	}
 	if got, want := cashier.principal.MXID, "@alice:stage.telecrypt.io"; got != want {
 		t.Fatalf("Cashier principal = %q, want %q", got, want)
@@ -610,7 +610,7 @@ func TestCreatePlanUsesAuthenticatedPrincipalAndRequestID(t *testing.T) {
 		t.Fatalf("Cashier request ID = %q, want %q", got, want)
 	}
 	if rec.Body.Len() != 0 {
-		t.Fatalf("POST /api/plan response body = %q, want empty", rec.Body.String())
+		t.Fatalf("POST /plan/api response body = %q, want empty", rec.Body.String())
 	}
 }
 
@@ -618,8 +618,8 @@ func TestPlanCommandsRejectUnsafeRequestBodies(t *testing.T) {
 	for _, tt := range []struct {
 		name, path, body string
 	}{
-		{"unknown field", "/api/plan/seats", `{"mxid":"@member:stage.telecrypt.io","unexpected":true}`},
-		{"trailing JSON", "/api/plan/seat-count", `{"quantity":1}{"quantity":2}`},
+		{"unknown field", "/plan/api/seats", `{"mxid":"@member:stage.telecrypt.io","unexpected":true}`},
+		{"trailing JSON", "/plan/api/seat-count", `{"quantity":1}{"quantity":2}`},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			srv := testServer()
@@ -637,7 +637,7 @@ func TestPlanCommandsRejectUnsafeRequestBodies(t *testing.T) {
 func TestDeleteSeatRejectsNonLocalMXID(t *testing.T) {
 	srv := testServer()
 	srv.cashier = &fakeCashier{}
-	req := authenticatedPlanRequest(t, srv, http.MethodDelete, "/api/plan/seats/@member:elsewhere.test", "")
+	req := authenticatedPlanRequest(t, srv, http.MethodDelete, "/plan/api/seats/@member:elsewhere.test", "")
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
 	if got, want := rec.Code, http.StatusBadRequest; got != want {
@@ -680,9 +680,9 @@ func TestCashierCapacityRejectionIsRewrittenLocally(t *testing.T) {
 	for _, tt := range []struct {
 		name, method, path, body string
 	}{
-		{"seat-count", http.MethodPost, "/api/plan/seat-count", `{"quantity":1}`},
-		{"attach", http.MethodPost, "/api/plan/seats", `{"mxid":"@bot:stage.telecrypt.io"}`},
-		{"remove", http.MethodDelete, "/api/plan/seats/@bot:stage.telecrypt.io", ""},
+		{"seat-count", http.MethodPost, "/plan/api/seat-count", `{"quantity":1}`},
+		{"attach", http.MethodPost, "/plan/api/seats", `{"mxid":"@bot:stage.telecrypt.io"}`},
+		{"remove", http.MethodDelete, "/plan/api/seats/@bot:stage.telecrypt.io", ""},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			srv := testServer()
@@ -705,12 +705,12 @@ func TestCashierArbitraryErrorBodyIsNeverForwarded(t *testing.T) {
 	for _, tt := range []struct {
 		name, method, path, body string
 	}{
-		{"seat-count", http.MethodPost, "/api/plan/seat-count", `{"quantity":1}`},
-		{"attach", http.MethodPost, "/api/plan/seats", `{"mxid":"@bot:stage.telecrypt.io"}`},
-		{"remove", http.MethodDelete, "/api/plan/seats/@bot:stage.telecrypt.io", ""},
-		{"create", http.MethodPost, "/api/plan", ""},
-		{"checkout", http.MethodPost, "/api/plan/checkout", `{"quantity":1}`},
-		{"portal", http.MethodPost, "/api/plan/portal", ""},
+		{"seat-count", http.MethodPost, "/plan/api/seat-count", `{"quantity":1}`},
+		{"attach", http.MethodPost, "/plan/api/seats", `{"mxid":"@bot:stage.telecrypt.io"}`},
+		{"remove", http.MethodDelete, "/plan/api/seats/@bot:stage.telecrypt.io", ""},
+		{"create", http.MethodPost, "/plan/api", ""},
+		{"checkout", http.MethodPost, "/plan/api/checkout", `{"quantity":1}`},
+		{"portal", http.MethodPost, "/plan/api/portal", ""},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			srv := testServer()
@@ -893,7 +893,7 @@ func TestMemberAccessRequiresAuthenticatedActiveOwnerAndOwnSeat(t *testing.T) {
 					accounts.actionErr = errors.New("MAS unavailable")
 					want = http.StatusBadGateway
 				}
-				req := authenticatedPlanRequest(t, srv, http.MethodPost, "/api/plan/seats/"+url.PathEscape(target)+"/"+action, "")
+				req := authenticatedPlanRequest(t, srv, http.MethodPost, "/plan/api/seats/"+url.PathEscape(target)+"/"+action, "")
 				if scenario == "no session" {
 					req.Header.Del("Cookie")
 				}

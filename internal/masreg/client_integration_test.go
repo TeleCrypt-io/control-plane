@@ -97,8 +97,8 @@ func validateIntegrationURLs(masRaw, matrixRaw string) error {
 	if matrix.Path != "" && matrix.Path != "/" {
 		return fmt.Errorf("Matrix origin must have no path other than /")
 	}
-	if mas.EscapedPath() != "/auth" && mas.EscapedPath() != "/auth/" {
-		return fmt.Errorf("MAS base URL path must be exactly /auth or /auth/")
+	if mas.EscapedPath() != "" && mas.EscapedPath() != "/" {
+		return fmt.Errorf("MAS base URL must be the origin without a path")
 	}
 	return nil
 }
@@ -143,60 +143,60 @@ func TestValidateIntegrationURLs(t *testing.T) {
 		wantError string
 	}{
 		{
-			name:    "loopback IPv4 with MAS trailing slash",
-			masBase: "http://127.0.0.1:8008/auth/",
+			name:    "loopback IPv4 with root MAS path",
+			masBase: "http://127.0.0.1:8008/",
 			matrix:  "http://127.0.0.1:8008/",
 		},
 		{
 			name:    "loopback hostname with default port",
-			masBase: "http://localhost/auth",
+			masBase: "http://localhost",
 			matrix:  "http://localhost",
 		},
 		{
 			name:      "HTTPS is rejected",
-			masBase:   "https://127.0.0.1:8008/auth",
+			masBase:   "https://127.0.0.1:8008",
 			matrix:    "https://127.0.0.1:8008",
 			wantError: "http",
 		},
 		{
 			name:      "non-loopback host is rejected",
-			masBase:   "http://mas:8008/auth",
+			masBase:   "http://mas:8008",
 			matrix:    "http://mas:8008",
 			wantError: "loopback",
 		},
 		{
 			name:      "different origins are rejected",
-			masBase:   "http://127.0.0.1:8008/auth",
+			masBase:   "http://127.0.0.1:8008",
 			matrix:    "http://localhost:8008",
 			wantError: "same origin",
 		},
 		{
 			name:      "different ports are rejected",
-			masBase:   "http://127.0.0.1:8008/auth",
+			masBase:   "http://127.0.0.1:8008",
 			matrix:    "http://127.0.0.1:8009",
 			wantError: "same origin",
 		},
 		{
 			name:      "Matrix path is rejected",
-			masBase:   "http://[::1]:8008/auth",
+			masBase:   "http://[::1]:8008",
 			matrix:    "http://[::1]:8008/matrix",
 			wantError: "Matrix origin",
 		},
 		{
 			name:      "MAS path is rejected",
-			masBase:   "http://127.0.0.1:8008/",
+			masBase:   "http://127.0.0.1:8008/auth/",
 			matrix:    "http://127.0.0.1:8008",
-			wantError: "MAS base URL path",
+			wantError: "MAS base URL",
 		},
 		{
 			name:      "encoded MAS path is rejected",
 			masBase:   "http://127.0.0.1:8008/%61uth",
 			matrix:    "http://127.0.0.1:8008",
-			wantError: "MAS base URL path",
+			wantError: "MAS base URL",
 		},
 		{
 			name:      "query is rejected",
-			masBase:   "http://127.0.0.1:8008/auth?debug=1",
+			masBase:   "http://127.0.0.1:8008?debug=1",
 			matrix:    "http://127.0.0.1:8008",
 			wantError: "without credentials",
 		},

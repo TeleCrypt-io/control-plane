@@ -97,8 +97,7 @@ const (
 )
 
 // NewClient targets the exact public MAS origin (for example,
-// the configured backend origin (for example, https://backend.example.invalid/auth); registration
-// binds all browser and OAuth calls to it.
+// https://backend.example.invalid); registration binds all browser and OAuth calls to it.
 func NewClient(baseURL string) *Client {
 	return &Client{baseURL: strings.TrimRight(baseURL, "/")}
 }
@@ -465,9 +464,9 @@ func (c *session) register(ctx context.Context, username, password string) error
 	return nil
 }
 
-// isRegistrationPath accounts for MAS being published below a path prefix (for example
-// https://backend.telecrypt.io/auth/). Redirects that stay inside /auth/register are incomplete
-// registration, even though they do not begin at the origin root.
+// isRegistrationPath accounts for MAS being published below a path prefix. Redirects that stay
+// inside the registration path are incomplete registration, even when they do not begin at the
+// origin root.
 func (c *session) isRegistrationPath(path string) bool {
 	base, err := url.Parse(c.baseURL)
 	if err != nil {

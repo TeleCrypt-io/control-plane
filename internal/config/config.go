@@ -14,7 +14,7 @@ import (
 	"github.com/TeleCrypt-io/controlplane/internal/db"
 )
 
-// Config is registration configuration.
+// Config contains the public endpoints shared by the control-plane services.
 type Config struct {
 	BackendPublicURL string
 	MASPublicURL     string
@@ -51,7 +51,7 @@ func (c *Config) ValidateRegistration() error {
 		url  string
 	}{
 		{"derived backend URL", c.BackendPublicURL},
-		{"derived MAS /auth URL", c.MASPublicURL},
+		{"derived MAS URL", c.MASPublicURL},
 		{"derived Plan /plan URL", c.PlanPublicURL},
 	} {
 		if err := validatePublicHTTPSURL(endpoint.url, endpoint.name); err != nil {
@@ -325,7 +325,7 @@ func deriveBackendEndpoints(serverName string) (backendEndpoints, error) {
 	origin := "https://" + backendHost
 	return backendEndpoints{
 		origin: origin,
-		mas:    origin + "/auth",
+		mas:    origin,
 		plan:   origin + "/plan",
 	}, nil
 }
