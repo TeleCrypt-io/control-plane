@@ -995,6 +995,13 @@ func (c *session) do(req *http.Request) (csrf string, finalURL *url.URL, body []
 		return "", nil, nil, registrationfailure.Transport(diagnostic)
 	}
 	if resp.StatusCode != http.StatusOK {
+		// MAS finishes the public registration flow with a 303 to its configured base path. The
+		// TeleCrypt backend deliberately returns 404 at that path, so accept this one final
+		// response only when the request was the display-name step and the redirect stayed on the
+		// same origin at "/". The caller still validates the completion path below.
+		if c.isRegistrationCompletionNotFound(req, resp) {
+			return extractCSRF(body), resp.Request.URL, body, nil
+		}
 		return "", nil, nil, registrationfailure.Upstream(httpdiag.NewResponseError("MAS form response", resp.StatusCode, string(body), nil, nil))
 	}
 	if resp.Request == nil || resp.Request.URL == nil || !sameOriginURL(c.baseURLParsed, resp.Request.URL) ||
@@ -1003,4 +1010,17 @@ func (c *session) do(req *http.Request) (csrf string, finalURL *url.URL, body []
 		return "", nil, nil, registrationfailure.Protocol(errors.New("MAS form landed at an unsafe URL"))
 	}
 	return extractCSRF(body), resp.Request.URL, body, nil
+}
+
+func (c *session) isRegistrationCompletionNotFound(req *http.Request, resp *http.Response) bool {
+	if req == nil || req.Method != http.MethodPost || req.URL == nil || resp == nil || resp.StatusCode != http.StatusNotFound ||
+		resp.Request == nil || resp.Request.URL == nil || req.URL.RawQuery != "" || req.URL.ForceQuery || req.URL.Fragment != "" ||
+		req.URL.RawPath != "" || resp.Request.URL.RawQuery != "" || resp.Request.URL.ForceQuery || resp.Request.URL.Fragment != "" ||
+		resp.Request.URL.RawPath != "" {
+		return false
+	}
+	from, fromOK := relativeMASPath(c.baseURLParsed, req.URL)
+	to, toOK := relativeMASPath(c.baseURLParsed, resp.Request.URL)
+	_, step, isDisplayName := registrationStep(from)
+	return fromOK && toOK && isDisplayName && step == "display-name" && to == "/"
 }
