@@ -2,8 +2,7 @@
 #
 # Installed by the standalone Synapse server container image from the exact wheel release and loaded by
 # Synapse's `modules:` configuration. It is not copied into the Controlplane image. Inverted tier
-# model: everyone is RESTRICTED (no uploads,
-# a capped number of created rooms, no m.room.encryption) unless user_type == 'verified'.
+# model: everyone is RESTRICTED (no uploads, no m.room.encryption) unless user_type == 'verified'.
 # NULL/absent user_type (the default for a freshly registered account, agent or human) is
 # restricted; only an explicit 'verified' user_type lifts the restriction. Verified uploads also
 # obey the fixed per-file and per-user original-media limits below.
@@ -21,7 +20,6 @@ from typing import Any
 
 from synapse.api.errors import Codes
 from synapse.module_api import ModuleApi, NOT_SPAM
-from synapse.module_api.errors import ConfigError
 
 logger = logging.getLogger(__name__)
 
@@ -36,21 +34,15 @@ MAX_MEDIA_BYTES = 128 * BYTES_PER_MIB
 MAX_USER_MEDIA_BYTES = 50 * BYTES_PER_GIB
 
 _DENIAL_MESSAGE = (
-    "This account needs an active paid team seat for uploads, encryption, and additional rooms. "
+    "This account needs an active paid team seat for uploads and encryption. "
     "Ask your team's paying owner to assign a seat or restore access in Plan at "
     "https://backend.telecrypt.io/plan/overview. "
     "See https://www.telecrypt.io/llms.txt"
 )
 
 
-class TierControllerConfig:
-    def __init__(self, restricted_room_cap: int) -> None:
-        self.restricted_room_cap = restricted_room_cap
-
-
 class TierController:
-    def __init__(self, config: TierControllerConfig, api: ModuleApi) -> None:
-        self.config = config
+    def __init__(self, _config: dict[str, Any], api: ModuleApi) -> None:
         self._run_db_interaction = api.run_db_interaction
 
         api.register_media_repository_callbacks(
@@ -60,17 +52,6 @@ class TierController:
             user_may_create_room=self.user_may_create_room,
             check_event_for_spam=self.check_event_for_spam,
         )
-
-    @staticmethod
-    def parse_config(config: dict[str, Any]) -> TierControllerConfig:
-        try:
-            restricted_room_cap = int(config.get("restricted_room_cap", 3))
-        except (TypeError, ValueError) as e:
-            raise ConfigError("restricted_room_cap must be an integer") from e
-        if restricted_room_cap < 0:
-            raise ConfigError("restricted_room_cap must not be negative")
-
-        return TierControllerConfig(restricted_room_cap)
 
     async def _get_user_type(self, user_id: str) -> str | None:
         def txn(cursor: Any) -> str | None:
@@ -92,22 +73,6 @@ class TierController:
 
     async def _is_restricted(self, user_id: str) -> bool:
         return await self._get_user_type(user_id) != VERIFIED
-
-    async def _count_created_rooms(self, user_id: str) -> int:
-        def txn(cursor: Any) -> int:
-            cursor.execute("SELECT count(*) FROM rooms WHERE creator = %s", (user_id,))
-            row = cursor.fetchone()
-            return int(row[0]) if row else 0
-
-        try:
-            return await self._run_db_interaction(
-                "tier_controller_count_created_rooms", txn
-            )
-        except Exception:
-            logger.exception(
-                "tier_controller: room count lookup failed for %s, failing closed", user_id
-            )
-            return self.config.restricted_room_cap
 
     async def _get_upload_snapshot(self, user_id: str) -> tuple[str | None, Any]:
         """Read the verified projection and original-media usage in one DB interaction."""
@@ -176,9 +141,6 @@ class TierController:
             isinstance(event, dict) and event.get("type") == "m.room.encryption"
             for event in initial_state
         ):
-            return Codes.FORBIDDEN, {"error": _DENIAL_MESSAGE}
-        count = await self._count_created_rooms(user_id)
-        if count >= self.config.restricted_room_cap:
             return Codes.FORBIDDEN, {"error": _DENIAL_MESSAGE}
         return NOT_SPAM
 

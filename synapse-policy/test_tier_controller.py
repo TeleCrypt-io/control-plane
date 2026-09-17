@@ -13,14 +13,11 @@ sys.path[:] = [entry for entry in sys.path if pathlib.Path(entry or ".").resolve
 
 from synapse.api.errors import Codes
 from synapse.module_api import NOT_SPAM
-from synapse.module_api.errors import ConfigError
-
 import tier_controller
 from tier_controller import (
     MAX_MEDIA_BYTES,
     MAX_USER_MEDIA_BYTES,
     TierController,
-    TierControllerConfig,
     _DENIAL_MESSAGE,
 )
 
@@ -36,12 +33,10 @@ class FakeModuleApi:
     def __init__(
         self,
         user_types: dict,
-        room_counts: dict,
         media_usage: dict,
         db_error: bool = False,
     ):
         self.user_types = user_types
-        self.room_counts = room_counts
         self.media_usage = media_usage
         self.db_error = db_error
         self.db_calls = []
@@ -61,8 +56,6 @@ class FakeModuleApi:
             raise RuntimeError("simulated db failure")
         if desc == "tier_controller_get_user_type":
             return _run_user_type(self, func)
-        if desc == "tier_controller_count_created_rooms":
-            return _run_room_count(self, func)
         if desc == "tier_controller_get_upload_snapshot":
             return _run_upload_snapshot(self, func)
         raise AssertionError(f"unexpected desc {desc}")
@@ -84,21 +77,6 @@ def _run_user_type(api, func):
             return (val,)
 
     return func(RecordingCursor(api.user_types))
-
-
-def _run_room_count(api, func):
-    class RecordingCursor:
-        def __init__(self, table):
-            self.table = table
-
-        def execute(self, sql, args):
-            self.user_id = args[0]
-            api.queries.append((sql, args))
-
-        def fetchone(self):
-            return (self.table.get(self.user_id, 0),)
-
-    return func(RecordingCursor(api.room_counts))
 
 
 def _run_upload_snapshot(api, func):
@@ -123,33 +101,18 @@ def _run_upload_snapshot(api, func):
 
 def make_module(
     user_types=None,
-    room_counts=None,
     media_usage=None,
     db_error=False,
-    restricted_room_cap=3,
 ):
     api = FakeModuleApi(
-        user_types or {}, room_counts or {}, media_usage or {}, db_error=db_error
+        user_types or {}, media_usage or {}, db_error=db_error
     )
-    module = TierController(TierControllerConfig(restricted_room_cap), api)
+    module = TierController({}, api)
     return module, api
 
 
 async def upload_decision(module, user_id, size):
     return await module.is_user_allowed_to_upload_media_of_size(user_id, size)
-
-
-def test_parse_config_rejects_negative_room_cap():
-    try:
-        TierController.parse_config({"restricted_room_cap": -1})
-    except ConfigError as exc:
-        assert "must not be negative" in str(exc)
-    else:
-        raise AssertionError("negative restricted_room_cap unexpectedly accepted")
-
-
-def test_parse_config_accepts_zero_room_cap():
-    assert TierController.parse_config({"restricted_room_cap": 0}).restricted_room_cap == 0
 
 
 def make_event(event_type, sender, is_state=True):
@@ -212,26 +175,9 @@ async def test_upload_rejects_negative_size_or_usage():
     assert await upload_decision(module, "@a:x", -1) is False
 
 
-async def test_restricted_room_cap_denied_at_cap():
-    module, _ = make_module(
-        user_types={"@a:x": "unverified"}, room_counts={"@a:x": 3}, restricted_room_cap=3
-    )
-    assert await module.user_may_create_room("@a:x", {}) == (
-        Codes.FORBIDDEN,
-        {"error": _DENIAL_MESSAGE},
-    )
-
-
-async def test_restricted_room_cap_allowed_under_cap():
-    module, _ = make_module(
-        user_types={"@a:x": "unverified"}, room_counts={"@a:x": 2}, restricted_room_cap=3
-    )
-    assert await module.user_may_create_room("@a:x", {}) is NOT_SPAM
-
-
 async def test_unverified_encrypted_initial_state_denied_before_room_creation():
     module, _ = make_module(
-        user_types={"@a:x": "unverified"}, room_counts={"@a:x": 0}, restricted_room_cap=3
+        user_types={"@a:x": "unverified"}
     )
     room_config = {
         "preset": "private_chat",
@@ -263,9 +209,10 @@ async def test_verified_encrypted_initial_state_allowed():
     assert await module.user_may_create_room("@a:x", room_config) is NOT_SPAM
 
 
-async def test_verified_bypasses_room_cap():
-    module, _ = make_module(user_types={"@a:x": "verified"}, room_counts={"@a:x": 999999})
+async def test_unverified_unencrypted_room_is_allowed():
+    module, api = make_module(user_types={"@a:x": "unverified"})
     assert await module.user_may_create_room("@a:x", {}) is NOT_SPAM
+    assert api.db_calls == ["tier_controller_get_user_type"]
 
 
 async def test_unverified_encryption_denied():
@@ -306,12 +253,9 @@ async def test_db_error_fails_closed_on_upload():
     assert await upload_decision(module, "@a:x", 100) is False
 
 
-async def test_db_error_fails_closed_on_room_create():
+async def test_db_error_still_allows_unencrypted_room_creation():
     module, _ = make_module(user_types={"@a:x": "verified"}, db_error=True)
-    assert await module.user_may_create_room("@a:x", {}) == (
-        Codes.FORBIDDEN,
-        {"error": _DENIAL_MESSAGE},
-    )
+    assert await module.user_may_create_room("@a:x", {}) is NOT_SPAM
 
 
 async def test_user_type_grant_and_revocation_are_visible_immediately():
