@@ -56,25 +56,21 @@ type Server struct {
 
 func NewServer(cfg Config, cashier CashierClient, accounts AccountAdmin) *Server {
 	s := &Server{cfg: cfg, cashier: cashier, accounts: accounts, session: NewSession(cfg.PlanSessionKey, cfg.ServerName), mux: http.NewServeMux()}
-	s.oidc = NewOIDCClient(cfg.BackendPublicURL, cfg.MASInternalURL, cfg.MASClientID, cfg.MASClientSecret, strings.TrimRight(cfg.PlanPublicURL, "/")+"/callback")
-	s.mux.HandleFunc("GET /plan", s.handlePlan)
+	s.oidc = NewOIDCClient(cfg.BackendPublicURL, cfg.MASInternalURL, cfg.MASClientID, cfg.MASClientSecret, strings.TrimRight(cfg.BackendPublicURL, "/")+"/plan/callback")
+	s.mux.HandleFunc("GET /plan/overview", s.handlePlan)
 	s.mux.HandleFunc("GET /plan/assets/plan.css", s.handlePlanCSS)
 	s.mux.HandleFunc("GET /plan/assets/plan.js", s.handlePlanJS)
 	s.mux.HandleFunc("GET /plan/login", s.handleLogin)
 	s.mux.HandleFunc("GET /plan/callback", s.handleCallback)
-	s.registerPlanCommands("/plan/api", s.handleCreatePlan)
+	s.mux.Handle("POST /plan/create", s.requireBrowserSession(http.HandlerFunc(s.handleCreatePlan)))
+	s.mux.Handle("POST /plan/members/add", s.requireBrowserSession(http.HandlerFunc(s.handleAddSeat)))
+	s.mux.Handle("POST /plan/members/{mxid}/remove", s.requireBrowserSession(http.HandlerFunc(s.handleDeleteSeat)))
+	s.mux.Handle("POST /plan/members/{mxid}/lock", s.requireBrowserSession(http.HandlerFunc(s.handleLockSeat)))
+	s.mux.Handle("POST /plan/members/{mxid}/unlock", s.requireBrowserSession(http.HandlerFunc(s.handleUnlockSeat)))
+	s.mux.Handle("POST /plan/checkout/start", s.requireBrowserSession(http.HandlerFunc(s.handleCheckout)))
+	s.mux.Handle("POST /plan/billing-portal/open", s.requireBrowserSession(http.HandlerFunc(s.handlePortal)))
+	s.mux.Handle("POST /plan/seats/update", s.requireBrowserSession(http.HandlerFunc(s.handleChangeSeatCount)))
 	return s
-}
-
-func (s *Server) registerPlanCommands(prefix string, create http.HandlerFunc) {
-	s.mux.Handle("POST "+prefix, s.requireBrowserSession(create))
-	s.mux.Handle("POST "+prefix+"/seats", s.requireBrowserSession(http.HandlerFunc(s.handleAddSeat)))
-	s.mux.Handle("DELETE "+prefix+"/seats/{mxid}", s.requireBrowserSession(http.HandlerFunc(s.handleDeleteSeat)))
-	s.mux.Handle("POST "+prefix+"/seats/{mxid}/lock", s.requireBrowserSession(http.HandlerFunc(s.handleLockSeat)))
-	s.mux.Handle("POST "+prefix+"/seats/{mxid}/unlock", s.requireBrowserSession(http.HandlerFunc(s.handleUnlockSeat)))
-	s.mux.Handle("POST "+prefix+"/checkout", s.requireBrowserSession(http.HandlerFunc(s.handleCheckout)))
-	s.mux.Handle("POST "+prefix+"/portal", s.requireBrowserSession(http.HandlerFunc(s.handlePortal)))
-	s.mux.Handle("POST "+prefix+"/seat-count", s.requireBrowserSession(http.HandlerFunc(s.handleChangeSeatCount)))
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {

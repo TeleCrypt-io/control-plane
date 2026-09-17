@@ -31,7 +31,7 @@ func TestHandleRegistrationLogsRawErrorAndReturnsGenericResponse(t *testing.T) {
 	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
 	t.Cleanup(func() { slog.SetDefault(previous) })
 	secret := "password=generated-password-must-not-appear"
-	s := New(&fakeProvisioner{err: registrationfailure.WithKind(registrationfailure.StageDeviceConsent, registrationfailure.KindUpstream, errors.New(secret+" tail"))}, "https://telecrypt.io/plan")
+	s := New(&fakeProvisioner{err: registrationfailure.WithKind(registrationfailure.StageDeviceConsent, registrationfailure.KindUpstream, errors.New(secret+" tail"))}, "https://telecrypt.io/plan/overview")
 	w := httptest.NewRecorder()
 	s.ServeHTTP(w, httptest.NewRequest("POST", "/redpill", nil))
 	if !strings.Contains(logs.String(), secret+" tail") {
@@ -61,7 +61,7 @@ func (f *fakeProvisioner) ProvisionAgent(ctx context.Context) (*agent.Provisione
 func TestHandleRegistrationBoundsProvisioningAndMapsDeadline(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		p := &fakeProvisioner{waitForCancellation: true}
-		s := New(p, "https://telecrypt.io/plan")
+		s := New(p, "https://telecrypt.io/plan/overview")
 		w := httptest.NewRecorder()
 		started := time.Now()
 		s.ServeHTTP(w, httptest.NewRequest("POST", "/redpill", nil))
@@ -95,7 +95,7 @@ func TestHandleRegistrationRetainsCallerCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	p := &fakeProvisioner{waitForCancellation: true}
-	s := New(p, "https://telecrypt.io/plan")
+	s := New(p, "https://telecrypt.io/plan/overview")
 	w := httptest.NewRecorder()
 	s.ServeHTTP(w, httptest.NewRequest("POST", "/redpill", nil).WithContext(ctx))
 
@@ -120,7 +120,7 @@ func TestHandleRegistration_HappyPath(t *testing.T) {
 		OAuthClientID:      "dynamic-client",
 		OAuthTokenEndpoint: "https://telecrypt.io/oauth2/token",
 	}}
-	s := New(p, "https://backend.telecrypt.io/plan")
+	s := New(p, "https://backend.telecrypt.io/plan/overview")
 
 	req := httptest.NewRequest("POST", "/redpill", nil)
 	w := httptest.NewRecorder()
@@ -153,14 +153,14 @@ func TestHandleRegistration_HappyPath(t *testing.T) {
 	if !ok {
 		t.Fatal("response must contain plan_url — guidance for attaching to a paid plan")
 	}
-	if plan != "https://backend.telecrypt.io/plan" {
-		t.Errorf("plan_url = %v, want https://backend.telecrypt.io/plan", plan)
+	if plan != "https://backend.telecrypt.io/plan/overview" {
+		t.Errorf("plan_url = %v, want https://backend.telecrypt.io/plan/overview", plan)
 	}
 }
 
 func TestHandleRegistration_RejectsNonEmptyBody(t *testing.T) {
 	p := &fakeProvisioner{result: &agent.Provisioned{MXID: "@abc123:telecrypt.io"}}
-	s := New(p, "https://backend.telecrypt.io/plan")
+	s := New(p, "https://backend.telecrypt.io/plan/overview")
 	req := httptest.NewRequest("POST", "/redpill", strings.NewReader("{}"))
 	w := httptest.NewRecorder()
 	s.ServeHTTP(w, req)
@@ -174,7 +174,7 @@ func TestHandleRegistration_RejectsNonEmptyBody(t *testing.T) {
 
 func TestHandleRegistration_ProvisioningFails(t *testing.T) {
 	p := &fakeProvisioner{err: registrationfailure.WithKind(registrationfailure.StageOAuthClient, registrationfailure.KindTransport, errors.New("mas unreachable"))}
-	s := New(p, "https://backend.telecrypt.io/plan")
+	s := New(p, "https://backend.telecrypt.io/plan/overview")
 
 	req := httptest.NewRequest("POST", "/redpill", nil)
 	w := httptest.NewRecorder()
@@ -218,7 +218,7 @@ func TestHandleRegistration_MapsEveryBoundedStageAndKind(t *testing.T) {
 			t.Run(string(stage)+"/"+string(kind), func(t *testing.T) {
 				const secret = "credential=must-not-escape"
 				p := &fakeProvisioner{err: registrationfailure.WithKind(stage, kind, errors.New(secret))}
-				s := New(p, "https://telecrypt.io/plan")
+				s := New(p, "https://telecrypt.io/plan/overview")
 				w := httptest.NewRecorder()
 				s.ServeHTTP(w, httptest.NewRequest("POST", "/redpill", nil))
 				want := string(stage) + "/" + string(kind)

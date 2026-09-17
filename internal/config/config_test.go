@@ -77,7 +77,7 @@ func TestLoadPlanDerivesPublicURLsFromServerName(t *testing.T) {
 	if got, want := cfg.BackendPublicURL, "https://backend.example.invalid"; got != want {
 		t.Fatalf("BackendPublicURL = %q, want %q", got, want)
 	}
-	if got, want := cfg.PlanPublicURL, "https://backend.example.invalid/plan"; got != want {
+	if got, want := cfg.PlanPublicURL, "https://backend.example.invalid/plan/overview"; got != want {
 		t.Fatalf("PlanPublicURL = %q, want %q", got, want)
 	}
 	if got, want := cfg.MASInternalURL, "http://127.0.0.1:8082"; got != want {
@@ -357,7 +357,7 @@ func TestLoadAndValidateRegistrationDerivesPublicURLs(t *testing.T) {
 	if got, want := cfg.MASPublicURL, "https://backend.production.example.invalid"; got != want {
 		t.Fatalf("MASPublicURL = %q, want %q", got, want)
 	}
-	if got, want := cfg.PlanPublicURL, "https://backend.production.example.invalid/plan"; got != want {
+	if got, want := cfg.PlanPublicURL, "https://backend.production.example.invalid/plan/overview"; got != want {
 		t.Fatalf("PlanPublicURL = %q, want %q", got, want)
 	}
 	if err := cfg.ValidateRegistration(); err != nil {

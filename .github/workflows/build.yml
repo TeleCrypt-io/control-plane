@@ -266,7 +266,7 @@ jobs:
             docker logs "$registration_name" || true
             exit 1
           fi
-          if ! wait_for_status http://127.0.0.1:9012/plan 200; then
+          if ! wait_for_status http://127.0.0.1:9012/plan/overview 200; then
             docker logs "$plan_name" || true
             exit 1
           fi

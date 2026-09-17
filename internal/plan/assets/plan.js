@@ -26,13 +26,13 @@ async function responseLink(response, field) {
 }
 
 async function createPlan() {
-  const r = await command("/plan/api", { method: "POST" });
+  const r = await command("/plan/create", { method: "POST" });
   if (r.ok) location.reload(); else alert(await r.text());
 }
 
 async function addSeat(e) {
   e.preventDefault();
-  const r = await command("/plan/api/seats", {
+  const r = await command("/plan/members/add", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ mxid: e.target.mxid.value.trim() }),
@@ -42,13 +42,13 @@ async function addSeat(e) {
 }
 
 async function removeSeat(mxid) {
-  const r = await command("/plan/api/seats/" + encodeURIComponent(mxid), { method: "DELETE" });
+  const r = await command("/plan/members/" + encodeURIComponent(mxid) + "/remove", { method: "POST" });
   if (r.ok) location.reload(); else alert(await r.text());
 }
 
 async function checkout(e) {
   e.preventDefault();
-  const r = await command("/plan/api/checkout", {
+  const r = await command("/plan/checkout/start", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ quantity: +e.target.quantity.value }),
@@ -65,7 +65,7 @@ async function openPortal() {
   if (!portal) { alert("The customer portal window was blocked."); return; }
   try {
     portal.opener = null;
-    const r = await command("/plan/api/portal", { method: "POST" });
+    const r = await command("/plan/billing-portal/open", { method: "POST" });
     if (!r.ok) { portal.close(); alert(await r.text()); return; }
     portal.location.replace(await responseLink(r, "link"));
   } catch (error) {
@@ -76,7 +76,7 @@ async function openPortal() {
 
 async function changeSeatCount(e) {
   e.preventDefault();
-  const r = await command("/plan/api/seat-count", {
+  const r = await command("/plan/seats/update", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ quantity: +e.target.quantity.value }),
@@ -97,7 +97,7 @@ document.querySelectorAll("[data-remove-seat]").forEach((button) => {
 async function changeSeatAccess(button) {
   button.disabled = true;
   try {
-    const r = await command("/plan/api/seats/" + encodeURIComponent(button.dataset.mxid) + "/" + button.dataset.seatAccess, { method: "POST" });
+    const r = await command("/plan/members/" + encodeURIComponent(button.dataset.mxid) + "/" + button.dataset.seatAccess, { method: "POST" });
     if (r.ok) { alert(button.dataset.seatAccess === "lock" ? "Member locked." : "Member unlocked."); location.reload(); }
     else alert(await r.text());
   } catch (error) {

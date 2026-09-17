@@ -57,32 +57,43 @@ func testServer() *Server {
 		ServerName:         "stage.telecrypt.io",
 		BackendPublicURL:   "https://backend.stage.telecrypt.io",
 		MASInternalURL:     "http://127.0.0.1:8082",
-		PlanPublicURL:      "https://backend.stage.telecrypt.io/plan",
+		PlanPublicURL:      "https://backend.stage.telecrypt.io/plan/overview",
 		MASClientID:        "plan",
 		MASClientSecret:    "test-secret",
 		PlanSessionKey:     "test-session-key",
 	}, nil, nil)
 }
 
+func TestServerUsesPlanCallbackOutsideOverviewURL(t *testing.T) {
+	srv := testServer()
+	authorizeURL, err := url.Parse(srv.oidc.AuthorizeURL("state", "challenge"))
+	if err != nil {
+		t.Fatalf("AuthorizeURL: %v", err)
+	}
+	if got, want := authorizeURL.Query().Get("redirect_uri"), "https://backend.stage.telecrypt.io/plan/callback"; got != want {
+		t.Fatalf("OIDC redirect_uri = %q, want %q", got, want)
+	}
+}
+
 func TestServerRendersPublicPlanLoginSurface(t *testing.T) {
 	srv := testServer()
-	req := httptest.NewRequest(http.MethodGet, "/plan", nil)
+	req := httptest.NewRequest(http.MethodGet, "/plan/overview", nil)
 	rec := httptest.NewRecorder()
 
 	srv.ServeHTTP(rec, req)
 
 	if got, want := rec.Code, http.StatusOK; got != want {
-		t.Fatalf("GET /plan status = %d, want %d", got, want)
+		t.Fatalf("GET /plan/overview status = %d, want %d", got, want)
 	}
 	if got, want := rec.Header().Get("Cache-Control"), "no-store"; got != want {
-		t.Fatalf("GET /plan Cache-Control = %q, want %q", got, want)
+		t.Fatalf("GET /plan/overview Cache-Control = %q, want %q", got, want)
 	}
 	if got := rec.Header().Get("Content-Security-Policy"); got != planContentSecurityPolicy {
-		t.Fatalf("GET /plan Content-Security-Policy = %q, want %q", got, planContentSecurityPolicy)
+		t.Fatalf("GET /plan/overview Content-Security-Policy = %q, want %q", got, planContentSecurityPolicy)
 	}
 	body := rec.Body.String()
 	if !strings.Contains(body, "/plan/login") {
-		t.Fatal("GET /plan does not offer the MAS login route")
+		t.Fatal("GET /plan/overview does not offer the MAS login route")
 	}
 	for _, marker := range []string{
 		"Create a TeleCrypt account",
@@ -102,9 +113,9 @@ func TestServerRendersPublicPlanLoginSurface(t *testing.T) {
 func TestServerRendersPersistentSandboxBanner(t *testing.T) {
 	srv := testServer()
 	rec := httptest.NewRecorder()
-	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/plan", nil))
+	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/plan/overview", nil))
 	if !strings.Contains(rec.Body.String(), "TEST / SANDBOX") {
-		t.Fatal("GET /plan does not visibly identify the test deployment")
+		t.Fatal("GET /plan/overview does not visibly identify the test deployment")
 	}
 }
 
@@ -117,16 +128,16 @@ func TestPlanLogsRawCashierFailureAndKeepsResponseGeneric(t *testing.T) {
 
 	srv := testServer()
 	srv.cashier = &fakeCashier{planErr: errors.New(privateDetail)}
-	req := authenticatedPlanRequest(t, srv, http.MethodGet, "/plan", "")
+	req := authenticatedPlanRequest(t, srv, http.MethodGet, "/plan/overview", "")
 	rec := httptest.NewRecorder()
 
 	srv.ServeHTTP(rec, req)
 
 	if got, want := rec.Code, http.StatusServiceUnavailable; got != want {
-		t.Fatalf("GET /plan failure status = %d, want %d", got, want)
+		t.Fatalf("GET /plan/overview failure status = %d, want %d", got, want)
 	}
 	if strings.Contains(rec.Body.String(), privateDetail) {
-		t.Fatalf("GET /plan exposed private Cashier detail: %q", rec.Body.String())
+		t.Fatalf("GET /plan/overview exposed private Cashier detail: %q", rec.Body.String())
 	}
 	if !strings.Contains(logs.String(), "operation=\"load Cashier plan state\"") {
 		t.Fatalf("Cashier operation was not logged: %s", logs.String())
@@ -443,7 +454,7 @@ func TestPlanApplicationAssetsAreServedLocally(t *testing.T) {
 func TestPlanSharedAssetsAreHostedByWebsite(t *testing.T) {
 	srv := testServer()
 	rec := httptest.NewRecorder()
-	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/plan", nil))
+	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/plan/overview", nil))
 	body := rec.Body.String()
 	for _, marker := range []string{
 		`rel="icon" href="https://www.telecrypt.io/favicon-32x32.png" type="image/png"`,
@@ -523,13 +534,13 @@ func renderAuthenticatedPlan(t *testing.T, state PlanState) string {
 	cookieRecorder := httptest.NewRecorder()
 	srv.session.Set(cookieRecorder, "@alice:stage.telecrypt.io")
 	cookie := cookieRecorder.Result().Cookies()[0]
-	req := httptest.NewRequest(http.MethodGet, "/plan", nil)
+	req := httptest.NewRequest(http.MethodGet, "/plan/overview", nil)
 	req.AddCookie(cookie)
 	rec := httptest.NewRecorder()
 
 	srv.ServeHTTP(rec, req)
 	if got, want := rec.Code, http.StatusOK; got != want {
-		t.Fatalf("GET /plan status = %d, want %d; body: %s", got, want, rec.Body.String())
+		t.Fatalf("GET /plan/overview status = %d, want %d; body: %s", got, want, rec.Body.String())
 	}
 	return rec.Body.String()
 }
@@ -539,12 +550,14 @@ func TestPlanCommandsRequireAuthenticatedBrowserSession(t *testing.T) {
 		method string
 		path   string
 	}{
-		{http.MethodPost, "/plan/api"},
-		{http.MethodPost, "/plan/api/seats"},
-		{http.MethodDelete, "/plan/api/seats/@member:stage.telecrypt.io"},
-		{http.MethodPost, "/plan/api/checkout"},
-		{http.MethodPost, "/plan/api/portal"},
-		{http.MethodPost, "/plan/api/seat-count"},
+		{http.MethodPost, "/plan/create"},
+		{http.MethodPost, "/plan/members/add"},
+		{http.MethodPost, "/plan/members/@member:stage.telecrypt.io/remove"},
+		{http.MethodPost, "/plan/members/@member:stage.telecrypt.io/lock"},
+		{http.MethodPost, "/plan/members/@member:stage.telecrypt.io/unlock"},
+		{http.MethodPost, "/plan/checkout/start"},
+		{http.MethodPost, "/plan/billing-portal/open"},
+		{http.MethodPost, "/plan/seats/update"},
 	} {
 		srv := testServer()
 		req := httptest.NewRequest(command.method, command.path, nil)
@@ -563,7 +576,7 @@ func TestPlanRejectsSessionForForeignHomeserver(t *testing.T) {
 	srv := testServer()
 	cookieRecorder := httptest.NewRecorder()
 	srv.session.Set(cookieRecorder, "@alice:other.example")
-	req := httptest.NewRequest(http.MethodPost, "/plan/api", nil)
+	req := httptest.NewRequest(http.MethodPost, "/plan/create", nil)
 	req.AddCookie(cookieRecorder.Result().Cookies()[0])
 	req.Header.Set("Origin", "https://backend.stage.telecrypt.io")
 	rec := httptest.NewRecorder()
@@ -575,7 +588,7 @@ func TestPlanRejectsSessionForForeignHomeserver(t *testing.T) {
 }
 
 func TestRetiredPlanRoutesAreNotExposed(t *testing.T) {
-	for _, path := range []string{"/api/team", "/api/team/seats", "/plan/api/downgrade-request"} {
+	for _, path := range []string{"/api/team", "/api/team/seats", "/plan", "/plan/", "/plan/api", "/plan/api/seats", "/plan/api/checkout", "/plan/api/portal", "/plan/api/seat-count", "/plan/api/downgrade-request"} {
 		rec := httptest.NewRecorder()
 		testServer().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, path, nil))
 		if got, want := rec.Code, http.StatusNotFound; got != want {
@@ -592,7 +605,7 @@ func TestCreatePlanUsesAuthenticatedPrincipalAndRequestID(t *testing.T) {
 	srv.session.Set(cookieRecorder, "@alice:stage.telecrypt.io")
 	cookie := cookieRecorder.Result().Cookies()[0]
 	requestID := "b3987ed2-51a4-4b04-b5f5-b915683d0cf5"
-	req := httptest.NewRequest(http.MethodPost, "/plan/api", nil)
+	req := httptest.NewRequest(http.MethodPost, "/plan/create", nil)
 	req.AddCookie(cookie)
 	req.Header.Set("Origin", "https://backend.stage.telecrypt.io")
 	req.Header.Set("X-TeleCrypt-Request-ID", requestID)
@@ -601,7 +614,7 @@ func TestCreatePlanUsesAuthenticatedPrincipalAndRequestID(t *testing.T) {
 	srv.ServeHTTP(rec, req)
 
 	if got, want := rec.Code, http.StatusNoContent; got != want {
-		t.Fatalf("POST /plan/api status = %d, want %d", got, want)
+		t.Fatalf("POST /plan/create status = %d, want %d", got, want)
 	}
 	if got, want := cashier.principal.MXID, "@alice:stage.telecrypt.io"; got != want {
 		t.Fatalf("Cashier principal = %q, want %q", got, want)
@@ -610,7 +623,7 @@ func TestCreatePlanUsesAuthenticatedPrincipalAndRequestID(t *testing.T) {
 		t.Fatalf("Cashier request ID = %q, want %q", got, want)
 	}
 	if rec.Body.Len() != 0 {
-		t.Fatalf("POST /plan/api response body = %q, want empty", rec.Body.String())
+		t.Fatalf("POST /plan/create response body = %q, want empty", rec.Body.String())
 	}
 }
 
@@ -618,8 +631,8 @@ func TestPlanCommandsRejectUnsafeRequestBodies(t *testing.T) {
 	for _, tt := range []struct {
 		name, path, body string
 	}{
-		{"unknown field", "/plan/api/seats", `{"mxid":"@member:stage.telecrypt.io","unexpected":true}`},
-		{"trailing JSON", "/plan/api/seat-count", `{"quantity":1}{"quantity":2}`},
+		{"unknown field", "/plan/members/add", `{"mxid":"@member:stage.telecrypt.io","unexpected":true}`},
+		{"trailing JSON", "/plan/seats/update", `{"quantity":1}{"quantity":2}`},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			srv := testServer()
@@ -637,11 +650,11 @@ func TestPlanCommandsRejectUnsafeRequestBodies(t *testing.T) {
 func TestDeleteSeatRejectsNonLocalMXID(t *testing.T) {
 	srv := testServer()
 	srv.cashier = &fakeCashier{}
-	req := authenticatedPlanRequest(t, srv, http.MethodDelete, "/plan/api/seats/@member:elsewhere.test", "")
+	req := authenticatedPlanRequest(t, srv, http.MethodPost, "/plan/members/@member:elsewhere.test/remove", "")
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
 	if got, want := rec.Code, http.StatusBadRequest; got != want {
-		t.Fatalf("DELETE remote MXID status = %d, want %d", got, want)
+		t.Fatalf("POST remote MXID status = %d, want %d", got, want)
 	}
 }
 
@@ -680,9 +693,9 @@ func TestCashierCapacityRejectionIsRewrittenLocally(t *testing.T) {
 	for _, tt := range []struct {
 		name, method, path, body string
 	}{
-		{"seat-count", http.MethodPost, "/plan/api/seat-count", `{"quantity":1}`},
-		{"attach", http.MethodPost, "/plan/api/seats", `{"mxid":"@bot:stage.telecrypt.io"}`},
-		{"remove", http.MethodDelete, "/plan/api/seats/@bot:stage.telecrypt.io", ""},
+		{"seat-count", http.MethodPost, "/plan/seats/update", `{"quantity":1}`},
+		{"attach", http.MethodPost, "/plan/members/add", `{"mxid":"@bot:stage.telecrypt.io"}`},
+		{"remove", http.MethodPost, "/plan/members/@bot:stage.telecrypt.io/remove", ""},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			srv := testServer()
@@ -705,12 +718,12 @@ func TestCashierArbitraryErrorBodyIsNeverForwarded(t *testing.T) {
 	for _, tt := range []struct {
 		name, method, path, body string
 	}{
-		{"seat-count", http.MethodPost, "/plan/api/seat-count", `{"quantity":1}`},
-		{"attach", http.MethodPost, "/plan/api/seats", `{"mxid":"@bot:stage.telecrypt.io"}`},
-		{"remove", http.MethodDelete, "/plan/api/seats/@bot:stage.telecrypt.io", ""},
-		{"create", http.MethodPost, "/plan/api", ""},
-		{"checkout", http.MethodPost, "/plan/api/checkout", `{"quantity":1}`},
-		{"portal", http.MethodPost, "/plan/api/portal", ""},
+		{"seat-count", http.MethodPost, "/plan/seats/update", `{"quantity":1}`},
+		{"attach", http.MethodPost, "/plan/members/add", `{"mxid":"@bot:stage.telecrypt.io"}`},
+		{"remove", http.MethodPost, "/plan/members/@bot:stage.telecrypt.io/remove", ""},
+		{"create", http.MethodPost, "/plan/create", ""},
+		{"checkout", http.MethodPost, "/plan/checkout/start", `{"quantity":1}`},
+		{"portal", http.MethodPost, "/plan/billing-portal/open", ""},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			srv := testServer()
@@ -893,7 +906,7 @@ func TestMemberAccessRequiresAuthenticatedActiveOwnerAndOwnSeat(t *testing.T) {
 					accounts.actionErr = errors.New("MAS unavailable")
 					want = http.StatusBadGateway
 				}
-				req := authenticatedPlanRequest(t, srv, http.MethodPost, "/plan/api/seats/"+url.PathEscape(target)+"/"+action, "")
+				req := authenticatedPlanRequest(t, srv, http.MethodPost, "/plan/members/"+url.PathEscape(target)+"/"+action, "")
 				if scenario == "no session" {
 					req.Header.Del("Cookie")
 				}
@@ -936,7 +949,7 @@ func TestPlanShowsMemberLockStateAndControls(t *testing.T) {
 		}
 		srv.accounts = account
 		rec := httptest.NewRecorder()
-		srv.ServeHTTP(rec, authenticatedPlanRequest(t, srv, http.MethodGet, "/plan", ""))
+		srv.ServeHTTP(rec, authenticatedPlanRequest(t, srv, http.MethodGet, "/plan/overview", ""))
 		if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), want) || !strings.Contains(rec.Body.String(), `data-seat-access="lock"`) || !strings.Contains(rec.Body.String(), `data-seat-access="unlock"`) {
 			t.Fatalf("member controls not rendered: %s", rec.Body.String())
 		}

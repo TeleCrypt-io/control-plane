@@ -52,7 +52,7 @@ func (c *Config) ValidateRegistration() error {
 	}{
 		{"derived backend URL", c.BackendPublicURL},
 		{"derived MAS URL", c.MASPublicURL},
-		{"derived Plan /plan URL", c.PlanPublicURL},
+		{"derived Plan overview URL", c.PlanPublicURL},
 	} {
 		if err := validatePublicHTTPSURL(endpoint.url, endpoint.name); err != nil {
 			return err
@@ -326,7 +326,7 @@ func deriveBackendEndpoints(serverName string) (backendEndpoints, error) {
 	return backendEndpoints{
 		origin: origin,
 		mas:    origin,
-		plan:   origin + "/plan",
+		plan:   origin + "/plan/overview",
 	}, nil
 }
 
