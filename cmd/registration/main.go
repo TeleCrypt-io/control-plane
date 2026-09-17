@@ -6,6 +6,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -15,11 +16,24 @@ import (
 
 	"github.com/TeleCrypt-io/controlplane/internal/agent"
 	"github.com/TeleCrypt-io/controlplane/internal/config"
+	"github.com/TeleCrypt-io/controlplane/internal/healthcheck"
 	"github.com/TeleCrypt-io/controlplane/internal/masreg"
 	"github.com/TeleCrypt-io/controlplane/internal/registrationhttp"
 )
 
 func main() {
+	if len(os.Args) > 1 {
+		if len(os.Args) != 2 || os.Args[1] != "healthcheck" {
+			fmt.Fprintln(os.Stderr, "usage: registration [healthcheck]")
+			os.Exit(2)
+		}
+		if err := healthcheck.Check("http://" + registrationListenAddr + "/internal/registration_health"); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	if err := run(); err != nil {
 		os.Exit(1)
 	}

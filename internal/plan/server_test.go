@@ -955,3 +955,13 @@ func TestPlanShowsMemberLockStateAndControls(t *testing.T) {
 		}
 	}
 }
+
+// Probing health must not create an account or call billing services.
+func TestInternalHealth(t *testing.T) {
+	srv := testServer()
+	response := httptest.NewRecorder()
+	srv.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/internal/plan_health", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("health status = %d, want 200", response.Code)
+	}
+}

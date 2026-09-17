@@ -70,6 +70,9 @@ func NewServer(cfg Config, cashier CashierClient, accounts AccountAdmin) *Server
 	s.mux.Handle("POST /plan/checkout/start", s.requireBrowserSession(http.HandlerFunc(s.handleCheckout)))
 	s.mux.Handle("POST /plan/billing-portal/open", s.requireBrowserSession(http.HandlerFunc(s.handlePortal)))
 	s.mux.Handle("POST /plan/seats/update", s.requireBrowserSession(http.HandlerFunc(s.handleChangeSeatCount)))
+	s.mux.HandleFunc("GET /internal/plan_health", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
 	return s
 }
 

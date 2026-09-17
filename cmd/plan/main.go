@@ -4,6 +4,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -12,11 +13,24 @@ import (
 	"time"
 
 	"github.com/TeleCrypt-io/controlplane/internal/config"
+	"github.com/TeleCrypt-io/controlplane/internal/healthcheck"
 	"github.com/TeleCrypt-io/controlplane/internal/masadmin"
 	"github.com/TeleCrypt-io/controlplane/internal/plan"
 )
 
 func main() {
+	if len(os.Args) > 1 {
+		if len(os.Args) != 2 || os.Args[1] != "healthcheck" {
+			fmt.Fprintln(os.Stderr, "usage: plan [healthcheck]")
+			os.Exit(2)
+		}
+		if err := healthcheck.Check("http://" + planListenAddr + "/internal/plan_health"); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	if err := run(); err != nil {
 		os.Exit(1)
 	}
