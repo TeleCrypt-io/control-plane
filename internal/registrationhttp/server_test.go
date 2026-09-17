@@ -33,7 +33,7 @@ func TestHandleRegistrationLogsRawErrorAndReturnsGenericResponse(t *testing.T) {
 	secret := "password=generated-password-must-not-appear"
 	s := New(&fakeProvisioner{err: registrationfailure.WithKind(registrationfailure.StageDeviceConsent, registrationfailure.KindUpstream, errors.New(secret+" tail"))}, "https://telecrypt.io/plan")
 	w := httptest.NewRecorder()
-	s.ServeHTTP(w, httptest.NewRequest("POST", "/agents", nil))
+	s.ServeHTTP(w, httptest.NewRequest("POST", "/redpill", nil))
 	if !strings.Contains(logs.String(), secret+" tail") {
 		t.Fatalf("provisioning log omitted complete raw diagnostic: %s", logs.String())
 	}
@@ -64,7 +64,7 @@ func TestHandleRegistrationBoundsProvisioningAndMapsDeadline(t *testing.T) {
 		s := New(p, "https://telecrypt.io/plan")
 		w := httptest.NewRecorder()
 		started := time.Now()
-		s.ServeHTTP(w, httptest.NewRequest("POST", "/agents", nil))
+		s.ServeHTTP(w, httptest.NewRequest("POST", "/redpill", nil))
 
 		if p.ctx == nil {
 			t.Fatal("provisioner did not receive a context")
@@ -97,7 +97,7 @@ func TestHandleRegistrationRetainsCallerCancellation(t *testing.T) {
 	p := &fakeProvisioner{waitForCancellation: true}
 	s := New(p, "https://telecrypt.io/plan")
 	w := httptest.NewRecorder()
-	s.ServeHTTP(w, httptest.NewRequest("POST", "/agents", nil).WithContext(ctx))
+	s.ServeHTTP(w, httptest.NewRequest("POST", "/redpill", nil).WithContext(ctx))
 
 	if p.calls != 1 || p.ctx == nil || !errors.Is(p.ctx.Err(), context.Canceled) {
 		t.Fatalf("caller cancellation = calls %d, context error %v; want one canceled provisioning call", p.calls, p.ctx.Err())
@@ -122,7 +122,7 @@ func TestHandleRegistration_HappyPath(t *testing.T) {
 	}}
 	s := New(p, "https://backend.telecrypt.io/plan")
 
-	req := httptest.NewRequest("POST", "/agents", nil)
+	req := httptest.NewRequest("POST", "/redpill", nil)
 	w := httptest.NewRecorder()
 	s.ServeHTTP(w, req)
 
@@ -161,7 +161,7 @@ func TestHandleRegistration_HappyPath(t *testing.T) {
 func TestHandleRegistration_RejectsNonEmptyBody(t *testing.T) {
 	p := &fakeProvisioner{result: &agent.Provisioned{MXID: "@abc123:telecrypt.io"}}
 	s := New(p, "https://backend.telecrypt.io/plan")
-	req := httptest.NewRequest("POST", "/agents", strings.NewReader("{}"))
+	req := httptest.NewRequest("POST", "/redpill", strings.NewReader("{}"))
 	w := httptest.NewRecorder()
 	s.ServeHTTP(w, req)
 	if w.Code != http.StatusBadRequest {
@@ -176,7 +176,7 @@ func TestHandleRegistration_ProvisioningFails(t *testing.T) {
 	p := &fakeProvisioner{err: registrationfailure.WithKind(registrationfailure.StageOAuthClient, registrationfailure.KindTransport, errors.New("mas unreachable"))}
 	s := New(p, "https://backend.telecrypt.io/plan")
 
-	req := httptest.NewRequest("POST", "/agents", nil)
+	req := httptest.NewRequest("POST", "/redpill", nil)
 	w := httptest.NewRecorder()
 	s.ServeHTTP(w, req)
 
@@ -220,7 +220,7 @@ func TestHandleRegistration_MapsEveryBoundedStageAndKind(t *testing.T) {
 				p := &fakeProvisioner{err: registrationfailure.WithKind(stage, kind, errors.New(secret))}
 				s := New(p, "https://telecrypt.io/plan")
 				w := httptest.NewRecorder()
-				s.ServeHTTP(w, httptest.NewRequest("POST", "/agents", nil))
+				s.ServeHTTP(w, httptest.NewRequest("POST", "/redpill", nil))
 				want := string(stage) + "/" + string(kind)
 				if w.Code != http.StatusInternalServerError || w.Header().Get(registrationErrorHeader) != want {
 					t.Fatalf("response = %d, header %q, want 500/%q", w.Code, w.Header().Get(registrationErrorHeader), want)

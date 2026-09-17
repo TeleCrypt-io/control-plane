@@ -262,7 +262,7 @@ jobs:
             done
             return 1
           }
-          if ! wait_for_status http://127.0.0.1:9009/agents 405; then
+          if ! wait_for_status http://127.0.0.1:9009/redpill 405; then
             docker logs "$registration_name" || true
             exit 1
           fi

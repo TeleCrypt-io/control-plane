@@ -1,5 +1,5 @@
 // Package registrationhttp is Registration's public HTTP API: a stateless registration shim exposing only
-// POST /agents. It holds no database connection, no admin credentials, no
+// POST /redpill. It holds no database connection, no admin credentials, no
 // stored sessions, and no edge token; it drives MAS's public registration/device-OAuth flow.
 package registrationhttp
 
@@ -40,7 +40,7 @@ func New(p provisioner, planURL string) *Server {
 		planURL:     planURL,
 		mux:         http.NewServeMux(),
 	}
-	s.mux.HandleFunc("POST /agents", s.handleRegistration)
+	s.mux.HandleFunc("POST /redpill", s.handleRegistration)
 	return s
 }
 
