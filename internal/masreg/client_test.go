@@ -193,7 +193,7 @@ func TestRegisterAndAuthorizeDeviceMAS123Contract(t *testing.T) {
 			displayNameSubmitted = true
 			http.Redirect(w, r, "/register/steps/account/finish", http.StatusSeeOther)
 		case r.Method == http.MethodGet && r.URL.Path == "/":
-			http.NotFound(w, r)
+			w.WriteHeader(http.StatusTeapot)
 		case r.Method == http.MethodPost && r.URL.Path == "/oauth2/registration":
 			var body struct {
 				ClientURI               string   `json:"client_uri"`
