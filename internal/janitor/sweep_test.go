@@ -87,6 +87,9 @@ func (f *fakeStore) InsertRunEvent(_ context.Context, event db.RunEvent) error {
 	f.events = append(f.events, event)
 	return nil
 }
+func (f *fakeStore) ProviderSubscriptionSnapshot(context.Context) ([]db.SubscriptionSnapshot, error) {
+	return []db.SubscriptionSnapshot{{SubscriptionID: "sub-1", Status: "active"}}, nil
+}
 
 type fakeMailer struct {
 	subject string
@@ -100,9 +103,9 @@ func (f *fakeMailer) Send(_ context.Context, _ string, subject string, body stri
 
 type fakeDodo struct{ calls int }
 
-func (f *fakeDodo) Reconcile(context.Context) ([]Discrepancy, error) {
+func (f *fakeDodo) Subscriptions(context.Context) ([]ProviderSubscription, error) {
 	f.calls++
-	return []Discrepancy{{Subscription: "sub-1", Kind: "on_hold"}}, nil
+	return []ProviderSubscription{{SubscriptionID: "sub-1", Status: "on_hold"}}, nil
 }
 
 func oldUser(username string) masadmin.User {
@@ -164,5 +167,27 @@ func TestSweepDoesNotRequireProviderForLifecycle(t *testing.T) {
 	}
 	if len(synapse.suspended) != 1 {
 		t.Fatalf("suspensions = %#v", synapse.suspended)
+	}
+}
+
+func TestCompareSubscriptionSnapshotsReportsOnlyMismatches(t *testing.T) {
+	got := compareSubscriptionSnapshots(
+		[]ProviderSubscription{{SubscriptionID: "same", Status: "active", ProviderProductID: "p1"}, {SubscriptionID: "provider", Status: "cancelled"}},
+		[]db.SubscriptionSnapshot{{SubscriptionID: "same", Status: "active", ProviderProductID: "p1", TeamID: "team-same"}, {SubscriptionID: "cashier", Status: "on_hold", TeamID: "team-cashier"}},
+	)
+	if len(got) != 2 {
+		t.Fatalf("discrepancies = %#v, want two", got)
+	}
+	seen := map[string]string{}
+	for _, item := range got {
+		seen[item.Subscription] = item.Kind
+	}
+	if seen["provider"] != "provider_only" || seen["cashier"] != "cashier_only" {
+		t.Fatalf("discrepancies = %#v", got)
+	}
+	for _, item := range got {
+		if item.Subscription == "cashier" && item.TeamID != "team-cashier" {
+			t.Fatalf("cashier discrepancy team = %q", item.TeamID)
+		}
 	}
 }

@@ -67,7 +67,11 @@ type Discrepancy struct {
 // DodoReconciler performs one bounded read-only provider snapshot. Implementations must use a
 // read-only API key and must not expose a provider loop or a write operation.
 type DodoReconciler interface {
-	Reconcile(context.Context) ([]Discrepancy, error)
+	Subscriptions(context.Context) ([]ProviderSubscription, error)
+}
+
+type cashierSubscriptionSnapshotReader interface {
+	ProviderSubscriptionSnapshot(context.Context) ([]db.SubscriptionSnapshot, error)
 }
 
 type store interface {
@@ -375,11 +379,20 @@ func (s *Sweeper) sweepProvider(ctx context.Context, state *sweepState) error {
 	if s.dodo == nil {
 		return nil
 	}
-	discrepancies, err := s.dodo.Reconcile(ctx)
+	provider, err := s.dodo.Subscriptions(ctx)
 	if err != nil {
 		state.notification = "failed"
 		return &operationError{reason: "notification", err: httpdiag.WrapCause("provider reconciliation failed", err)}
 	}
+	reader, ok := s.store.(cashierSubscriptionSnapshotReader)
+	if !ok {
+		return &operationError{reason: "database", err: errors.New("Cashier subscription snapshot is unavailable")}
+	}
+	local, err := reader.ProviderSubscriptionSnapshot(ctx)
+	if err != nil {
+		return &operationError{reason: "database", err: httpdiag.WrapCause("Cashier subscription snapshot failed", err)}
+	}
+	discrepancies := compareSubscriptionSnapshots(provider, local)
 	if len(discrepancies) == 0 || s.cfg.OwnerEmail == "" {
 		return nil
 	}
@@ -396,6 +409,37 @@ func (s *Sweeper) sweepProvider(ctx context.Context, state *sweepState) error {
 	state.notification = "succeeded"
 	state.addLabel("notification")
 	return nil
+}
+
+func compareSubscriptionSnapshots(provider []ProviderSubscription, local []db.SubscriptionSnapshot) []Discrepancy {
+	providerByID := make(map[string]ProviderSubscription, len(provider))
+	for _, item := range provider {
+		if item.SubscriptionID != "" {
+			providerByID[item.SubscriptionID] = item
+		}
+	}
+	localByID := make(map[string]db.SubscriptionSnapshot, len(local))
+	for _, item := range local {
+		if item.SubscriptionID != "" {
+			localByID[item.SubscriptionID] = item
+		}
+	}
+	var discrepancies []Discrepancy
+	for id, item := range providerByID {
+		current, found := localByID[id]
+		if !found {
+			discrepancies = append(discrepancies, Discrepancy{TeamID: item.TeamID, Subscription: id, Kind: "provider_only", Detail: item.Status})
+			continue
+		}
+		if item.Status != current.Status || (item.ProviderProductID != "" && current.ProviderProductID != "" && item.ProviderProductID != current.ProviderProductID) {
+			discrepancies = append(discrepancies, Discrepancy{TeamID: current.TeamID, Subscription: id, Kind: "state_mismatch", Detail: item.Status + " != " + current.Status})
+		}
+		delete(localByID, id)
+	}
+	for id, item := range localByID {
+		discrepancies = append(discrepancies, Discrepancy{TeamID: item.TeamID, Subscription: id, Kind: "cashier_only", Detail: item.Status})
+	}
+	return discrepancies
 }
 
 func (s *Sweeper) sweepDigest(ctx context.Context, users []masadmin.User, emails []masadmin.UserEmail, state *sweepState) error {

@@ -31,6 +31,38 @@ type LifecycleAction struct {
 	DesiredUserType *string
 }
 
+type SubscriptionSnapshot struct {
+	SubscriptionID    string
+	Status            string
+	ProviderProductID string
+	TeamID            string
+}
+
+// ProviderSubscriptionSnapshot is the only billing state Janitor may read from
+// Cashier. It is used for reporting discrepancies, never for entitlement writes.
+func (s *Store) ProviderSubscriptionSnapshot(ctx context.Context) ([]SubscriptionSnapshot, error) {
+	rows, err := s.pool.Query(ctx, `SELECT subscription_id, status, COALESCE(provider_product_id, ''), team_id::text FROM cashier.janitor_subscription_snapshot ORDER BY subscription_id COLLATE "C"`)
+	if err != nil {
+		return nil, fmt.Errorf("read Cashier subscription snapshot: %w", err)
+	}
+	defer rows.Close()
+	var result []SubscriptionSnapshot
+	for rows.Next() {
+		var snapshot SubscriptionSnapshot
+		if err := rows.Scan(&snapshot.SubscriptionID, &snapshot.Status, &snapshot.ProviderProductID, &snapshot.TeamID); err != nil {
+			return nil, fmt.Errorf("scan Cashier subscription snapshot: %w", err)
+		}
+		if snapshot.SubscriptionID == "" || snapshot.Status == "" {
+			return nil, fmt.Errorf("Cashier subscription snapshot contains an invalid row")
+		}
+		result = append(result, snapshot)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate Cashier subscription snapshot: %w", err)
+	}
+	return result, nil
+}
+
 // ValidateServerName accepts the deployment hostname used to derive public endpoints and to bind
 // append-only Janitor audit records. The Cashier deployment-identity view remains the authority
 // for which deployment is connected to a database.

@@ -36,6 +36,7 @@ func TestJanitorDatabaseContractPG17(t *testing.T) {
 		REVOKE ALL ON SCHEMA janitor FROM PUBLIC;
 		CREATE SCHEMA cashier AUTHORIZATION %s;
 		REVOKE ALL ON SCHEMA cashier FROM PUBLIC;
+		REVOKE ALL ON ALL ROUTINES IN SCHEMA cashier FROM PUBLIC;
 		GRANT USAGE ON SCHEMA cashier TO %s;
 		CREATE TABLE cashier.identity_source (singleton BOOLEAN PRIMARY KEY, server_name TEXT NOT NULL, billing_environment TEXT NOT NULL);
 		INSERT INTO cashier.identity_source VALUES (TRUE, 'stage.telecrypt.io', 'test');
@@ -49,6 +50,7 @@ func TestJanitorDatabaseContractPG17(t *testing.T) {
 		CREATE FUNCTION cashier.janitor_complete_suspension(TEXT, BIGINT) RETURNS TABLE(revision BIGINT, suspended_at TIMESTAMPTZ) LANGUAGE SQL AS $$ SELECT NULL::BIGINT, NULL::TIMESTAMPTZ WHERE FALSE $$;
 		CREATE FUNCTION cashier.janitor_start_removal(TEXT, BIGINT) RETURNS TABLE(revision BIGINT, removal_started_at TIMESTAMPTZ) LANGUAGE SQL AS $$ SELECT NULL::BIGINT, NULL::TIMESTAMPTZ WHERE FALSE $$;
 		CREATE FUNCTION cashier.janitor_finish_removal(TEXT, BIGINT) RETURNS TABLE(revision BIGINT, removed_at TIMESTAMPTZ) LANGUAGE SQL AS $$ SELECT NULL::BIGINT, NULL::TIMESTAMPTZ WHERE FALSE $$;
+		REVOKE ALL ON ALL ROUTINES IN SCHEMA cashier FROM PUBLIC;
 		ALTER TABLE cashier.identity_source OWNER TO %s;
 		ALTER VIEW cashier.janitor_deployment_identity OWNER TO %s;
 		ALTER VIEW cashier.janitor_lifecycle_actions OWNER TO %s;
@@ -62,6 +64,16 @@ func TestJanitorDatabaseContractPG17(t *testing.T) {
 	`, janitorRole, cashierRole, janitorRole, password, cashierRole, password, janitorRole, cashierRole, janitorRole, cashierRole, cashierRole, cashierRole, cashierRole, cashierRole, cashierRole, cashierRole, cashierRole, janitorRole, janitorRole)
 	if _, err := adminPool.Exec(ctx, setup); err != nil {
 		t.Fatalf("prepare view fixture: %v", err)
+	}
+	providerView := fmt.Sprintf(`
+		CREATE VIEW cashier.janitor_subscription_snapshot WITH (security_barrier = true) AS
+			SELECT CAST(NULL AS TEXT) AS subscription_id, CAST(NULL AS TEXT) AS status,
+			       CAST(NULL AS TEXT) AS team_id, CAST(NULL AS TEXT) AS provider_product_id WHERE FALSE;
+		ALTER VIEW cashier.janitor_subscription_snapshot OWNER TO %s;
+		GRANT SELECT ON cashier.janitor_subscription_snapshot TO %s;
+	`, cashierRole, janitorRole)
+	if _, err := adminPool.Exec(ctx, providerView); err != nil {
+		t.Fatalf("prepare provider view fixture: %v", err)
 	}
 	t.Cleanup(func() {
 		_, _ = adminPool.Exec(context.Background(), fmt.Sprintf(`DROP SCHEMA IF EXISTS cashier CASCADE; DROP SCHEMA IF EXISTS janitor CASCADE; DROP ROLE IF EXISTS %s; DROP ROLE IF EXISTS %s;`, cashierRole, janitorRole))

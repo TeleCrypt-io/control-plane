@@ -12,8 +12,7 @@ Plan uses ordinary MAS OIDC and the signed private Cashier contract. It has no M
 Synapse-admin credential, and exposes team membership, fixed plan state and billing links only.
 Sponsor account lock and unlock actions are not part of Plan.
 The four fixed checkout links and permanent billing portal URL are supplied through
-`PLAN_CHECKOUT_LINK_TEAM`, `PLAN_CHECKOUT_LINK_BUSINESS`, `PLAN_CHECKOUT_LINK_BUSINESS_PLUS`,
-`PLAN_CHECKOUT_LINK_MAX` and `PLAN_BILLING_PORTAL_URL`; Plan renders them as ordinary HTTPS
+`PLAN_BILLING_LINK_1` through `PLAN_BILLING_LINK_4` and `PLAN_BILLING_PORTAL_URL`; Plan renders them as ordinary HTTPS
 links and never creates provider sessions.
 Attached members have a self-service `/plan/members/leave` action. Plan verifies the caller is
 present in Cashier's signed membership view and reuses the signed member-removal command;
@@ -25,11 +24,11 @@ lifecycle work, reads Dodo once with a read-only key, and emails discrepancy rep
 changing provider, membership or billing state. It has no HTTP service or Cashier token
 exchange.
 
-The current control-plane lifecycle record exposes only the initial Free registration time.
-Janitor therefore enforces the approved 48-hour native Synapse suspension for that case. The
-14-day departure grace, 90-day suspended removal, paid restoration and team-breakup decisions
-require the shared authoritative lifecycle timestamps and entitlement view described in the
-transition record; Janitor does not invent or call an HTTP endpoint for data that is not present.
+Cashier owns the lifecycle timestamps and exposes only due actions and narrow command functions
+to Janitor. Janitor applies the approved 48-hour initial-Free suspension, 14-day departure
+grace, 30-day initial-Free removal, and 90-day post-departure removal using those authoritative
+actions. Paid entitlement restoration is immediate through Cashier's signed webhook projection;
+Janitor never invents a second clock or calls Cashier over HTTP.
 Operator MAS locks remain separate and are never cleared by this run.
 
 The Synapse policy reads the native local `user_type` (`wild`, `verified`, or

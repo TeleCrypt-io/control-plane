@@ -48,12 +48,12 @@ PAID_MESSAGE_RATE = 1.0
 PAID_MESSAGE_BURST = 20
 
 _DENIAL_MESSAGE = (
-    "This account needs a paid TeleCrypt capability for encrypted messaging. "
-    "Open Plan to restore access: https://backend.telecrypt.io/plan/overview"
+    "TeleCrypt requires encrypted conversations. "
+    "Use an encrypted room or open Plan if this account is suspended."
 )
 _STORAGE_DENIAL_MESSAGE = (
     "Storage rooms require an active paid capability with uploads enabled. "
-    "Open Plan to restore uploads: https://backend.telecrypt.io/plan/overview"
+    "Open Plan to restore uploads."
 )
 
 
