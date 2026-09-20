@@ -5,7 +5,6 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -29,46 +28,6 @@ func (b *cashierResponseBody) Close() error               { return b.closeErr }
 type cashierRoundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f cashierRoundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
-
-func TestHTTPCashierClientPreservesPrivatePlanCreationProtocol(t *testing.T) {
-	public, private, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatalf("generate Ed25519 key: %v", err)
-	}
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost || r.URL.Path != "/internal/cashier/team/create" {
-			http.Error(w, "wrong route", http.StatusBadRequest)
-			return
-		}
-		body, err := io.ReadAll(r.Body)
-		if err != nil || string(body) != "{}" {
-			http.Error(w, "wrong body", http.StatusBadRequest)
-			return
-		}
-		claims := verifyPlanJWS(t, r.Header.Get("Authorization"), public)
-		if claims.Subject != "@alice:telecrypt.io" || claims.Audience != planAssertionAudience ||
-			claims.Method != r.Method || claims.Path != r.URL.Path ||
-			claims.RequestID != "b3987ed2-51a4-4b04-b5f5-b915683d0cf5" {
-			http.Error(w, "wrong claims", http.StatusUnauthorized)
-			return
-		}
-		sum := sha256.Sum256(body)
-		if claims.BodySHA256 != base64.RawURLEncoding.EncodeToString(sum[:]) || r.Header.Get(planRequestIDHeader) != claims.RequestID {
-			http.Error(w, "unbound request", http.StatusUnauthorized)
-			return
-		}
-		w.WriteHeader(http.StatusNoContent)
-	}))
-	defer server.Close()
-
-	client, err := NewHTTPCashierClient(server.URL, base64.RawURLEncoding.EncodeToString(private), server.Client())
-	if err != nil {
-		t.Fatalf("new HTTP Cashier client: %v", err)
-	}
-	if err := client.CreatePlan(t.Context(), Principal{MXID: "@alice:telecrypt.io"}, "b3987ed2-51a4-4b04-b5f5-b915683d0cf5"); err != nil {
-		t.Fatalf("CreatePlan: %v", err)
-	}
-}
 
 func TestHTTPCashierClientReadsPrivatePlanState(t *testing.T) {
 	_, private, err := ed25519.GenerateKey(rand.Reader)
@@ -208,48 +167,6 @@ func TestHTTPCashierClientPreservesResponseCloseFailure(t *testing.T) {
 	var cashierError *CashierError
 	if !errors.As(err, &cashierError) || !errors.Is(err, closeErr) {
 		t.Fatalf("Cashier response error = %v, want CashierError with close failure", err)
-	}
-}
-
-func TestHTTPCashierClientCreatePlanResponseContract(t *testing.T) {
-	_, private, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatalf("generate Ed25519 key: %v", err)
-	}
-	for _, tc := range []struct {
-		name      string
-		status    int
-		body      string
-		wantError bool
-	}{
-		{name: "created", status: http.StatusCreated},
-		{name: "idempotent replay", status: http.StatusNoContent},
-		{name: "wrong success status", status: http.StatusOK, wantError: true},
-		{name: "unexpected status", status: http.StatusAccepted, wantError: true},
-		{name: "created with unexpected body", status: http.StatusCreated, body: "unexpected", wantError: true},
-		{name: "idempotent replay with unexpected body", status: http.StatusNoContent, body: "unexpected", wantError: true},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			httpClient := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
-				if r.Method != http.MethodPost || r.URL.Path != "/internal/cashier/team/create" {
-					t.Errorf("request = %s %s, want POST /internal/cashier/team/create", r.Method, r.URL.Path)
-				}
-				return &http.Response{
-					StatusCode: tc.status,
-					Body:       io.NopCloser(strings.NewReader(tc.body)),
-					Header:     make(http.Header),
-					Request:    r,
-				}, nil
-			})}
-			client, err := NewHTTPCashierClient("http://cashier.example", base64.RawURLEncoding.EncodeToString(private), httpClient)
-			if err != nil {
-				t.Fatalf("new HTTP Cashier client: %v", err)
-			}
-			err = client.CreatePlan(t.Context(), Principal{MXID: "@alice:telecrypt.io"}, "b3987ed2-51a4-4b04-b5f5-b915683d0cf5")
-			if (err != nil) != tc.wantError {
-				t.Fatalf("CreatePlan error = %v, wantError = %t", err, tc.wantError)
-			}
-		})
 	}
 }
 

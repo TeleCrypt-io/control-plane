@@ -75,12 +75,6 @@ func (c *HTTPCashierClient) PlanState(ctx context.Context, principal Principal) 
 	return PlanState{Plan: response.Plan, Seats: response.Seats}, err
 }
 
-// CreatePlan invokes Cashier's private plan-creation endpoint. The private team storage model is
-// not exposed through the public Plan API.
-func (c *HTTPCashierClient) CreatePlan(ctx context.Context, p Principal, requestID string) error {
-	return c.do(ctx, p, http.MethodPost, "/internal/cashier/team/create", requestID, []byte(`{}`), nil, http.StatusCreated, http.StatusNoContent)
-}
-
 func (c *HTTPCashierClient) AttachSeat(ctx context.Context, p Principal, requestID, mxid string) error {
 	body, err := json.Marshal(struct {
 		MXID string `json:"mxid"`
@@ -96,38 +90,6 @@ func (c *HTTPCashierClient) RemoveSeat(ctx context.Context, p Principal, request
 	// authenticates against r.URL.EscapedPath(), so sign the exact canonical path sent on the wire.
 	requestPath := "/internal/cashier/team/members/" + url.PathEscape(mxid) + "/remove"
 	return c.do(ctx, p, http.MethodPost, requestPath, requestID, nil, nil, http.StatusNoContent)
-}
-
-func (c *HTTPCashierClient) StartCheckout(ctx context.Context, p Principal, requestID string, quantity int) (string, error) {
-	var response struct {
-		PaymentLink string `json:"payment_link"`
-	}
-	body, err := json.Marshal(struct {
-		Quantity int `json:"quantity"`
-	}{Quantity: quantity})
-	if err != nil {
-		return "", err
-	}
-	err = c.do(ctx, p, http.MethodPost, "/internal/cashier/checkout/start", requestID, body, &response, http.StatusOK)
-	return response.PaymentLink, err
-}
-
-func (c *HTTPCashierClient) OpenCustomerPortal(ctx context.Context, p Principal, requestID string) (string, error) {
-	var response struct {
-		Link string `json:"link"`
-	}
-	err := c.do(ctx, p, http.MethodPost, "/internal/cashier/billing-portal/open", requestID, []byte(`{}`), &response, http.StatusOK)
-	return response.Link, err
-}
-
-func (c *HTTPCashierClient) ChangeSeatCount(ctx context.Context, p Principal, requestID string, quantity int) error {
-	body, err := json.Marshal(struct {
-		Quantity int `json:"quantity"`
-	}{Quantity: quantity})
-	if err != nil {
-		return err
-	}
-	return c.do(ctx, p, http.MethodPost, "/internal/cashier/subscription/seats/update", requestID, body, nil, http.StatusNoContent)
 }
 
 func (c *HTTPCashierClient) do(ctx context.Context, principal Principal, method, path, requestID string, body []byte, result any, expectedStatuses ...int) (resultErr error) {

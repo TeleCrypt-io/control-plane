@@ -31,9 +31,7 @@ h2 { margin: 0; font-size: 1.05rem; letter-spacing: -.01em; }
 .notice { margin: 0 0 16px; padding: 9px 10px; background: #fafafa; border-left: 3px solid var(--border-strong); color: var(--text-secondary); font-size: .9em; }
 .card-actions { display: flex; flex-direction: column; align-items: start; gap: 10px; }
 
-.quantity-action { display: flex; align-items: end; flex-wrap: wrap; gap: 8px; }
-.quantity-action label, .add-seat label { display: flex; flex-direction: column; gap: 4px; color: var(--text-secondary); font-size: .82em; font-weight: 500; }
-.quantity-action input { width: 78px; }
+.add-seat label { display: flex; flex-direction: column; gap: 4px; color: var(--text-secondary); font-size: .82em; font-weight: 500; }
 
 .seat-list { list-style: none; margin: 0 0 18px; padding: 0; border-top: 1px solid var(--border); }
 .seat-list li { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 46px; border-bottom: 1px solid var(--border); }

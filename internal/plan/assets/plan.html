@@ -62,23 +62,12 @@
               {{if gt .Plan.MemberLimit 0}}<div><dt>Member limit</dt><dd>{{.Plan.MemberLimit}}</dd></div>{{end}}
               {{if .Plan.StorageBytes}}<div><dt>Storage</dt><dd>{{.Plan.StorageAllowance}}</dd></div>{{end}}
               {{if .Plan.StorageBytes}}<div><dt>Storage used</dt><dd>{{.Plan.StorageUsage}} of {{.Plan.StorageAllowance}}</dd></div>{{end}}
-              <div><dt>Paid seats</dt><dd>{{.Plan.PaidSeats}}</dd></div>
-              {{if .Plan.PendingPaidSeats}}<div><dt>Pending seats</dt><dd>{{.Plan.PendingPaidSeats}}</dd></div>{{end}}
+              <div><dt>Members</dt><dd>{{len .Seats}}{{if gt .Plan.MemberLimit 0}} of {{.Plan.MemberLimit}}{{end}}</dd></div>
             </dl>
-            {{if .CheckoutActive}}<p class="notice">Checkout is in progress. Your plan updates after payment is confirmed.</p>{{end}}
-            <div class="card-actions">
-              {{if .CanCheckout}}
-              <form id="checkout" class="quantity-action">
-                <label>Seats ({{.SeatPrice}}) <input class="tc-field" name="quantity" type="number" min="1" value="1" required></label>
-                <button class="btn btn-primary">Start {{if $.TestMode}}sandbox {{end}}checkout</button>
-              </form>
-              {{else if .CanChangeSeats}}
-              <form id="seat-count" class="quantity-action">
-                <label>Paid seats ({{.SeatPrice}}) <input class="tc-field" name="quantity" type="number" min="1" value="{{.Plan.PaidSeats}}" required></label>
-                <button class="btn">Update paid seats</button>
-              </form>
-              {{end}}
-              {{if .Plan.HasBillingAccount}}<button id="open-portal" class="btn" type="button">Manage subscription, card, invoices, or cancellation</button>{{end}}
+            <div class="card-actions billing-links">
+              <p>Choose a fixed plan:</p>
+              {{range .BillingLinks}}<a class="btn btn-primary" href="{{.URL}}" target="_blank" rel="noopener noreferrer">{{.DisplayName}}</a>{{end}}
+              {{if .BillingPortalURL}}<a class="btn" href="{{.BillingPortalURL}}" target="_blank" rel="noopener noreferrer">Open billing portal</a>{{end}}
             </div>
           </section>
 
@@ -95,7 +84,7 @@
               <li>
                 <span>{{.MXID}}</span>
                 <div class="actions">
-                <button class="btn btn-danger btn-sm" type="button" data-remove-seat data-mxid="{{.MXID}}">Remove</button>
+                {{if eq .MXID $.MXID}}<button class="btn btn-danger btn-sm" type="button" data-leave-team>Leave team</button>{{else}}<button class="btn btn-danger btn-sm" type="button" data-remove-seat data-mxid="{{.MXID}}">Remove</button>{{end}}
                 </div>
               </li>
               {{else}}
@@ -114,9 +103,12 @@
         {{else}}
           <section class="card tc-surface empty-plan" aria-labelledby="plan-setup-title">
             <p class="eyebrow">PLAN &amp; BILLING</p>
-            <h2 id="plan-setup-title">Set up your plan</h2>
-            <p>Add the Matrix accounts you want covered, then choose your paid seats.</p>
-            <button id="create-plan" class="btn btn-primary" type="button">Set up plan</button>
+            <h2 id="plan-setup-title">Choose your plan</h2>
+            <p>Select a fixed plan, then attach the Matrix accounts you want covered.</p>
+            <div class="actions billing-links">
+              {{range .BillingLinks}}<a class="btn btn-primary" href="{{.URL}}" target="_blank" rel="noopener noreferrer">{{.DisplayName}}</a>{{end}}
+              {{if .BillingPortalURL}}<a class="btn" href="{{.BillingPortalURL}}" target="_blank" rel="noopener noreferrer">Open billing portal</a>{{end}}
+            </div>
         </section>
         {{end}}
         {{end}}

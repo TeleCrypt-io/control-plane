@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
-	"strconv"
 	"strings"
 
 	"github.com/google/uuid"
@@ -27,12 +26,13 @@ type Config struct {
 	MASClientID        string
 	MASClientSecret    string
 	PlanSessionKey     string
+	BillingLinks       []BillingLink
+	BillingPortalURL   string
 }
 
 var errCashierUnavailable = errors.New("cashier client is not configured")
 
 const (
-	planSeatPrice             = "15 EUR per seat"
 	planContentSecurityPolicy = "default-src 'self'; base-uri 'none'; connect-src 'self'; form-action 'self'; frame-ancestors 'self'; img-src 'self' https://www.telecrypt.io; object-src 'none'; script-src 'self'; style-src 'self' https://www.telecrypt.io"
 )
 
@@ -53,12 +53,9 @@ func NewServer(cfg Config, cashier CashierClient) *Server {
 	s.mux.HandleFunc("GET /plan/assets/plan.js", s.handlePlanJS)
 	s.mux.HandleFunc("GET /plan/login", s.handleLogin)
 	s.mux.HandleFunc("GET /plan/callback", s.handleCallback)
-	s.mux.Handle("POST /plan/create", s.requireBrowserSession(http.HandlerFunc(s.handleCreatePlan)))
 	s.mux.Handle("POST /plan/members/add", s.requireBrowserSession(http.HandlerFunc(s.handleAddSeat)))
+	s.mux.Handle("POST /plan/members/leave", s.requireBrowserSession(http.HandlerFunc(s.handleLeaveTeam)))
 	s.mux.Handle("POST /plan/members/{mxid}/remove", s.requireBrowserSession(http.HandlerFunc(s.handleDeleteSeat)))
-	s.mux.Handle("POST /plan/checkout/start", s.requireBrowserSession(http.HandlerFunc(s.handleCheckout)))
-	s.mux.Handle("POST /plan/billing-portal/open", s.requireBrowserSession(http.HandlerFunc(s.handlePortal)))
-	s.mux.Handle("POST /plan/seats/update", s.requireBrowserSession(http.HandlerFunc(s.handleChangeSeatCount)))
 	s.mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
@@ -117,7 +114,14 @@ func (s *Server) client() (CashierClient, error) {
 func (s *Server) handlePlan(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	mxid, err := s.session.MXID(r)
-	data := pageData{LoggedIn: err == nil, TestMode: s.cfg.BillingEnvironment == "test", MXID: mxid, RegisterURL: strings.TrimRight(s.cfg.BackendPublicURL, "/") + "/register", SeatPrice: planSeatPrice}
+	data := pageData{
+		LoggedIn:         err == nil,
+		TestMode:         s.cfg.BillingEnvironment == "test",
+		MXID:             mxid,
+		RegisterURL:      strings.TrimRight(s.cfg.BackendPublicURL, "/") + "/register",
+		BillingLinks:     s.cfg.BillingLinks,
+		BillingPortalURL: s.cfg.BillingPortalURL,
+	}
 	if data.LoggedIn {
 		client, err := s.client()
 		if err != nil {
@@ -132,16 +136,6 @@ func (s *Server) handlePlan(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		data.Plan, data.Seats = state.Plan, state.Seats
-		if data.Plan != nil {
-			switch data.Plan.SubscriptionStatus {
-			case "none", "failed", "cancelled", "expired":
-				data.CanCheckout = true
-			case "pending":
-				data.CheckoutActive = true
-			case "active", "on_hold":
-				data.CanChangeSeats = true
-			}
-		}
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := planTmpl.Execute(w, data); err != nil {
@@ -334,26 +328,11 @@ func commandUnavailable(w http.ResponseWriter) {
 	http.Error(w, "Plan is temporarily unavailable", http.StatusServiceUnavailable)
 }
 
-func (s *Server) handleCreatePlan(w http.ResponseWriter, r *http.Request) {
-	client, p, id, ok := s.command(r)
-	if !ok {
-		commandUnavailable(w)
-		return
-	}
-	if err := client.CreatePlan(r.Context(), p, id); err != nil {
-		logPlanFailure("create plan", err)
-		http.Error(w, "set up plan failed", http.StatusBadGateway)
-		return
-	}
-	w.WriteHeader(http.StatusNoContent)
-}
-
 type seatRequest struct {
 	MXID string `json:"mxid"`
 }
 
 var matrixLocalpart = regexp.MustCompile(`^[0-9a-z=_+\-./]+$`)
-var cashierCapacityMessage = regexp.MustCompile(`^remove ([1-9][0-9]*) seat\(s\) before lowering to ([1-9][0-9]*) paid seats$`)
 
 const maxMatrixIDBytes = 255
 
@@ -403,17 +382,38 @@ func (s *Server) handleDeleteSeat(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-type quantityRequest struct {
-	Quantity int `json:"quantity"`
-}
-
-func decodeQuantity(w http.ResponseWriter, r *http.Request) (int, bool) {
-	var req quantityRequest
-	if err := decodePlanJSON(w, r, &req); err != nil || req.Quantity < 1 {
-		http.Error(w, "quantity must be positive", http.StatusBadRequest)
-		return 0, false
+// handleLeaveTeam lets an attached member request removal of their own membership. The
+// membership check is performed through Cashier's signed PlanState view before the mutation;
+// Plan has no database or membership lookup of its own. Cashier remains responsible for
+// enforcing the billing owner's cannot-leave rule and applying the entitlement transition.
+func (s *Server) handleLeaveTeam(w http.ResponseWriter, r *http.Request) {
+	client, p, id, ok := s.command(r)
+	if !ok {
+		commandUnavailable(w)
+		return
 	}
-	return req.Quantity, true
+	state, err := client.PlanState(r.Context(), p)
+	if err != nil {
+		logPlanFailure("load Cashier membership for leave", err)
+		http.Error(w, "could not verify team membership", http.StatusBadGateway)
+		return
+	}
+	found := false
+	for _, seat := range state.Seats {
+		if seat.MXID == p.MXID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		http.Error(w, "you are not a member of a paid team", http.StatusConflict)
+		return
+	}
+	if err := client.RemoveSeat(r.Context(), p, id, p.MXID); err != nil {
+		writeCashierActionError(w, err, "could not leave team")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func decodePlanJSON(w http.ResponseWriter, r *http.Request, dst any) error {
@@ -431,129 +431,12 @@ func decodePlanJSON(w http.ResponseWriter, r *http.Request, dst any) error {
 	}
 	return nil
 }
-func (s *Server) handleCheckout(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Cache-Control", "no-store")
-	client, p, id, ok := s.command(r)
-	if !ok {
-		commandUnavailable(w)
-		return
-	}
-	q, ok := decodeQuantity(w, r)
-	if !ok {
-		return
-	}
-	link, err := client.StartCheckout(r.Context(), p, id, q)
-	if err != nil {
-		logPlanFailure("start checkout", err)
-		http.Error(w, "checkout failed", http.StatusBadGateway)
-		return
-	}
-	if !validCheckoutLink(link, s.cfg.BillingEnvironment) {
-		http.Error(w, "checkout unavailable", http.StatusBadGateway)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]string{"payment_link": link})
-}
-func (s *Server) handlePortal(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Cache-Control", "no-store")
-	client, p, id, ok := s.command(r)
-	if !ok {
-		commandUnavailable(w)
-		return
-	}
-	link, err := client.OpenCustomerPortal(r.Context(), p, id)
-	if err != nil {
-		logPlanFailure("open customer portal", err)
-		http.Error(w, "portal unavailable", http.StatusBadGateway)
-		return
-	}
-	if !s.validPortalLink(link) {
-		http.Error(w, "portal unavailable", http.StatusBadGateway)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]string{"link": link})
-}
-func (s *Server) handleChangeSeatCount(w http.ResponseWriter, r *http.Request) {
-	client, p, id, ok := s.command(r)
-	if !ok {
-		commandUnavailable(w)
-		return
-	}
-	q, ok := decodeQuantity(w, r)
-	if !ok {
-		return
-	}
-	if err := client.ChangeSeatCount(r.Context(), p, id, q); err != nil {
-		writeCashierActionError(w, err, "seat count change failed")
-		return
-	}
-	w.WriteHeader(http.StatusNoContent)
-}
 
-// writeCashierActionError keeps private Cashier response bodies at the Plan boundary. One
-// narrowly defined capacity rejection is rewritten locally so the browser can explain the
-// required downgrade action without exposing arbitrary provider or database text.
+// writeCashierActionError keeps private Cashier response bodies at the Plan boundary.
 func writeCashierActionError(w http.ResponseWriter, err error, fallback string) {
 	logPlanFailure("Cashier action", err)
-	var cashierErr *CashierError
-	if errors.As(err, &cashierErr) && cashierErr.StatusCode == http.StatusConflict {
-		matches := cashierCapacityMessage.FindStringSubmatch(strings.TrimSpace(cashierErr.Message))
-		if len(matches) == 3 {
-			remove, removeErr := strconv.Atoi(matches[1])
-			paid, paidErr := strconv.Atoi(matches[2])
-			if removeErr == nil && paidErr == nil {
-				http.Error(w, fmt.Sprintf("Remove %d seat(s) before lowering to %d paid seats.", remove, paid), http.StatusConflict)
-				return
-			}
-		}
-	}
 	http.Error(w, fallback, http.StatusBadGateway)
 }
-func validCheckoutLink(raw, billingEnvironment string) bool {
-	if billingEnvironment != "test" && billingEnvironment != "live" {
-		return false
-	}
-	u, err := url.Parse(raw)
-	if err != nil || u.Scheme != "https" || u.User != nil || u.Port() != "" || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" {
-		return false
-	}
-	host := "test.checkout.dodopayments.com"
-	if billingEnvironment == "live" {
-		host = "checkout.dodopayments.com"
-	}
-	if u.Host != host {
-		return false
-	}
-	const prefix = "/session/"
-	if !strings.HasPrefix(u.Path, prefix) {
-		return false
-	}
-	token := strings.TrimPrefix(u.Path, prefix)
-	return token != "" && !strings.Contains(token, "/")
-}
-
-func (s *Server) validPortalLink(raw string) bool {
-	if s.cfg.BillingEnvironment != "test" && s.cfg.BillingEnvironment != "live" {
-		return false
-	}
-	u, err := url.Parse(raw)
-	if err != nil || u.Scheme != "https" || u.User != nil || u.Port() != "" || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" {
-		return false
-	}
-	host := "test.customer.dodopayments.com"
-	if s.cfg.BillingEnvironment == "live" {
-		host = "customer.dodopayments.com"
-	}
-	return u.Host == host
-}
-func writeJSON(w http.ResponseWriter, status int, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	if err := json.NewEncoder(w).Encode(v); err != nil {
-		logPlanFailure("write JSON response", err)
-	}
-}
-
 func logPlanFailure(operation string, err error) {
 	if err == nil {
 		return
@@ -562,9 +445,10 @@ func logPlanFailure(operation string, err error) {
 }
 
 type pageData struct {
-	LoggedIn, TestMode                          bool
-	MXID, RegisterURL, SeatPrice                string
-	Plan                                        *Plan
-	Seats                                       []Seat
-	CanCheckout, CheckoutActive, CanChangeSeats bool
+	LoggedIn, TestMode bool
+	MXID, RegisterURL  string
+	Plan               *Plan
+	Seats              []Seat
+	BillingLinks       []BillingLink
+	BillingPortalURL   string
 }

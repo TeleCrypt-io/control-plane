@@ -17,7 +17,7 @@ import (
 
 type fakeCashier struct {
 	principal Principal
-	requestID string
+	removed   string
 	state     PlanState
 	planErr   error
 }
@@ -30,26 +30,13 @@ func (f *fakeCashier) PlanState(_ context.Context, p Principal) (PlanState, erro
 	f.principal = p
 	return f.state, f.planErr
 }
-func (f *fakeCashier) CreatePlan(_ context.Context, p Principal, requestID string) error {
-	f.principal, f.requestID = p, requestID
-	return nil
-}
 func (f *fakeCashier) AttachSeat(context.Context, Principal, string, string) error {
 	return errors.New("unused")
 }
-func (f *fakeCashier) RemoveSeat(context.Context, Principal, string, string) error {
-	return errors.New("unused")
+func (f *fakeCashier) RemoveSeat(_ context.Context, p Principal, _ string, mxid string) error {
+	f.principal, f.removed = p, mxid
+	return nil
 }
-func (f *fakeCashier) StartCheckout(context.Context, Principal, string, int) (string, error) {
-	return "", errors.New("unused")
-}
-func (f *fakeCashier) OpenCustomerPortal(context.Context, Principal, string) (string, error) {
-	return "", errors.New("unused")
-}
-func (f *fakeCashier) ChangeSeatCount(context.Context, Principal, string, int) error {
-	return errors.New("unused")
-}
-
 func testServer() *Server {
 	return NewServer(Config{
 		BillingEnvironment: "test",
@@ -60,6 +47,11 @@ func testServer() *Server {
 		MASClientID:        "plan",
 		MASClientSecret:    "test-secret",
 		PlanSessionKey:     "test-session-key",
+		BillingLinks: []BillingLink{
+			{TierID: 1, DisplayName: "Team", URL: "https://checkout.example/team"},
+			{TierID: 2, DisplayName: "Business", URL: "https://checkout.example/business"},
+		},
+		BillingPortalURL: "https://billing.example/portal",
 	}, nil)
 }
 
@@ -482,30 +474,19 @@ func TestServerRendersPlanControlsForEachSubscriptionState(t *testing.T) {
 		notWant []string
 	}{
 		{
-			name:  "checkout",
-			plan:  &Plan{SubscriptionStatus: "none", PaidSeats: 1, HasBillingAccount: true},
+			name:  "fixed plan",
+			plan:  &Plan{SubscriptionStatus: "active", DisplayName: "Team", MonthlyCents: 1500, MemberLimit: 3},
 			seats: []Seat{{MXID: "@member:stage.telecrypt.io"}},
 			want: []string{
-				"Start sandbox checkout", "15 EUR per seat", "Manage subscription, card, invoices, or cancellation",
+				"Team", "Business", "Open billing portal",
 				"id=\"add-seat\"", "data-mxid=\"@member:stage.telecrypt.io\"",
 			},
-		},
-		{
-			name:    "active subscription",
-			plan:    &Plan{SubscriptionStatus: "active", PaidSeats: 3},
-			want:    []string{"Update paid seats", "15 EUR per seat", "value=\"3\"", "No seats attached yet."},
-			notWant: []string{"Start checkout"},
-		},
-		{
-			name:    "pending checkout",
-			plan:    &Plan{SubscriptionStatus: "pending", PaidSeats: 2},
-			want:    []string{"Checkout is in progress. Your plan updates after payment is confirmed."},
-			notWant: []string{"Start checkout", "Update paid seats"},
+			notWant: []string{"id=\"checkout\"", "id=\"seat-count\"", "Set up plan", "quantity"},
 		},
 		{
 			name:    "no plan",
-			want:    []string{"Set up your plan", "Set up plan", "Add the Matrix accounts you want covered"},
-			notWant: []string{"id=\"add-seat\"", "<h1 id=\"plan-title\">Your Plan</h1>"},
+			want:    []string{"Choose your plan", "Team", "Business", "Open billing portal"},
+			notWant: []string{"Set up plan", "id=\"checkout\"", "quantity", "<h1 id=\"plan-title\">Your Plan</h1>"},
 		},
 	}
 
@@ -564,12 +545,9 @@ func TestPlanCommandsRequireAuthenticatedBrowserSession(t *testing.T) {
 		method string
 		path   string
 	}{
-		{http.MethodPost, "/plan/create"},
 		{http.MethodPost, "/plan/members/add"},
+		{http.MethodPost, "/plan/members/leave"},
 		{http.MethodPost, "/plan/members/@member:stage.telecrypt.io/remove"},
-		{http.MethodPost, "/plan/checkout/start"},
-		{http.MethodPost, "/plan/billing-portal/open"},
-		{http.MethodPost, "/plan/seats/update"},
 	} {
 		srv := testServer()
 		req := httptest.NewRequest(command.method, command.path, nil)
@@ -588,7 +566,7 @@ func TestPlanRejectsSessionForForeignHomeserver(t *testing.T) {
 	srv := testServer()
 	cookieRecorder := httptest.NewRecorder()
 	srv.session.Set(cookieRecorder, "@alice:other.example")
-	req := httptest.NewRequest(http.MethodPost, "/plan/create", nil)
+	req := httptest.NewRequest(http.MethodPost, "/plan/members/add", nil)
 	req.AddCookie(cookieRecorder.Result().Cookies()[0])
 	req.Header.Set("Origin", "https://backend.stage.telecrypt.io")
 	rec := httptest.NewRecorder()
@@ -599,8 +577,32 @@ func TestPlanRejectsSessionForForeignHomeserver(t *testing.T) {
 	}
 }
 
+func TestMemberCanLeaveOnlyWhenCashierShowsTheirMembership(t *testing.T) {
+	cashier := &fakeCashier{state: PlanState{Seats: []Seat{{MXID: "@alice:stage.telecrypt.io"}}}}
+	srv := testServer()
+	srv.cashier = cashier
+	req := authenticatedPlanRequest(t, srv, http.MethodPost, "/plan/members/leave", "")
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if got, want := rec.Code, http.StatusNoContent; got != want {
+		t.Fatalf("member leave status = %d, want %d", got, want)
+	}
+	if cashier.removed != "@alice:stage.telecrypt.io" {
+		t.Fatalf("Cashier removal target = %q, want caller", cashier.removed)
+	}
+
+	cashier = &fakeCashier{state: PlanState{Seats: []Seat{{MXID: "@other:stage.telecrypt.io"}}}}
+	srv.cashier = cashier
+	req = authenticatedPlanRequest(t, srv, http.MethodPost, "/plan/members/leave", "")
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if got, want := rec.Code, http.StatusConflict; got != want {
+		t.Fatalf("non-member leave status = %d, want %d", got, want)
+	}
+}
+
 func TestRetiredPlanRoutesAreNotExposed(t *testing.T) {
-	for _, path := range []string{"/api/team", "/api/team/seats", "/plan", "/plan/", "/plan/api", "/plan/api/seats", "/plan/api/checkout", "/plan/api/portal", "/plan/api/seat-count", "/plan/api/downgrade-request"} {
+	for _, path := range []string{"/api/team", "/api/team/seats", "/plan", "/plan/", "/plan/api", "/plan/api/seats", "/plan/api/checkout", "/plan/api/portal", "/plan/api/seat-count", "/plan/api/downgrade-request", "/plan/create", "/plan/checkout/start", "/plan/billing-portal/open", "/plan/seats/update"} {
 		rec := httptest.NewRecorder()
 		testServer().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, path, nil))
 		if got, want := rec.Code, http.StatusNotFound; got != want {
@@ -609,42 +611,12 @@ func TestRetiredPlanRoutesAreNotExposed(t *testing.T) {
 	}
 }
 
-func TestCreatePlanUsesAuthenticatedPrincipalAndRequestID(t *testing.T) {
-	cashier := &fakeCashier{}
-	srv := testServer()
-	srv.cashier = cashier
-	cookieRecorder := httptest.NewRecorder()
-	srv.session.Set(cookieRecorder, "@alice:stage.telecrypt.io")
-	cookie := cookieRecorder.Result().Cookies()[0]
-	requestID := "b3987ed2-51a4-4b04-b5f5-b915683d0cf5"
-	req := httptest.NewRequest(http.MethodPost, "/plan/create", nil)
-	req.AddCookie(cookie)
-	req.Header.Set("Origin", "https://backend.stage.telecrypt.io")
-	req.Header.Set("X-TeleCrypt-Request-ID", requestID)
-	rec := httptest.NewRecorder()
-
-	srv.ServeHTTP(rec, req)
-
-	if got, want := rec.Code, http.StatusNoContent; got != want {
-		t.Fatalf("POST /plan/create status = %d, want %d", got, want)
-	}
-	if got, want := cashier.principal.MXID, "@alice:stage.telecrypt.io"; got != want {
-		t.Fatalf("Cashier principal = %q, want %q", got, want)
-	}
-	if got, want := cashier.requestID, requestID; got != want {
-		t.Fatalf("Cashier request ID = %q, want %q", got, want)
-	}
-	if rec.Body.Len() != 0 {
-		t.Fatalf("POST /plan/create response body = %q, want empty", rec.Body.String())
-	}
-}
-
 func TestPlanCommandsRejectUnsafeRequestBodies(t *testing.T) {
 	for _, tt := range []struct {
 		name, path, body string
 	}{
 		{"unknown field", "/plan/members/add", `{"mxid":"@member:stage.telecrypt.io","unexpected":true}`},
-		{"trailing JSON", "/plan/seats/update", `{"quantity":1}{"quantity":2}`},
+		{"trailing JSON", "/plan/members/add", `{"mxid":"@member:stage.telecrypt.io"}{"mxid":"@other:stage.telecrypt.io"}`},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			srv := testServer()
@@ -680,49 +652,11 @@ type errorCashier struct {
 func (c *errorCashier) PlanState(_ context.Context, _ Principal) (PlanState, error) {
 	return PlanState{}, &CashierError{StatusCode: c.status, Message: c.message}
 }
-func (c *errorCashier) CreatePlan(_ context.Context, _ Principal, _ string) error {
-	return &CashierError{StatusCode: c.status, Message: c.message}
-}
 func (c *errorCashier) AttachSeat(_ context.Context, _ Principal, _ string, _ string) error {
 	return &CashierError{StatusCode: c.status, Message: c.message}
 }
 func (c *errorCashier) RemoveSeat(_ context.Context, _ Principal, _ string, _ string) error {
 	return &CashierError{StatusCode: c.status, Message: c.message}
-}
-func (c *errorCashier) StartCheckout(_ context.Context, _ Principal, _ string, _ int) (string, error) {
-	return "", &CashierError{StatusCode: c.status, Message: c.message}
-}
-func (c *errorCashier) OpenCustomerPortal(_ context.Context, _ Principal, _ string) (string, error) {
-	return "", &CashierError{StatusCode: c.status, Message: c.message}
-}
-func (c *errorCashier) ChangeSeatCount(_ context.Context, _ Principal, _ string, _ int) error {
-	return &CashierError{StatusCode: c.status, Message: c.message}
-}
-
-func TestCashierCapacityRejectionIsRewrittenLocally(t *testing.T) {
-	const message = "remove 1 seat(s) before lowering to 1 paid seats"
-	const wantMessage = "Remove 1 seat(s) before lowering to 1 paid seats."
-	for _, tt := range []struct {
-		name, method, path, body string
-	}{
-		{"seat-count", http.MethodPost, "/plan/seats/update", `{"quantity":1}`},
-		{"attach", http.MethodPost, "/plan/members/add", `{"mxid":"@bot:stage.telecrypt.io"}`},
-		{"remove", http.MethodPost, "/plan/members/@bot:stage.telecrypt.io/remove", ""},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			srv := testServer()
-			srv.cashier = &errorCashier{status: http.StatusConflict, message: message}
-			req := authenticatedPlanRequest(t, srv, tt.method, tt.path, tt.body)
-			rec := httptest.NewRecorder()
-			srv.ServeHTTP(rec, req)
-			if got, want := rec.Code, http.StatusConflict; got != want {
-				t.Fatalf("%s status = %d, want %d", tt.name, got, want)
-			}
-			if got := strings.TrimSpace(rec.Body.String()); got != wantMessage {
-				t.Fatalf("%s body = %q, want %q", tt.name, got, wantMessage)
-			}
-		})
-	}
 }
 
 func TestCashierArbitraryErrorBodyIsNeverForwarded(t *testing.T) {
@@ -730,12 +664,8 @@ func TestCashierArbitraryErrorBodyIsNeverForwarded(t *testing.T) {
 	for _, tt := range []struct {
 		name, method, path, body string
 	}{
-		{"seat-count", http.MethodPost, "/plan/seats/update", `{"quantity":1}`},
 		{"attach", http.MethodPost, "/plan/members/add", `{"mxid":"@bot:stage.telecrypt.io"}`},
 		{"remove", http.MethodPost, "/plan/members/@bot:stage.telecrypt.io/remove", ""},
-		{"create", http.MethodPost, "/plan/create", ""},
-		{"checkout", http.MethodPost, "/plan/checkout/start", `{"quantity":1}`},
-		{"portal", http.MethodPost, "/plan/billing-portal/open", ""},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			srv := testServer()
@@ -748,83 +678,6 @@ func TestCashierArbitraryErrorBodyIsNeverForwarded(t *testing.T) {
 			}
 			if strings.Contains(rec.Body.String(), secret) {
 				t.Fatalf("%s forwarded private Cashier body: %q", tt.name, rec.Body.String())
-			}
-		})
-	}
-}
-
-type planWriteFailureResponseWriter struct {
-	header http.Header
-	err    error
-}
-
-func (w *planWriteFailureResponseWriter) Header() http.Header {
-	if w.header == nil {
-		w.header = make(http.Header)
-	}
-	return w.header
-}
-
-func (w *planWriteFailureResponseWriter) WriteHeader(int) {}
-
-func (w *planWriteFailureResponseWriter) Write([]byte) (int, error) {
-	return 0, w.err
-}
-
-func TestPlanWriteJSONLogsResponseWriteFailure(t *testing.T) {
-	previous := slog.Default()
-	var logs bytes.Buffer
-	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
-	defer slog.SetDefault(previous)
-
-	writeJSON(&planWriteFailureResponseWriter{err: errors.New("fixture Plan client disconnected")}, http.StatusOK, map[string]string{"status": "ok"})
-
-	if !strings.Contains(logs.String(), "operation=\"write JSON response\"") {
-		t.Fatalf("response write failure was not logged: %s", logs.String())
-	}
-	if !strings.Contains(logs.String(), "fixture Plan client disconnected") {
-		t.Fatalf("response write failure detail was not logged: %s", logs.String())
-	}
-}
-
-func TestCashierLinkAllowLists(t *testing.T) {
-	for _, tc := range []struct {
-		name               string
-		billingEnvironment string
-		link               string
-		want               bool
-	}{
-		{name: "production checkout valid", billingEnvironment: "live", link: "https://checkout.dodopayments.com/session/abc123", want: true},
-		{name: "sandbox checkout valid", billingEnvironment: "test", link: "https://test.checkout.dodopayments.com/session/abc123", want: true},
-		{name: "sandbox rejects live checkout", billingEnvironment: "test", link: "https://checkout.dodopayments.com/session/abc123"},
-		{name: "production rejects sandbox checkout", billingEnvironment: "live", link: "https://test.checkout.dodopayments.com/session/abc123"},
-		{name: "checkout wrong origin", billingEnvironment: "live", link: "https://attacker.example/session/abc123"},
-		{name: "checkout query", billingEnvironment: "live", link: "https://checkout.dodopayments.com/session/abc123?next=https://attacker.example"},
-		{name: "checkout extra path", billingEnvironment: "live", link: "https://checkout.dodopayments.com/session/abc/def"},
-		{name: "checkout empty session", billingEnvironment: "live", link: "https://checkout.dodopayments.com/session/"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := validCheckoutLink(tc.link, tc.billingEnvironment); got != tc.want {
-				t.Fatalf("validCheckoutLink(%q) = %v, want %v", tc.link, got, tc.want)
-			}
-		})
-	}
-
-	production := testServer()
-	production.cfg.ServerName = "telecrypt.io"
-	production.cfg.BillingEnvironment = "live"
-	for _, tc := range []struct {
-		name string
-		link string
-		want bool
-	}{
-		{name: "production valid", link: "https://customer.dodopayments.com/portal/abc", want: true},
-		{name: "production test host", link: "https://test.customer.dodopayments.com/portal/abc"},
-		{name: "production query", link: "https://customer.dodopayments.com/portal/abc?x=1"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := production.validPortalLink(tc.link); got != tc.want {
-				t.Fatalf("validPortalLink(%q) = %v, want %v", tc.link, got, tc.want)
 			}
 		})
 	}

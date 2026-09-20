@@ -74,6 +74,14 @@ type PlanState struct {
 	Seats []Seat `json:"seats"`
 }
 
+// BillingLink is a configured public static checkout link for one fixed tier.
+// Plan never creates provider sessions or sends provider API requests.
+type BillingLink struct {
+	TierID      int
+	DisplayName string
+	URL         string
+}
+
 // CashierClient is the complete public-Plan-to-private-Cashier contract. It intentionally
 // omits provider webhooks, arbitrary subscription lookup, Synapse administration, and direct
 // database access. Every command is performed for principal; Cashier must derive ownership from
@@ -84,10 +92,8 @@ type PlanState struct {
 // browser retries.
 type CashierClient interface {
 	PlanState(ctx context.Context, principal Principal) (PlanState, error)
-	CreatePlan(ctx context.Context, principal Principal, requestID string) error
 	AttachSeat(ctx context.Context, principal Principal, requestID, mxid string) error
+	// RemoveSeat detaches a target for an owner; when target == principal.MXID,
+	// Cashier applies its member self-leave authorization and lifecycle transition.
 	RemoveSeat(ctx context.Context, principal Principal, requestID, mxid string) error
-	StartCheckout(ctx context.Context, principal Principal, requestID string, quantity int) (paymentLink string, err error)
-	OpenCustomerPortal(ctx context.Context, principal Principal, requestID string) (portalLink string, err error)
-	ChangeSeatCount(ctx context.Context, principal Principal, requestID string, quantity int) error
 }

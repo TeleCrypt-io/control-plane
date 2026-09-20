@@ -60,6 +60,13 @@ func run() error {
 			MASClientID:        cfg.MASClientID,
 			MASClientSecret:    cfg.MASClientSecret,
 			PlanSessionKey:     cfg.PlanSessionKey,
+			BillingLinks: []plan.BillingLink{
+				{TierID: 1, DisplayName: "Team", URL: cfg.CheckoutLinkTeam},
+				{TierID: 2, DisplayName: "Business", URL: cfg.CheckoutLinkBusiness},
+				{TierID: 3, DisplayName: "Business+", URL: cfg.CheckoutLinkBusinessPlus},
+				{TierID: 4, DisplayName: "Max", URL: cfg.CheckoutLinkMax},
+			},
+			BillingPortalURL: cfg.BillingPortalURL,
 		}, cashierClient),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
