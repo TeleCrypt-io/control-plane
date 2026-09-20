@@ -40,7 +40,7 @@ func TestHTTPCashierClientReadsPrivatePlanState(t *testing.T) {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"plan":{"subscription_status":"active","paid_seats":2},"seats":[{"mxid":"@alice:telecrypt.io"}]}`))
+		_, _ = w.Write([]byte(`{"plan":{"subscription_status":"active","member_limit":2},"members":[{"mxid":"@alice:telecrypt.io"}]}`))
 	}))
 	defer server.Close()
 
@@ -52,11 +52,11 @@ func TestHTTPCashierClientReadsPrivatePlanState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PlanState: %v", err)
 	}
-	if state.Plan == nil || state.Plan.PaidSeats != 2 {
+	if state.Plan == nil || state.Plan.MemberLimit != 2 {
 		t.Fatalf("PlanState plan = %#v, want private plan", state.Plan)
 	}
-	if len(state.Seats) != 1 || state.Seats[0].MXID != "@alice:telecrypt.io" {
-		t.Fatalf("PlanState seats = %#v", state.Seats)
+	if len(state.Members) != 1 || state.Members[0].MXID != "@alice:telecrypt.io" {
+		t.Fatalf("PlanState members = %#v", state.Members)
 	}
 	encoded, err := json.Marshal(state)
 	if err != nil {
@@ -116,8 +116,8 @@ func TestHTTPCashierClientCanonicalizesEscapedMemberRemovalPath(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if err := client.RemoveSeat(t.Context(), Principal{MXID: "@admin:telecrypt.io"}, tc.requestID, tc.mxid); err != nil {
-				t.Fatalf("RemoveSeat(%q): %v", tc.mxid, err)
+			if err := client.RemoveMember(t.Context(), Principal{MXID: "@admin:telecrypt.io"}, tc.requestID, tc.mxid); err != nil {
+				t.Fatalf("RemoveMember(%q): %v", tc.mxid, err)
 			}
 		})
 	}
@@ -137,10 +137,10 @@ func TestHTTPCashierClientReturnsBusinessStatus(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new HTTP Cashier client: %v", err)
 	}
-	err = client.AttachSeat(t.Context(), Principal{MXID: "@alice:telecrypt.io"}, "b3987ed2-51a4-4b04-b5f5-b915683d0cf5", "@bot:telecrypt.io")
+	err = client.AttachMember(t.Context(), Principal{MXID: "@alice:telecrypt.io"}, "b3987ed2-51a4-4b04-b5f5-b915683d0cf5", "@bot:telecrypt.io")
 	var cashierError *CashierError
 	if !errors.As(err, &cashierError) || cashierError.StatusCode != http.StatusConflict {
-		t.Fatalf("AttachSeat error = %#v, want CashierError 409", err)
+		t.Fatalf("AttachMember error = %#v, want CashierError 409", err)
 	}
 	if !strings.Contains(cashierError.Message, "provider detail access_token="+secret+" tail") {
 		t.Fatalf("Cashier error message = %q, want complete raw body", cashierError.Message)
@@ -163,7 +163,7 @@ func TestHTTPCashierClientPreservesResponseCloseFailure(t *testing.T) {
 			Body:       &cashierResponseBody{reader: strings.NewReader("no seats"), closeErr: closeErr},
 		}, nil
 	})
-	err = client.AttachSeat(context.Background(), Principal{MXID: "@alice:telecrypt.io"}, "b3987ed2-51a4-4b04-b5f5-b915683d0cf5", "@bot:telecrypt.io")
+	err = client.AttachMember(context.Background(), Principal{MXID: "@alice:telecrypt.io"}, "b3987ed2-51a4-4b04-b5f5-b915683d0cf5", "@bot:telecrypt.io")
 	var cashierError *CashierError
 	if !errors.As(err, &cashierError) || !errors.Is(err, closeErr) {
 		t.Fatalf("Cashier response error = %v, want CashierError with close failure", err)
@@ -190,10 +190,10 @@ func TestHTTPCashierClientOtherMutationsRejectCreateStatus(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new HTTP Cashier client: %v", err)
 	}
-	err = client.AttachSeat(t.Context(), Principal{MXID: "@alice:telecrypt.io"}, "b3987ed2-51a4-4b04-b5f5-b915683d0cf5", "@bot:telecrypt.io")
+	err = client.AttachMember(t.Context(), Principal{MXID: "@alice:telecrypt.io"}, "b3987ed2-51a4-4b04-b5f5-b915683d0cf5", "@bot:telecrypt.io")
 	var cashierError *CashierError
 	if !errors.As(err, &cashierError) || cashierError.StatusCode != http.StatusCreated {
-		t.Fatalf("AttachSeat error = %#v, want CashierError 201", err)
+		t.Fatalf("AttachMember error = %#v, want CashierError 201", err)
 	}
 }
 
@@ -218,9 +218,9 @@ func TestHTTPCashierClientRejectsCrossOriginRedirects(t *testing.T) {
 			if err != nil {
 				t.Fatalf("new HTTP Cashier client: %v", err)
 			}
-			err = client.AttachSeat(t.Context(), Principal{MXID: "@alice:telecrypt.io"}, "b3987ed2-51a4-4b04-b5f5-b915683d0cf5", "@bot:telecrypt.io")
+			err = client.AttachMember(t.Context(), Principal{MXID: "@alice:telecrypt.io"}, "b3987ed2-51a4-4b04-b5f5-b915683d0cf5", "@bot:telecrypt.io")
 			if err == nil {
-				t.Fatal("AttachSeat unexpectedly followed redirect")
+				t.Fatal("AttachMember unexpectedly followed redirect")
 			}
 			if calls != 1 {
 				t.Fatalf("transport calls = %d, want 1", calls)

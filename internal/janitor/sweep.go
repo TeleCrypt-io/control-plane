@@ -1,7 +1,6 @@
-// Package janitor implements one scheduled lifecycle-maintenance run. It has no HTTP server and
-// does not call Cashier: paid-entitlement exclusions are read from its private view, account
-// registration state comes from MAS, and provider state is read once through an optional
-// read-only reconciler.
+// Package janitor implements one scheduled lifecycle-maintenance run. It has no HTTP server.
+// Cashier owns entitlement and lifecycle state; Janitor executes only the time-due actions
+// exposed through its narrow database view/functions.
 package janitor
 
 import (
@@ -18,11 +17,7 @@ import (
 	"github.com/google/uuid"
 )
 
-const (
-	initialFreeSuspendAfter = 48 * time.Hour
-	cashierAdminLocalpart   = "cashier"
-	auditCleanupTimeout     = 2 * time.Second
-)
+const auditCleanupTimeout = 2 * time.Second
 
 type Config struct {
 	ServerName         string
@@ -33,12 +28,31 @@ type Config struct {
 type masAdminClient interface {
 	ListUsers(context.Context) ([]masadmin.User, error)
 	ListUserEmails(context.Context) ([]masadmin.UserEmail, error)
-	GetUser(context.Context, string) (masadmin.User, error)
-	HasUserEmail(context.Context, string) (bool, error)
 }
 
 type synapseAdminClient interface {
 	SuspendUser(context.Context, string, bool) error
+}
+
+type synapsePolicyClient interface {
+	SetUserType(context.Context, string, string) error
+	ReadUserType(context.Context, string) (*string, error)
+}
+
+type masRemovalClient interface {
+	DeactivateUser(context.Context, string) error
+}
+
+type mediaRemovalClient interface {
+	DeleteAllMedia(context.Context, string) error
+}
+
+type lifecycleStore interface {
+	SyncLifecycleAccount(context.Context, string, time.Time) error
+	LifecycleActions(context.Context) ([]db.LifecycleAction, error)
+	ExecuteSuspension(context.Context, string, int64, func(context.Context, string) error) (bool, error)
+	StartRemoval(context.Context, string, int64) (bool, int64, error)
+	FinishRemoval(context.Context, string, int64) (bool, error)
 }
 
 // Discrepancy is intentionally provider-neutral. Janitor reports it to the owner and does not
@@ -58,7 +72,7 @@ type DodoReconciler interface {
 
 type store interface {
 	VerifyDeploymentIdentity(context.Context, string, string) error
-	LockExclusions(context.Context) (map[string]struct{}, error)
+	lifecycleStore
 	JanitorDigestCursor(context.Context) (db.DigestCursor, bool, error)
 	SetJanitorDigestCursor(context.Context, db.DigestCursor) error
 	InsertRunEvent(context.Context, db.RunEvent) error
@@ -75,12 +89,6 @@ type Sweeper struct {
 	mailer  Mailer
 	dodo    DodoReconciler
 	cfg     Config
-}
-
-// NewSweeper is retained for callers that only need MAS/audit wiring. Production uses
-// NewLifecycleSweeper so native Synapse suspension is always available.
-func NewSweeper(mas masAdminClient, store store, mailer Mailer, cfg Config) *Sweeper {
-	return &Sweeper{mas: mas, store: store, mailer: mailer, cfg: cfg}
 }
 
 func NewLifecycleSweeper(mas masAdminClient, synapse synapseAdminClient, store store, mailer Mailer, dodo DodoReconciler, cfg Config) *Sweeper {
@@ -185,12 +193,6 @@ func (s *Sweeper) Sweep(ctx context.Context) error {
 		return baseErr
 	}
 
-	exclusions, err := s.store.LockExclusions(ctx)
-	if err != nil {
-		state.fail("entitlement_view", "entitlement_view")
-		return finish(httpdiag.WrapCause("janitor: entitlement view failed", err))
-	}
-	state.addLabel("entitlement_view")
 	users, err := s.mas.ListUsers(ctx)
 	if err != nil {
 		state.fail("mas", "mas_users")
@@ -198,7 +200,7 @@ func (s *Sweeper) Sweep(ctx context.Context) error {
 	}
 	state.considered = int64(len(users))
 	state.addLabel("mas_users")
-	if err := s.sweepLifecycle(ctx, users, exclusions, state); err != nil {
+	if err := s.sweepAuthoritativeLifecycle(ctx, users, s.store, state); err != nil {
 		return finish(err)
 	}
 	if ctx.Err() != nil {
@@ -230,6 +232,120 @@ func (s *Sweeper) Sweep(ctx context.Context) error {
 	return finish(nil)
 }
 
+func (s *Sweeper) sweepAuthoritativeLifecycle(ctx context.Context, users []masadmin.User, lifecycle lifecycleStore, state *sweepState) error {
+	for _, snapshot := range users {
+		mxid := s.mxid(snapshot.Username)
+		if mxid == "" || snapshot.DeactivatedAt != nil {
+			continue
+		}
+		if err := lifecycle.SyncLifecycleAccount(ctx, mxid, snapshot.CreatedAt); err != nil {
+			state.fail("database", "database")
+			return httpdiag.WrapCause("janitor: synchronize lifecycle account", err)
+		}
+	}
+	actions, err := lifecycle.LifecycleActions(ctx)
+	if err != nil {
+		state.fail("database", "database")
+		return httpdiag.WrapCause("janitor: read lifecycle actions", err)
+	}
+	state.addLabel("lifecycle")
+	usersByUsername := make(map[string]masadmin.User, len(users))
+	for _, user := range users {
+		usersByUsername[user.Username] = user
+	}
+	for _, action := range actions {
+		if ctx.Err() != nil {
+			state.fail("cancelled", "cancelled")
+			return httpdiag.WrapCause("janitor: lifecycle sweep canceled", ctx.Err())
+		}
+		switch action.Action {
+		case "suspend":
+			if action.DesiredUserType == nil || *action.DesiredUserType != "wild" {
+				state.fail("database", "database")
+				return fmt.Errorf("janitor: Cashier returned an unsupported lifecycle projection")
+			}
+			applied, err := lifecycle.ExecuteSuspension(ctx, action.MXID, action.Revision, func(callCtx context.Context, desired string) error {
+				policy, ok := s.synapse.(synapsePolicyClient)
+				if !ok {
+					return errors.New("synapse admin client does not support user_type projection")
+				}
+				if err := policy.SetUserType(callCtx, action.MXID, desired); err != nil {
+					return err
+				}
+				got, err := policy.ReadUserType(callCtx, action.MXID)
+				if err != nil || got == nil || *got != desired {
+					if err == nil {
+						err = fmt.Errorf("user_type projection readback mismatch")
+					}
+					return err
+				}
+				return s.synapse.SuspendUser(callCtx, action.MXID, true)
+			})
+			if err != nil {
+				state.fail("lock", "lock")
+				return httpdiag.WrapCause("janitor: suspend lifecycle account", err)
+			}
+			if applied {
+				state.locked++
+				state.addLabel("lock")
+			}
+		case "start_removal":
+			started, nextRevision, err := lifecycle.StartRemoval(ctx, action.MXID, action.Revision)
+			if err != nil {
+				state.fail("database", "database")
+				return httpdiag.WrapCause("janitor: start lifecycle removal", err)
+			}
+			if started {
+				if err := s.finishExternalRemoval(ctx, action.MXID, usersByUsername); err != nil {
+					state.fail("mas", "mas_users")
+					return err
+				}
+				if _, err := lifecycle.FinishRemoval(ctx, action.MXID, nextRevision); err != nil {
+					state.fail("database", "database")
+					return httpdiag.WrapCause("janitor: finish lifecycle removal", err)
+				}
+			}
+		case "finish_removal":
+			if err := s.finishExternalRemoval(ctx, action.MXID, usersByUsername); err != nil {
+				state.fail("mas", "mas_users")
+				return err
+			}
+			if _, err := lifecycle.FinishRemoval(ctx, action.MXID, action.Revision); err != nil {
+				state.fail("database", "database")
+				return httpdiag.WrapCause("janitor: finish lifecycle removal", err)
+			}
+		}
+	}
+	return nil
+}
+
+func (s *Sweeper) finishExternalRemoval(ctx context.Context, mxid string, users map[string]masadmin.User) error {
+	if media, ok := s.synapse.(mediaRemovalClient); ok {
+		if err := media.DeleteAllMedia(ctx, mxid); err != nil {
+			return httpdiag.WrapCause("janitor: delete account media", err)
+		}
+	}
+	remover, ok := s.mas.(masRemovalClient)
+	if !ok {
+		return errors.New("MAS client does not support account deactivation")
+	}
+	localpart := strings.TrimPrefix(mxid, "@")
+	parts := strings.SplitN(localpart, ":", 2)
+	if len(parts) != 2 {
+		return fmt.Errorf("janitor: invalid lifecycle MXID %q", mxid)
+	}
+	user, ok := users[parts[0]]
+	if !ok {
+		return fmt.Errorf("janitor: MAS user for lifecycle MXID %q is unavailable", mxid)
+	}
+	if user.DeactivatedAt == nil {
+		if err := remover.DeactivateUser(ctx, user.ID); err != nil {
+			return httpdiag.WrapCause("janitor: deactivate MAS account", err)
+		}
+	}
+	return nil
+}
+
 func boundedAuditContext(parent context.Context) (context.Context, context.CancelFunc) {
 	if parent == nil || parent.Err() != nil {
 		return context.WithTimeout(context.Background(), auditCleanupTimeout)
@@ -241,8 +357,6 @@ func failureLabel(reason string) string {
 	switch reason {
 	case "mas":
 		return "mas_users"
-	case "entitlement_view":
-		return "entitlement_view"
 	case "database", "notification", "audit", "cancelled", "lock", "lock_readback":
 		return reason
 	default:
@@ -255,66 +369,6 @@ func (s *Sweeper) mxid(username string) string {
 		return ""
 	}
 	return fmt.Sprintf("@%s:%s", username, s.cfg.ServerName)
-}
-
-// sweepLifecycle maps the initial Free 48-hour rule to native Synapse suspension. MAS locks are
-// deliberately left alone: operator locks are separate state and must not be cleared or reused as
-// billing recovery. Rich departure timestamps come from the future lifecycle view; until that view
-// is present, this run only has enough information to enforce initial Free registration.
-func (s *Sweeper) sweepLifecycle(ctx context.Context, users []masadmin.User, exclusions map[string]struct{}, state *sweepState) error {
-	if s.synapse == nil {
-		return nil
-	}
-	cutoff := time.Now().Add(-initialFreeSuspendAfter)
-	for _, snapshot := range users {
-		if ctx.Err() != nil {
-			state.fail("cancelled", "cancelled")
-			return httpdiag.WrapCause("janitor: sweep canceled", ctx.Err())
-		}
-		mxid := s.mxid(snapshot.Username)
-		if mxid == "" {
-			state.skipped++
-			state.fail("mas", "candidate_recheck")
-			return fmt.Errorf("janitor: MAS candidate identity is invalid")
-		}
-		if snapshot.Username == cashierAdminLocalpart || snapshot.LockedAt != nil || snapshot.DeactivatedAt != nil || !snapshot.CreatedAt.Before(cutoff) {
-			state.skipped++
-			continue
-		}
-		if _, excluded := exclusions[mxid]; excluded {
-			state.skipped++
-			continue
-		}
-		state.addLabel("candidate_recheck")
-		current, err := s.mas.GetUser(ctx, snapshot.ID)
-		if err != nil {
-			state.skipped++
-			state.fail("mas", "candidate_recheck")
-			return httpdiag.WrapCause("janitor: candidate recheck failed", err)
-		}
-		if current.ID != snapshot.ID || current.Username != snapshot.Username || current.CreatedAt.IsZero() || !current.CreatedAt.Equal(snapshot.CreatedAt) || current.LockedAt != nil || current.DeactivatedAt != nil {
-			state.skipped++
-			state.fail("lock_readback", "candidate_recheck")
-			return fmt.Errorf("janitor: candidate recheck returned inconsistent identity")
-		}
-		hasEmail, err := s.mas.HasUserEmail(ctx, current.ID)
-		if err != nil {
-			state.skipped++
-			state.fail("mas", "candidate_recheck")
-			return httpdiag.WrapCause("janitor: candidate email recheck failed", err)
-		}
-		if hasEmail {
-			state.skipped++
-			continue
-		}
-		if err := s.synapse.SuspendUser(ctx, mxid, true); err != nil {
-			state.fail("lock", "lock")
-			return httpdiag.WrapCause("janitor: account suspension failed", err)
-		}
-		state.locked++
-		state.addLabel("lock")
-	}
-	return nil
 }
 
 func (s *Sweeper) sweepProvider(ctx context.Context, state *sweepState) error {

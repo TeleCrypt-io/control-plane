@@ -28,8 +28,6 @@ type Plan struct {
 	MemberLimit        int    `json:"member_limit"`
 	UsageBytes         int64  `json:"usage_bytes"`
 	SubscriptionStatus string `json:"subscription_status"`
-	PaidSeats          int    `json:"paid_seats"`
-	PendingPaidSeats   *int   `json:"pending_paid_seats"`
 	HasBillingAccount  bool   `json:"has_billing_account"`
 }
 
@@ -63,15 +61,15 @@ func formatStorageBytes(bytes int64) string {
 	}
 }
 
-// Seat is a Matrix account attached to a plan.
-type Seat struct {
+// Member is a Matrix account attached to a team.
+type Member struct {
 	MXID string `json:"mxid"`
 }
 
 // PlanState is all information the Plan renderer needs for one authenticated principal.
 type PlanState struct {
-	Plan  *Plan  `json:"plan"`
-	Seats []Seat `json:"seats"`
+	Plan    *Plan    `json:"plan"`
+	Members []Member `json:"members"`
 }
 
 // BillingLink is a configured public static checkout link for one fixed tier.
@@ -92,8 +90,9 @@ type BillingLink struct {
 // browser retries.
 type CashierClient interface {
 	PlanState(ctx context.Context, principal Principal) (PlanState, error)
-	AttachSeat(ctx context.Context, principal Principal, requestID, mxid string) error
-	// RemoveSeat detaches a target for an owner; when target == principal.MXID,
-	// Cashier applies its member self-leave authorization and lifecycle transition.
-	RemoveSeat(ctx context.Context, principal Principal, requestID, mxid string) error
+	AttachMember(ctx context.Context, principal Principal, requestID, mxid string) error
+	// RemoveMember detaches a target for an owner.
+	RemoveMember(ctx context.Context, principal Principal, requestID, mxid string) error
+	// LeaveMember detaches the authenticated member; Cashier enforces the owner rule.
+	LeaveMember(ctx context.Context, principal Principal, requestID string) error
 }

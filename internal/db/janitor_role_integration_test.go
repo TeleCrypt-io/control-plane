@@ -39,13 +39,27 @@ func TestJanitorDatabaseContractPG17(t *testing.T) {
 		GRANT USAGE ON SCHEMA cashier TO %s;
 		CREATE TABLE cashier.identity_source (singleton BOOLEAN PRIMARY KEY, server_name TEXT NOT NULL, billing_environment TEXT NOT NULL);
 		INSERT INTO cashier.identity_source VALUES (TRUE, 'stage.telecrypt.io', 'test');
-		CREATE VIEW cashier.janitor_lock_exclusions WITH (security_barrier = true) AS SELECT '@paid:stage.telecrypt.io'::TEXT AS mxid;
 		CREATE VIEW cashier.janitor_deployment_identity WITH (security_barrier = true) AS SELECT server_name, billing_environment FROM cashier.identity_source;
+		CREATE VIEW cashier.janitor_lifecycle_actions WITH (security_barrier = true) AS
+			SELECT CAST(NULL AS TEXT) AS mxid, CAST(NULL AS BIGINT) AS revision,
+			       CAST(NULL AS TEXT) AS action, CAST(NULL AS TIMESTAMPTZ) AS due_at,
+			       CAST(NULL AS TEXT) AS desired_user_type WHERE FALSE;
+		CREATE FUNCTION cashier.janitor_sync_account(TEXT, TIMESTAMPTZ) RETURNS VOID LANGUAGE plpgsql AS $$ BEGIN RETURN; END $$;
+		CREATE FUNCTION cashier.janitor_claim_suspension(TEXT, BIGINT) RETURNS TABLE(due_at TIMESTAMPTZ, desired_user_type TEXT) LANGUAGE SQL AS $$ SELECT NULL::TIMESTAMPTZ, NULL::TEXT WHERE FALSE $$;
+		CREATE FUNCTION cashier.janitor_complete_suspension(TEXT, BIGINT) RETURNS TABLE(revision BIGINT, suspended_at TIMESTAMPTZ) LANGUAGE SQL AS $$ SELECT NULL::BIGINT, NULL::TIMESTAMPTZ WHERE FALSE $$;
+		CREATE FUNCTION cashier.janitor_start_removal(TEXT, BIGINT) RETURNS TABLE(revision BIGINT, removal_started_at TIMESTAMPTZ) LANGUAGE SQL AS $$ SELECT NULL::BIGINT, NULL::TIMESTAMPTZ WHERE FALSE $$;
+		CREATE FUNCTION cashier.janitor_finish_removal(TEXT, BIGINT) RETURNS TABLE(revision BIGINT, removed_at TIMESTAMPTZ) LANGUAGE SQL AS $$ SELECT NULL::BIGINT, NULL::TIMESTAMPTZ WHERE FALSE $$;
 		ALTER TABLE cashier.identity_source OWNER TO %s;
-		ALTER VIEW cashier.janitor_lock_exclusions OWNER TO %s;
 		ALTER VIEW cashier.janitor_deployment_identity OWNER TO %s;
-		GRANT SELECT ON cashier.janitor_lock_exclusions, cashier.janitor_deployment_identity TO %s;
-	`, janitorRole, cashierRole, janitorRole, password, cashierRole, password, janitorRole, cashierRole, janitorRole, cashierRole, cashierRole, cashierRole, janitorRole)
+		ALTER VIEW cashier.janitor_lifecycle_actions OWNER TO %s;
+		ALTER FUNCTION cashier.janitor_sync_account(TEXT, TIMESTAMPTZ) OWNER TO %s;
+		ALTER FUNCTION cashier.janitor_claim_suspension(TEXT, BIGINT) OWNER TO %s;
+		ALTER FUNCTION cashier.janitor_complete_suspension(TEXT, BIGINT) OWNER TO %s;
+		ALTER FUNCTION cashier.janitor_start_removal(TEXT, BIGINT) OWNER TO %s;
+		ALTER FUNCTION cashier.janitor_finish_removal(TEXT, BIGINT) OWNER TO %s;
+		GRANT SELECT ON cashier.janitor_deployment_identity, cashier.janitor_lifecycle_actions TO %s;
+		GRANT EXECUTE ON FUNCTION cashier.janitor_sync_account(TEXT, TIMESTAMPTZ), cashier.janitor_claim_suspension(TEXT, BIGINT), cashier.janitor_complete_suspension(TEXT, BIGINT), cashier.janitor_start_removal(TEXT, BIGINT), cashier.janitor_finish_removal(TEXT, BIGINT) TO %s;
+	`, janitorRole, cashierRole, janitorRole, password, cashierRole, password, janitorRole, cashierRole, janitorRole, cashierRole, cashierRole, cashierRole, cashierRole, cashierRole, cashierRole, cashierRole, cashierRole, janitorRole, janitorRole)
 	if _, err := adminPool.Exec(ctx, setup); err != nil {
 		t.Fatalf("prepare view fixture: %v", err)
 	}
@@ -86,9 +100,5 @@ func TestJanitorDatabaseContractPG17(t *testing.T) {
 	store := NewStore(janitorPool)
 	if err := store.VerifyDeploymentIdentity(ctx, "stage.telecrypt.io", "test"); err != nil {
 		t.Fatalf("VerifyDeploymentIdentity: %v", err)
-	}
-	exclusions, err := store.LockExclusions(ctx)
-	if err != nil || len(exclusions) != 1 {
-		t.Fatalf("LockExclusions = %#v, %v", exclusions, err)
 	}
 }

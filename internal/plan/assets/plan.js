@@ -11,7 +11,7 @@ async function command(url, o = {}) {
   return fetch(url, o);
 }
 
-async function addSeat(e) {
+async function addMember(e) {
   e.preventDefault();
   const r = await command("/plan/members/add", {
     method: "POST",
@@ -22,7 +22,7 @@ async function addSeat(e) {
   return false;
 }
 
-async function removeSeat(mxid) {
+async function removeMember(mxid) {
   const r = await command("/plan/members/" + encodeURIComponent(mxid) + "/remove", { method: "POST" });
   if (r.ok) location.reload(); else alert(await r.text());
 }
@@ -32,10 +32,10 @@ async function leaveTeam() {
   if (r.ok) location.reload(); else alert(await r.text());
 }
 
-document.querySelector("#add-seat")?.addEventListener("submit", reportFailure(addSeat));
+document.querySelector("#add-member")?.addEventListener("submit", reportFailure(addMember));
 document.querySelectorAll("[data-leave-team]").forEach((button) => {
   button.addEventListener("click", reportFailure(leaveTeam));
 });
-document.querySelectorAll("[data-remove-seat]").forEach((button) => {
-  button.addEventListener("click", reportFailure(() => removeSeat(button.dataset.mxid)));
+document.querySelectorAll("[data-remove-member]").forEach((button) => {
+	button.addEventListener("click", reportFailure(() => removeMember(button.dataset.mxid)));
 });

@@ -53,9 +53,9 @@ func NewServer(cfg Config, cashier CashierClient) *Server {
 	s.mux.HandleFunc("GET /plan/assets/plan.js", s.handlePlanJS)
 	s.mux.HandleFunc("GET /plan/login", s.handleLogin)
 	s.mux.HandleFunc("GET /plan/callback", s.handleCallback)
-	s.mux.Handle("POST /plan/members/add", s.requireBrowserSession(http.HandlerFunc(s.handleAddSeat)))
+	s.mux.Handle("POST /plan/members/add", s.requireBrowserSession(http.HandlerFunc(s.handleAddMember)))
 	s.mux.Handle("POST /plan/members/leave", s.requireBrowserSession(http.HandlerFunc(s.handleLeaveTeam)))
-	s.mux.Handle("POST /plan/members/{mxid}/remove", s.requireBrowserSession(http.HandlerFunc(s.handleDeleteSeat)))
+	s.mux.Handle("POST /plan/members/{mxid}/remove", s.requireBrowserSession(http.HandlerFunc(s.handleRemoveMember)))
 	s.mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
@@ -119,7 +119,7 @@ func (s *Server) handlePlan(w http.ResponseWriter, r *http.Request) {
 		TestMode:         s.cfg.BillingEnvironment == "test",
 		MXID:             mxid,
 		RegisterURL:      strings.TrimRight(s.cfg.BackendPublicURL, "/") + "/register",
-		BillingLinks:     s.cfg.BillingLinks,
+		BillingLinks:     billingLinksForPrincipal(s.cfg.BillingLinks, mxid),
 		BillingPortalURL: s.cfg.BillingPortalURL,
 	}
 	if data.LoggedIn {
@@ -135,7 +135,7 @@ func (s *Server) handlePlan(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "Plan is temporarily unavailable", http.StatusServiceUnavailable)
 			return
 		}
-		data.Plan, data.Seats = state.Plan, state.Seats
+		data.Plan, data.Members = state.Plan, state.Members
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := planTmpl.Execute(w, data); err != nil {
@@ -328,7 +328,7 @@ func commandUnavailable(w http.ResponseWriter) {
 	http.Error(w, "Plan is temporarily unavailable", http.StatusServiceUnavailable)
 }
 
-type seatRequest struct {
+type memberRequest struct {
 	MXID string `json:"mxid"`
 }
 
@@ -347,24 +347,24 @@ func validateLocalMXID(mxid, serverName string) bool {
 	parts := strings.SplitN(strings.TrimPrefix(mxid, "@"), ":", 2)
 	return len(parts) == 2 && parts[1] == serverName && validateLocalpart(parts[0])
 }
-func (s *Server) handleAddSeat(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleAddMember(w http.ResponseWriter, r *http.Request) {
 	client, p, id, ok := s.command(r)
 	if !ok {
 		commandUnavailable(w)
 		return
 	}
-	var req seatRequest
+	var req memberRequest
 	if err := decodePlanJSON(w, r, &req); err != nil || !validateLocalMXID(req.MXID, s.cfg.ServerName) {
 		http.Error(w, "invalid request", http.StatusBadRequest)
 		return
 	}
-	if err := client.AttachSeat(r.Context(), p, id, req.MXID); err != nil {
-		writeCashierActionError(w, err, "could not attach seat")
+	if err := client.AttachMember(r.Context(), p, id, req.MXID); err != nil {
+		writeCashierActionError(w, err, "could not attach member")
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
-func (s *Server) handleDeleteSeat(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleRemoveMember(w http.ResponseWriter, r *http.Request) {
 	client, p, id, ok := s.command(r)
 	if !ok {
 		commandUnavailable(w)
@@ -375,41 +375,22 @@ func (s *Server) handleDeleteSeat(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid request", http.StatusBadRequest)
 		return
 	}
-	if err := client.RemoveSeat(r.Context(), p, id, mxid); err != nil {
-		writeCashierActionError(w, err, "could not remove seat")
+	if err := client.RemoveMember(r.Context(), p, id, mxid); err != nil {
+		writeCashierActionError(w, err, "could not remove member")
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// handleLeaveTeam lets an attached member request removal of their own membership. The
-// membership check is performed through Cashier's signed PlanState view before the mutation;
-// Plan has no database or membership lookup of its own. Cashier remains responsible for
-// enforcing the billing owner's cannot-leave rule and applying the entitlement transition.
+// handleLeaveTeam lets an attached member request removal of their own membership. Cashier
+// verifies membership, enforces the billing-owner rule, and applies the lifecycle transition.
 func (s *Server) handleLeaveTeam(w http.ResponseWriter, r *http.Request) {
 	client, p, id, ok := s.command(r)
 	if !ok {
 		commandUnavailable(w)
 		return
 	}
-	state, err := client.PlanState(r.Context(), p)
-	if err != nil {
-		logPlanFailure("load Cashier membership for leave", err)
-		http.Error(w, "could not verify team membership", http.StatusBadGateway)
-		return
-	}
-	found := false
-	for _, seat := range state.Seats {
-		if seat.MXID == p.MXID {
-			found = true
-			break
-		}
-	}
-	if !found {
-		http.Error(w, "you are not a member of a paid team", http.StatusConflict)
-		return
-	}
-	if err := client.RemoveSeat(r.Context(), p, id, p.MXID); err != nil {
+	if err := client.LeaveMember(r.Context(), p, id); err != nil {
 		writeCashierActionError(w, err, "could not leave team")
 		return
 	}
@@ -448,7 +429,28 @@ type pageData struct {
 	LoggedIn, TestMode bool
 	MXID, RegisterURL  string
 	Plan               *Plan
-	Seats              []Seat
+	Members            []Member
 	BillingLinks       []BillingLink
 	BillingPortalURL   string
+}
+
+// billingLinksForPrincipal keeps checkout links static while carrying the
+// authenticated sponsor identity as Dodo metadata. Cashier learns ownership
+// only from the signed webhook that returns that metadata.
+func billingLinksForPrincipal(links []BillingLink, mxid string) []BillingLink {
+	result := append([]BillingLink(nil), links...)
+	if mxid == "" {
+		return result
+	}
+	for i := range result {
+		parsed, err := url.Parse(result[i].URL)
+		if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+			continue
+		}
+		query := parsed.Query()
+		query.Set("metadata_owner_mxid", mxid)
+		parsed.RawQuery = query.Encode()
+		result[i].URL = parsed.String()
+	}
+	return result
 }

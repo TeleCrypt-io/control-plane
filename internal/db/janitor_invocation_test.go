@@ -112,8 +112,6 @@ func TestJanitorInvocationLockTwoProcessesBlocksAllPostLockWork(t *testing.T) {
 		VALUES (TRUE, 'telecrypt.io', 'live');
 		CREATE VIEW cashier.janitor_deployment_identity AS
 			SELECT server_name, billing_environment FROM cashier.identity_source;
-		CREATE VIEW cashier.janitor_lock_exclusions AS
-			SELECT CAST(NULL AS TEXT) AS mxid WHERE FALSE;
 	`); err != nil {
 		t.Fatalf("prepare single-flight database: %v", err)
 	}

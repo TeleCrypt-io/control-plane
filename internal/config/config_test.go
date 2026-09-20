@@ -24,17 +24,17 @@ func testPlanPrivateKey() string {
 func setRequiredPlanEnv(t *testing.T) {
 	t.Helper()
 	for key, value := range map[string]string{
-		"SERVER_NAME":                      "example.invalid",
-		"BILLING_ENVIRONMENT":              "test",
-		"MAS_OIDC_CLIENT_ID":               testPlanClientID,
-		"MAS_OIDC_CLIENT_SECRET":           "test-secret",
-		"PLAN_SESSION_KEY":                 strings.Repeat("s", 32),
-		"PLAN_ASSERTION_PRIVATE_KEY":       testPlanPrivateKey(),
-		"PLAN_CHECKOUT_LINK_TEAM":          "https://checkout.example.invalid/team",
-		"PLAN_CHECKOUT_LINK_BUSINESS":      "https://checkout.example.invalid/business",
-		"PLAN_CHECKOUT_LINK_BUSINESS_PLUS": "https://checkout.example.invalid/business-plus",
-		"PLAN_CHECKOUT_LINK_MAX":           "https://checkout.example.invalid/max",
-		"PLAN_BILLING_PORTAL_URL":          "https://portal.example.invalid/login",
+		"SERVER_NAME":                "example.invalid",
+		"BILLING_ENVIRONMENT":        "test",
+		"MAS_OIDC_CLIENT_ID":         testPlanClientID,
+		"MAS_OIDC_CLIENT_SECRET":     "test-secret",
+		"PLAN_SESSION_KEY":           strings.Repeat("s", 32),
+		"PLAN_ASSERTION_PRIVATE_KEY": testPlanPrivateKey(),
+		"PLAN_BILLING_LINK_1":        "https://checkout.example.invalid/tier-1",
+		"PLAN_BILLING_LINK_2":        "https://checkout.example.invalid/tier-2",
+		"PLAN_BILLING_LINK_3":        "https://checkout.example.invalid/tier-3",
+		"PLAN_BILLING_LINK_4":        "https://checkout.example.invalid/tier-4",
+		"PLAN_BILLING_PORTAL_URL":    "https://portal.example.invalid/login",
 	} {
 		t.Setenv(key, value)
 	}
@@ -90,7 +90,7 @@ func TestLoadPlanDerivesPublicURLsFromServerName(t *testing.T) {
 	if got, want := cfg.CashierInternalURL, "http://127.0.0.1:9011"; got != want {
 		t.Fatalf("CashierInternalURL = %q, want %q", got, want)
 	}
-	if cfg.CheckoutLinkTeam == "" || cfg.CheckoutLinkBusiness == "" || cfg.CheckoutLinkBusinessPlus == "" || cfg.CheckoutLinkMax == "" || cfg.BillingPortalURL == "" {
+	if cfg.BillingLink1 == "" || cfg.BillingLink2 == "" || cfg.BillingLink3 == "" || cfg.BillingLink4 == "" || cfg.BillingPortalURL == "" {
 		t.Fatalf("Plan billing links were not loaded: %#v", cfg)
 	}
 }
@@ -143,8 +143,8 @@ func TestLoadPlanRequiresHTTPSBillingLinks(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			setRequiredPlanEnv(t)
-			t.Setenv("PLAN_CHECKOUT_LINK_TEAM", tc.value)
-			if _, err := LoadPlan(); err == nil || !strings.Contains(err.Error(), "PLAN_CHECKOUT_LINK_TEAM") {
+			t.Setenv("PLAN_BILLING_LINK_1", tc.value)
+			if _, err := LoadPlan(); err == nil || !strings.Contains(err.Error(), "PLAN_BILLING_LINK_1") {
 				t.Fatalf("LoadPlan error = %v, want unsafe link rejection", err)
 			}
 		})

@@ -91,8 +91,9 @@ func ValidateJanitorSchemaACL(ctx context.Context, pool *pgxpool.Pool) error {
 	return validateJanitorRelationOwnershipAndACL(ctx, pool)
 }
 
-// ValidateJanitorDatabaseContract verifies Janitor's private tables and exactly two Cashier
-// owner-rights views. Cashier base tables are never granted to or queried by this role.
+// ValidateJanitorDatabaseContract verifies Janitor's private tables and the narrow Cashier
+// views/functions used for lifecycle execution. Cashier base tables are never granted to or
+// queried by this role.
 func ValidateJanitorDatabaseContract(ctx context.Context, pool *pgxpool.Pool) error {
 	var cashierOwner string
 	if err := pool.QueryRow(ctx, `SELECT r.rolname FROM pg_catalog.pg_namespace n JOIN pg_catalog.pg_roles r ON r.oid = n.nspowner WHERE n.nspname = 'cashier'`).Scan(&cashierOwner); err != nil {
@@ -105,10 +106,15 @@ func ValidateJanitorDatabaseContract(ctx context.Context, pool *pgxpool.Pool) er
 	 WHEN to_regclass('janitor.run_events') IS NULL THEN 'run_events is missing'
 	 WHEN EXISTS (SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname='janitor' AND c.relname IN ('schema_migrations','janitor_digest_cursor','run_events') AND c.relkind <> 'r') THEN 'Janitor state relation has wrong kind'
 	 WHEN EXISTS (SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace JOIN pg_roles r ON r.oid=c.relowner WHERE n.nspname='janitor' AND c.relname IN ('schema_migrations','janitor_digest_cursor','run_events') AND r.rolname <> current_user) THEN 'Janitor state relation has wrong owner'
-	 WHEN NOT EXISTS (SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace JOIN pg_roles r ON r.oid=c.relowner WHERE n.nspname='cashier' AND c.relname='janitor_lock_exclusions' AND c.relkind='v' AND r.rolname=$1) THEN 'janitor_lock_exclusions view is missing or has wrong owner'
 	 WHEN NOT EXISTS (SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace JOIN pg_roles r ON r.oid=c.relowner WHERE n.nspname='cashier' AND c.relname='janitor_deployment_identity' AND c.relkind='v' AND r.rolname=$1) THEN 'janitor_deployment_identity view is missing or has wrong owner'
-	 WHEN NOT has_table_privilege(current_user, 'cashier.janitor_lock_exclusions', 'SELECT') THEN 'janitor_lock_exclusions is not readable'
+	 WHEN NOT EXISTS (SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace JOIN pg_roles r ON r.oid=c.relowner WHERE n.nspname='cashier' AND c.relname='janitor_lifecycle_actions' AND c.relkind='v' AND r.rolname=$1) THEN 'janitor_lifecycle_actions view is missing or has wrong owner'
 	 WHEN NOT has_table_privilege(current_user, 'cashier.janitor_deployment_identity', 'SELECT') THEN 'janitor_deployment_identity is not readable'
+	 WHEN NOT has_table_privilege(current_user, 'cashier.janitor_lifecycle_actions', 'SELECT') THEN 'janitor_lifecycle_actions is not readable'
+	 WHEN NOT has_function_privilege(current_user, 'cashier.janitor_sync_account(text,timestamptz)', 'EXECUTE') THEN 'janitor_sync_account is not executable'
+	 WHEN NOT has_function_privilege(current_user, 'cashier.janitor_claim_suspension(text,bigint)', 'EXECUTE') THEN 'janitor_claim_suspension is not executable'
+	 WHEN NOT has_function_privilege(current_user, 'cashier.janitor_complete_suspension(text,bigint)', 'EXECUTE') THEN 'janitor_complete_suspension is not executable'
+	 WHEN NOT has_function_privilege(current_user, 'cashier.janitor_start_removal(text,bigint)', 'EXECUTE') THEN 'janitor_start_removal is not executable'
+	 WHEN NOT has_function_privilege(current_user, 'cashier.janitor_finish_removal(text,bigint)', 'EXECUTE') THEN 'janitor_finish_removal is not executable'
 	 ELSE NULL END, '')`, cashierOwner).Scan(&problem)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return fmt.Errorf("validate Janitor database contract: %w", err)
@@ -152,9 +158,9 @@ func validateJanitorCashierACL(ctx context.Context, pool *pgxpool.Pool, expected
 	 WHEN NOT has_schema_privilege(current_user,'cashier','USAGE') THEN 'Janitor cannot use Cashier schema'
 	 WHEN has_schema_privilege(current_user,'cashier','CREATE') THEN 'Janitor has Cashier schema CREATE'
 	 WHEN EXISTS (SELECT 1 FROM pg_namespace n CROSS JOIN LATERAL aclexplode(COALESCE(n.nspacl,acldefault('n',n.nspowner))) acl CROSS JOIN role_ids WHERE n.nspname='cashier' AND role_ids.janitor_oid <> role_ids.cashier_oid AND acl.grantee=role_ids.janitor_oid AND (acl.privilege_type <> 'USAGE' OR acl.is_grantable)) THEN 'Cashier schema grants Janitor more than non-grantable USAGE'
-	 WHEN EXISTS (SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace CROSS JOIN LATERAL aclexplode(COALESCE(c.relacl,acldefault('r',c.relowner))) acl CROSS JOIN role_ids WHERE n.nspname='cashier' AND c.relkind NOT IN ('i','I') AND (acl.grantee NOT IN (c.relowner,role_ids.janitor_oid) OR (c.relname NOT IN ('janitor_lock_exclusions','janitor_deployment_identity') AND acl.grantee=role_ids.janitor_oid) OR (c.relname IN ('janitor_lock_exclusions','janitor_deployment_identity') AND acl.grantee=role_ids.janitor_oid AND (acl.privilege_type <> 'SELECT' OR acl.is_grantable)))) THEN 'Cashier relation has PUBLIC, other-role, or unexpected Janitor ACLs'
+	 WHEN EXISTS (SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace CROSS JOIN LATERAL aclexplode(COALESCE(c.relacl,acldefault('r',c.relowner))) acl CROSS JOIN role_ids WHERE n.nspname='cashier' AND c.relkind NOT IN ('i','I') AND (acl.grantee NOT IN (c.relowner,role_ids.janitor_oid) OR (c.relname NOT IN ('janitor_deployment_identity','janitor_lifecycle_actions') AND acl.grantee=role_ids.janitor_oid) OR (c.relname IN ('janitor_deployment_identity','janitor_lifecycle_actions') AND acl.grantee=role_ids.janitor_oid AND (acl.privilege_type <> 'SELECT' OR acl.is_grantable)))) THEN 'Cashier relation has PUBLIC, other-role, or unexpected Janitor ACLs'
 	 WHEN EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace JOIN role_ids ON TRUE WHERE n.nspname='cashier' AND p.proowner <> role_ids.cashier_oid) THEN 'Cashier routine has the wrong owner'
-	 WHEN EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace CROSS JOIN LATERAL aclexplode(COALESCE(p.proacl,acldefault('f',p.proowner))) acl CROSS JOIN role_ids WHERE n.nspname='cashier' AND acl.grantee <> role_ids.cashier_oid) THEN 'Cashier routine has PUBLIC or other-role ACLs'
+	 WHEN EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace CROSS JOIN LATERAL aclexplode(COALESCE(p.proacl,acldefault('f',p.proowner))) acl CROSS JOIN role_ids WHERE n.nspname='cashier' AND (acl.grantee NOT IN (role_ids.cashier_oid,role_ids.janitor_oid) OR (acl.grantee = role_ids.janitor_oid AND (p.proname NOT IN ('janitor_sync_account','janitor_claim_suspension','janitor_complete_suspension','janitor_start_removal','janitor_finish_removal') OR acl.privilege_type <> 'EXECUTE' OR acl.is_grantable)))) THEN 'Cashier routine has PUBLIC or other-role ACLs'
 	 WHEN EXISTS (SELECT 1 FROM pg_default_acl d JOIN pg_namespace n ON n.oid=d.defaclnamespace CROSS JOIN LATERAL aclexplode(d.defaclacl) acl CROSS JOIN role_ids WHERE n.nspname='cashier' AND (d.defaclrole <> role_ids.cashier_oid OR acl.grantee <> role_ids.cashier_oid)) THEN 'Cashier default privileges are not owner-only'
 	 ELSE NULL END, '')`, expectedCashierOwner).Scan(&problem)
 	if err != nil {
@@ -170,7 +176,7 @@ func validateJanitorCashierViewColumns(ctx context.Context, pool *pgxpool.Pool) 
 	checks := []struct {
 		name    string
 		columns []string
-	}{{"janitor_lock_exclusions", []string{"mxid"}}, {"janitor_deployment_identity", []string{"server_name", "billing_environment"}}}
+	}{{"janitor_deployment_identity", []string{"server_name", "billing_environment"}}, {"janitor_lifecycle_actions", []string{"mxid", "revision", "action", "due_at", "desired_user_type"}}}
 	for _, check := range checks {
 		var options []string
 		if err := pool.QueryRow(ctx, `SELECT COALESCE(reloptions, ARRAY[]::text[]) FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='cashier' AND c.relname=$1 AND c.relkind='v'`, check.name).Scan(&options); err != nil {

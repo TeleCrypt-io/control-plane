@@ -68,14 +68,14 @@ func NewHTTPCashierClient(baseURL, encodedPrivateKey string, httpClient *http.Cl
 
 func (c *HTTPCashierClient) PlanState(ctx context.Context, principal Principal) (PlanState, error) {
 	var response struct {
-		Plan  *Plan  `json:"plan"`
-		Seats []Seat `json:"seats"`
+		Plan    *Plan    `json:"plan"`
+		Members []Member `json:"members"`
 	}
 	err := c.do(ctx, principal, http.MethodGet, "/internal/cashier/plan/state", uuid.NewString(), nil, &response, http.StatusOK)
-	return PlanState{Plan: response.Plan, Seats: response.Seats}, err
+	return PlanState{Plan: response.Plan, Members: response.Members}, err
 }
 
-func (c *HTTPCashierClient) AttachSeat(ctx context.Context, p Principal, requestID, mxid string) error {
+func (c *HTTPCashierClient) AttachMember(ctx context.Context, p Principal, requestID, mxid string) error {
 	body, err := json.Marshal(struct {
 		MXID string `json:"mxid"`
 	}{MXID: mxid})
@@ -85,11 +85,15 @@ func (c *HTTPCashierClient) AttachSeat(ctx context.Context, p Principal, request
 	return c.do(ctx, p, http.MethodPost, "/internal/cashier/team/members/add", requestID, body, nil, http.StatusNoContent)
 }
 
-func (c *HTTPCashierClient) RemoveSeat(ctx context.Context, p Principal, requestID, mxid string) error {
+func (c *HTTPCashierClient) RemoveMember(ctx context.Context, p Principal, requestID, mxid string) error {
 	// Keep the slash escaped on the wire so it remains part of the {mxid} value. Cashier
 	// authenticates against r.URL.EscapedPath(), so sign the exact canonical path sent on the wire.
 	requestPath := "/internal/cashier/team/members/" + url.PathEscape(mxid) + "/remove"
 	return c.do(ctx, p, http.MethodPost, requestPath, requestID, nil, nil, http.StatusNoContent)
+}
+
+func (c *HTTPCashierClient) LeaveMember(ctx context.Context, p Principal, requestID string) error {
+	return c.do(ctx, p, http.MethodPost, "/internal/cashier/team/members/leave", requestID, nil, nil, http.StatusNoContent)
 }
 
 func (c *HTTPCashierClient) do(ctx context.Context, principal Principal, method, path, requestID string, body []byte, result any, expectedStatuses ...int) (resultErr error) {

@@ -62,7 +62,7 @@
               {{if gt .Plan.MemberLimit 0}}<div><dt>Member limit</dt><dd>{{.Plan.MemberLimit}}</dd></div>{{end}}
               {{if .Plan.StorageBytes}}<div><dt>Storage</dt><dd>{{.Plan.StorageAllowance}}</dd></div>{{end}}
               {{if .Plan.StorageBytes}}<div><dt>Storage used</dt><dd>{{.Plan.StorageUsage}} of {{.Plan.StorageAllowance}}</dd></div>{{end}}
-              <div><dt>Members</dt><dd>{{len .Seats}}{{if gt .Plan.MemberLimit 0}} of {{.Plan.MemberLimit}}{{end}}</dd></div>
+              <div><dt>Members</dt><dd>{{len .Members}}{{if gt .Plan.MemberLimit 0}} of {{.Plan.MemberLimit}}{{end}}</dd></div>
             </dl>
             <div class="card-actions billing-links">
               <p>Choose a fixed plan:</p>
@@ -71,31 +71,31 @@
             </div>
           </section>
 
-          <section class="card tc-surface seats-card" aria-labelledby="seats-title">
+          <section class="card tc-surface members-card" aria-labelledby="members-title">
             <div class="card-heading">
               <div>
                 <p class="eyebrow">ACCESS</p>
-                <h2 id="seats-title">Seats</h2>
+                <h2 id="members-title">Members</h2>
               </div>
-              <span class="seat-count">{{len .Seats}} attached</span>
+              <span class="member-count">{{len .Members}} attached</span>
             </div>
-            <ul class="seat-list">
-              {{range .Seats}}
+            <ul class="member-list">
+              {{range .Members}}
               <li>
                 <span>{{.MXID}}</span>
                 <div class="actions">
-                {{if eq .MXID $.MXID}}<button class="btn btn-danger btn-sm" type="button" data-leave-team>Leave team</button>{{else}}<button class="btn btn-danger btn-sm" type="button" data-remove-seat data-mxid="{{.MXID}}">Remove</button>{{end}}
+                {{if eq .MXID $.MXID}}<button class="btn btn-danger btn-sm" type="button" data-leave-team>Leave team</button>{{else}}<button class="btn btn-danger btn-sm" type="button" data-remove-member data-mxid="{{.MXID}}">Remove</button>{{end}}
                 </div>
               </li>
               {{else}}
-              <li class="empty-state">No seats attached yet.</li>
+              <li class="empty-state">No members attached yet.</li>
               {{end}}
             </ul>
-            <form id="add-seat" class="add-seat">
-              <label for="seat-mxid">Add a Matrix ID</label>
+            <form id="add-member" class="add-member">
+              <label for="member-mxid">Add a Matrix ID</label>
               <div>
-                <input class="tc-field" id="seat-mxid" name="mxid" placeholder="@name:server" required>
-                <button class="btn" type="submit">Attach seat</button>
+                <input class="tc-field" id="member-mxid" name="mxid" placeholder="@name:server" required>
+                <button class="btn" type="submit">Attach member</button>
               </div>
             </form>
           </section>

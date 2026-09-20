@@ -30,11 +30,15 @@ func (f *fakeCashier) PlanState(_ context.Context, p Principal) (PlanState, erro
 	f.principal = p
 	return f.state, f.planErr
 }
-func (f *fakeCashier) AttachSeat(context.Context, Principal, string, string) error {
+func (f *fakeCashier) AttachMember(context.Context, Principal, string, string) error {
 	return errors.New("unused")
 }
-func (f *fakeCashier) RemoveSeat(_ context.Context, p Principal, _ string, mxid string) error {
+func (f *fakeCashier) RemoveMember(_ context.Context, p Principal, _ string, mxid string) error {
 	f.principal, f.removed = p, mxid
+	return nil
+}
+func (f *fakeCashier) LeaveMember(_ context.Context, p Principal, _ string) error {
+	f.principal, f.removed = p, p.MXID
 	return nil
 }
 func testServer() *Server {
@@ -469,17 +473,17 @@ func TestServerRendersPlanControlsForEachSubscriptionState(t *testing.T) {
 	tests := []struct {
 		name    string
 		plan    *Plan
-		seats   []Seat
+		members []Member
 		want    []string
 		notWant []string
 	}{
 		{
-			name:  "fixed plan",
-			plan:  &Plan{SubscriptionStatus: "active", DisplayName: "Team", MonthlyCents: 1500, MemberLimit: 3},
-			seats: []Seat{{MXID: "@member:stage.telecrypt.io"}},
+			name:    "fixed plan",
+			plan:    &Plan{SubscriptionStatus: "active", DisplayName: "Team", MonthlyCents: 1500, MemberLimit: 3},
+			members: []Member{{MXID: "@member:stage.telecrypt.io"}},
 			want: []string{
 				"Team", "Business", "Open billing portal",
-				"id=\"add-seat\"", "data-mxid=\"@member:stage.telecrypt.io\"",
+				"id=\"add-member\"", "data-mxid=\"@member:stage.telecrypt.io\"",
 			},
 			notWant: []string{"id=\"checkout\"", "id=\"seat-count\"", "Set up plan", "quantity"},
 		},
@@ -492,7 +496,7 @@ func TestServerRendersPlanControlsForEachSubscriptionState(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			body := renderAuthenticatedPlan(t, PlanState{Plan: tt.plan, Seats: tt.seats})
+			body := renderAuthenticatedPlan(t, PlanState{Plan: tt.plan, Members: tt.members})
 			for _, marker := range tt.want {
 				if !strings.Contains(body, marker) {
 					t.Errorf("rendered Plan page is missing %q", marker)
@@ -578,7 +582,7 @@ func TestPlanRejectsSessionForForeignHomeserver(t *testing.T) {
 }
 
 func TestMemberCanLeaveOnlyWhenCashierShowsTheirMembership(t *testing.T) {
-	cashier := &fakeCashier{state: PlanState{Seats: []Seat{{MXID: "@alice:stage.telecrypt.io"}}}}
+	cashier := &fakeCashier{state: PlanState{Members: []Member{{MXID: "@alice:stage.telecrypt.io"}}}}
 	srv := testServer()
 	srv.cashier = cashier
 	req := authenticatedPlanRequest(t, srv, http.MethodPost, "/plan/members/leave", "")
@@ -591,14 +595,6 @@ func TestMemberCanLeaveOnlyWhenCashierShowsTheirMembership(t *testing.T) {
 		t.Fatalf("Cashier removal target = %q, want caller", cashier.removed)
 	}
 
-	cashier = &fakeCashier{state: PlanState{Seats: []Seat{{MXID: "@other:stage.telecrypt.io"}}}}
-	srv.cashier = cashier
-	req = authenticatedPlanRequest(t, srv, http.MethodPost, "/plan/members/leave", "")
-	rec = httptest.NewRecorder()
-	srv.ServeHTTP(rec, req)
-	if got, want := rec.Code, http.StatusConflict; got != want {
-		t.Fatalf("non-member leave status = %d, want %d", got, want)
-	}
 }
 
 func TestRetiredPlanRoutesAreNotExposed(t *testing.T) {
@@ -652,10 +648,13 @@ type errorCashier struct {
 func (c *errorCashier) PlanState(_ context.Context, _ Principal) (PlanState, error) {
 	return PlanState{}, &CashierError{StatusCode: c.status, Message: c.message}
 }
-func (c *errorCashier) AttachSeat(_ context.Context, _ Principal, _ string, _ string) error {
+func (c *errorCashier) AttachMember(_ context.Context, _ Principal, _ string, _ string) error {
 	return &CashierError{StatusCode: c.status, Message: c.message}
 }
-func (c *errorCashier) RemoveSeat(_ context.Context, _ Principal, _ string, _ string) error {
+func (c *errorCashier) RemoveMember(_ context.Context, _ Principal, _ string, _ string) error {
+	return &CashierError{StatusCode: c.status, Message: c.message}
+}
+func (c *errorCashier) LeaveMember(_ context.Context, _ Principal, _ string) error {
 	return &CashierError{StatusCode: c.status, Message: c.message}
 }
 

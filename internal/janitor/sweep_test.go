@@ -2,7 +2,6 @@ package janitor
 
 import (
 	"context"
-	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -14,7 +13,6 @@ import (
 type fakeMAS struct {
 	users      []masadmin.User
 	emails     []masadmin.UserEmail
-	getCalls   int
 	emailCalls int
 }
 
@@ -23,26 +21,10 @@ func (f *fakeMAS) ListUserEmails(context.Context) ([]masadmin.UserEmail, error) 
 	f.emailCalls++
 	return f.emails, nil
 }
-func (f *fakeMAS) GetUser(_ context.Context, id string) (masadmin.User, error) {
-	f.getCalls++
-	for _, user := range f.users {
-		if user.ID == id {
-			return user, nil
-		}
-	}
-	return masadmin.User{}, errors.New("missing user")
-}
-func (f *fakeMAS) HasUserEmail(_ context.Context, id string) (bool, error) {
-	for _, email := range f.emails {
-		if email.UserID == id {
-			return true, nil
-		}
-	}
-	return false, nil
-}
 
 type fakeSynapse struct {
 	suspended []string
+	userTypes map[string]string
 }
 
 func (f *fakeSynapse) SuspendUser(_ context.Context, mxid string, suspended bool) error {
@@ -51,18 +33,55 @@ func (f *fakeSynapse) SuspendUser(_ context.Context, mxid string, suspended bool
 	}
 	return nil
 }
+func (f *fakeSynapse) SetUserType(_ context.Context, mxid, userType string) error {
+	if f.userTypes == nil {
+		f.userTypes = make(map[string]string)
+	}
+	f.userTypes[mxid] = userType
+	return nil
+}
+func (f *fakeSynapse) ReadUserType(_ context.Context, mxid string) (*string, error) {
+	value := f.userTypes[mxid]
+	return &value, nil
+}
 
 type fakeStore struct {
-	events []db.RunEvent
+	events   []db.RunEvent
+	actions  []db.LifecycleAction
+	schedule map[string]bool
 }
 
 func (f *fakeStore) VerifyDeploymentIdentity(context.Context, string, string) error { return nil }
-func (f *fakeStore) LockExclusions(context.Context) (map[string]struct{}, error) {
-	return map[string]struct{}{}, nil
+func (f *fakeStore) SyncLifecycleAccount(_ context.Context, mxid string, createdAt time.Time) error {
+	if f.schedule != nil && f.schedule[mxid] {
+		f.actions = append(f.actions, db.LifecycleAction{MXID: mxid, Revision: 1, Action: "suspend", DueAt: createdAt.Add(48 * time.Hour), DesiredUserType: stringPtr("wild")})
+	}
+	return nil
 }
+func (f *fakeStore) LifecycleActions(context.Context) ([]db.LifecycleAction, error) {
+	return append([]db.LifecycleAction(nil), f.actions...), nil
+}
+func (f *fakeStore) ExecuteSuspension(ctx context.Context, mxid string, revision int64, apply func(context.Context, string) error) (bool, error) {
+	for i, action := range f.actions {
+		if action.MXID == mxid && action.Revision == revision && action.Action == "suspend" {
+			if err := apply(ctx, "wild"); err != nil {
+				return false, err
+			}
+			f.actions = append(f.actions[:i], f.actions[i+1:]...)
+			return true, nil
+		}
+	}
+	return false, nil
+}
+func (f *fakeStore) StartRemoval(context.Context, string, int64) (bool, int64, error) {
+	return false, 0, nil
+}
+func (f *fakeStore) FinishRemoval(context.Context, string, int64) (bool, error) { return false, nil }
 func (f *fakeStore) JanitorDigestCursor(context.Context) (db.DigestCursor, bool, error) {
 	return db.DigestCursor{}, false, nil
 }
+
+func stringPtr(value string) *string                                               { return &value }
 func (f *fakeStore) SetJanitorDigestCursor(context.Context, db.DigestCursor) error { return nil }
 func (f *fakeStore) InsertRunEvent(_ context.Context, event db.RunEvent) error {
 	f.events = append(f.events, event)
@@ -97,7 +116,7 @@ func testConfig() Config {
 func TestSweepSuspendsInitialFreeAccountThroughSynapse(t *testing.T) {
 	mas := &fakeMAS{users: []masadmin.User{oldUser("free")}}
 	synapse := &fakeSynapse{}
-	store := &fakeStore{}
+	store := &fakeStore{schedule: map[string]bool{"@free:stage.telecrypt.io": true}}
 	sweeper := NewLifecycleSweeper(mas, synapse, store, &fakeMailer{}, nil, testConfig())
 	if err := sweeper.Sweep(context.Background()); err != nil {
 		t.Fatalf("Sweep: %v", err)
@@ -116,7 +135,6 @@ func TestSweepSkipsEmailAndExistingOperatorLock(t *testing.T) {
 		{ID: "01J00000000000000000000001", Username: "email", CreatedAt: now},
 		{ID: "01J00000000000000000000002", Username: "operator", CreatedAt: now, LockedAt: &now},
 	}}
-	mas.emails = []masadmin.UserEmail{{ID: "01J00000000000000000000003", UserID: mas.users[0].ID, CreatedAt: time.Now()}}
 	synapse := &fakeSynapse{}
 	if err := NewLifecycleSweeper(mas, synapse, &fakeStore{}, &fakeMailer{}, nil, testConfig()).Sweep(context.Background()); err != nil {
 		t.Fatalf("Sweep: %v", err)
@@ -140,7 +158,8 @@ func TestSweepProviderReconciliationIsReadOnlyAndEmailOnly(t *testing.T) {
 func TestSweepDoesNotRequireProviderForLifecycle(t *testing.T) {
 	mas := &fakeMAS{users: []masadmin.User{oldUser("free")}}
 	synapse := &fakeSynapse{}
-	if err := NewLifecycleSweeper(mas, synapse, &fakeStore{}, &fakeMailer{}, nil, testConfig()).Sweep(context.Background()); err != nil {
+	store := &fakeStore{schedule: map[string]bool{"@free:stage.telecrypt.io": true}}
+	if err := NewLifecycleSweeper(mas, synapse, store, &fakeMailer{}, nil, testConfig()).Sweep(context.Background()); err != nil {
 		t.Fatalf("Sweep: %v", err)
 	}
 	if len(synapse.suspended) != 1 {
