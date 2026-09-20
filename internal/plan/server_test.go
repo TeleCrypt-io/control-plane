@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"github.com/TeleCrypt-io/controlplane/internal/masadmin"
 	"io"
 	"log/slog"
 	"net/http"
@@ -61,7 +60,7 @@ func testServer() *Server {
 		MASClientID:        "plan",
 		MASClientSecret:    "test-secret",
 		PlanSessionKey:     "test-session-key",
-	}, nil, nil)
+	}, nil)
 }
 
 func TestServerUsesPlanCallbackOutsideOverviewURL(t *testing.T) {
@@ -527,6 +526,21 @@ func TestServerRendersPlanControlsForEachSubscriptionState(t *testing.T) {
 	}
 }
 
+func TestServerRendersStablePlanStateAndLimits(t *testing.T) {
+	body := renderAuthenticatedPlan(t, PlanState{Plan: &Plan{
+		DisplayName:  "Team",
+		MonthlyCents: 2500,
+		StorageBytes: 5_000_000_000,
+		UsageBytes:   1_000_000_000,
+		MemberLimit:  3,
+	}})
+	for _, marker := range []string{"Team", "€25.00/month", "5 GB", "1 GB of 5 GB", "Member limit"} {
+		if !strings.Contains(body, marker) {
+			t.Errorf("rendered Plan page is missing %q", marker)
+		}
+	}
+}
+
 func renderAuthenticatedPlan(t *testing.T, state PlanState) string {
 	t.Helper()
 	srv := testServer()
@@ -553,8 +567,6 @@ func TestPlanCommandsRequireAuthenticatedBrowserSession(t *testing.T) {
 		{http.MethodPost, "/plan/create"},
 		{http.MethodPost, "/plan/members/add"},
 		{http.MethodPost, "/plan/members/@member:stage.telecrypt.io/remove"},
-		{http.MethodPost, "/plan/members/@member:stage.telecrypt.io/lock"},
-		{http.MethodPost, "/plan/members/@member:stage.telecrypt.io/unlock"},
 		{http.MethodPost, "/plan/checkout/start"},
 		{http.MethodPost, "/plan/billing-portal/open"},
 		{http.MethodPost, "/plan/seats/update"},
@@ -846,112 +858,15 @@ func authenticatedPlanRequest(t *testing.T, srv *Server, method, path, body stri
 	return req
 }
 
-type fakeAccountAdmin struct {
-	user                    masadmin.User
-	lookupErr, actionErr    error
-	lookups, locks, unlocks int
-	username, userID        string
-}
-
-func (a *fakeAccountAdmin) GetUserByUsername(_ context.Context, username string) (masadmin.User, error) {
-	a.lookups++
-	a.username = username
-	return a.user, a.lookupErr
-}
-func (a *fakeAccountAdmin) LockUser(_ context.Context, id string) error {
-	a.locks++
-	a.userID = id
-	return a.actionErr
-}
-func (a *fakeAccountAdmin) UnlockUser(_ context.Context, id string) error {
-	a.unlocks++
-	a.userID = id
-	return a.actionErr
-}
-
-func TestMemberAccessRequiresAuthenticatedActiveOwnerAndOwnSeat(t *testing.T) {
-	const member = "@bot/one:stage.telecrypt.io"
-	for _, action := range []string{"lock", "unlock"} {
-		for _, scenario := range []string{"allowed", "no plan", "inactive", "other member", "remote member", "cashier failure", "no session", "foreign origin", "MAS lookup failure", "MAS action failure"} {
-			t.Run(action+"/"+scenario, func(t *testing.T) {
-				srv := testServer()
-				cashier := &fakeCashier{state: PlanState{Plan: &Plan{SubscriptionStatus: "active", PaidSeats: 1}, Seats: []Seat{{MXID: member}}}}
-				accounts := &fakeAccountAdmin{user: masadmin.User{ID: "01J00000000000000000000001", Username: "bot/one", CreatedAt: time.Now()}}
-				srv.cashier, srv.accounts = cashier, accounts
-				target, want := member, http.StatusNoContent
-				switch scenario {
-				case "no plan":
-					cashier.state.Plan = nil
-					want = http.StatusForbidden
-				case "inactive":
-					cashier.state.Plan.SubscriptionStatus = "on_hold"
-					want = http.StatusForbidden
-				case "other member":
-					cashier.state.Seats = nil
-					want = http.StatusForbidden
-				case "remote member":
-					target = "@bot:elsewhere.test"
-					want = http.StatusBadRequest
-				case "cashier failure":
-					cashier.planErr = errors.New("database down")
-					want = http.StatusServiceUnavailable
-				case "no session":
-					want = http.StatusUnauthorized
-				case "foreign origin":
-					want = http.StatusForbidden
-				case "MAS lookup failure":
-					accounts.lookupErr = errors.New("MAS unavailable")
-					want = http.StatusBadGateway
-				case "MAS action failure":
-					accounts.actionErr = errors.New("MAS unavailable")
-					want = http.StatusBadGateway
-				}
-				req := authenticatedPlanRequest(t, srv, http.MethodPost, "/plan/members/"+url.PathEscape(target)+"/"+action, "")
-				if scenario == "no session" {
-					req.Header.Del("Cookie")
-				}
-				if scenario == "foreign origin" {
-					req.Header.Set("Origin", "https://elsewhere.test")
-				}
-				rec := httptest.NewRecorder()
-				srv.ServeHTTP(rec, req)
-				if rec.Code != want {
-					t.Fatalf("status = %d, want %d: %s", rec.Code, want, rec.Body.String())
-				}
-				if want == http.StatusNoContent {
-					if rec.Body.Len() != 0 || accounts.username != "bot/one" || accounts.userID != accounts.user.ID || cashier.principal.MXID != "@alice:stage.telecrypt.io" {
-						t.Fatalf("wrong successful command: body=%s account=%#v principal=%#v", rec.Body.String(), accounts, cashier.principal)
-					}
-					if (action == "lock" && (accounts.locks != 1 || accounts.unlocks != 0)) || (action == "unlock" && (accounts.unlocks != 1 || accounts.locks != 0)) {
-						t.Fatalf("wrong MAS action: %#v", accounts)
-					}
-				} else if want != http.StatusBadGateway && accounts.lookups+accounts.locks+accounts.unlocks != 0 {
-					t.Fatalf("unauthorized MAS call: %#v", accounts)
-				}
-				if scenario == "MAS lookup failure" && accounts.locks+accounts.unlocks != 0 {
-					t.Fatal("mutated after lookup failure")
-				}
-			})
-		}
-	}
-}
-
-func TestPlanShowsMemberLockStateAndControls(t *testing.T) {
-	for _, locked := range []bool{false, true} {
-		srv := testServer()
-		srv.cashier = &fakeCashier{state: PlanState{Plan: &Plan{SubscriptionStatus: "active"}, Seats: []Seat{{MXID: "@bot:stage.telecrypt.io"}}}}
-		account := &fakeAccountAdmin{user: masadmin.User{Username: "bot"}}
-		want := "Unlocked"
-		if locked {
-			now := time.Now()
-			account.user.LockedAt = &now
-			want = "Locked"
-		}
-		srv.accounts = account
+func TestSponsorAccessRoutesAreNotExposed(t *testing.T) {
+	for _, path := range []string{
+		"/plan/members/@member:stage.telecrypt.io/lock",
+		"/plan/members/@member:stage.telecrypt.io/unlock",
+	} {
 		rec := httptest.NewRecorder()
-		srv.ServeHTTP(rec, authenticatedPlanRequest(t, srv, http.MethodGet, "/plan/overview", ""))
-		if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), want) || !strings.Contains(rec.Body.String(), `data-seat-access="lock"`) || !strings.Contains(rec.Body.String(), `data-seat-access="unlock"`) {
-			t.Fatalf("member controls not rendered: %s", rec.Body.String())
+		testServer().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, path, nil))
+		if got, want := rec.Code, http.StatusNotFound; got != want {
+			t.Errorf("POST %s status = %d, want %d", path, got, want)
 		}
 	}
 }

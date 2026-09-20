@@ -13,7 +13,6 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/TeleCrypt-io/controlplane/internal/masadmin"
 	"github.com/google/uuid"
 )
 
@@ -37,25 +36,17 @@ const (
 	planContentSecurityPolicy = "default-src 'self'; base-uri 'none'; connect-src 'self'; form-action 'self'; frame-ancestors 'self'; img-src 'self' https://www.telecrypt.io; object-src 'none'; script-src 'self'; style-src 'self' https://www.telecrypt.io"
 )
 
-// AccountAdmin is the MAS account capability used after Cashier authorizes team ownership.
-type AccountAdmin interface {
-	GetUserByUsername(context.Context, string) (masadmin.User, error)
-	LockUser(context.Context, string) error
-	UnlockUser(context.Context, string) error
-}
-
 // Server owns all public Plan routes. Cashier provides billing and team ownership.
 type Server struct {
-	accounts AccountAdmin
-	cfg      Config
-	cashier  CashierClient
-	oidc     *OIDCClient
-	session  *Session
-	mux      *http.ServeMux
+	cfg     Config
+	cashier CashierClient
+	oidc    *OIDCClient
+	session *Session
+	mux     *http.ServeMux
 }
 
-func NewServer(cfg Config, cashier CashierClient, accounts AccountAdmin) *Server {
-	s := &Server{cfg: cfg, cashier: cashier, accounts: accounts, session: NewSession(cfg.PlanSessionKey, cfg.ServerName), mux: http.NewServeMux()}
+func NewServer(cfg Config, cashier CashierClient) *Server {
+	s := &Server{cfg: cfg, cashier: cashier, session: NewSession(cfg.PlanSessionKey, cfg.ServerName), mux: http.NewServeMux()}
 	s.oidc = NewOIDCClient(cfg.BackendPublicURL, cfg.MASInternalURL, cfg.MASClientID, cfg.MASClientSecret, strings.TrimRight(cfg.BackendPublicURL, "/")+"/plan/callback")
 	s.mux.HandleFunc("GET /plan/overview", s.handlePlan)
 	s.mux.HandleFunc("GET /plan/assets/plan.css", s.handlePlanCSS)
@@ -65,8 +56,6 @@ func NewServer(cfg Config, cashier CashierClient, accounts AccountAdmin) *Server
 	s.mux.Handle("POST /plan/create", s.requireBrowserSession(http.HandlerFunc(s.handleCreatePlan)))
 	s.mux.Handle("POST /plan/members/add", s.requireBrowserSession(http.HandlerFunc(s.handleAddSeat)))
 	s.mux.Handle("POST /plan/members/{mxid}/remove", s.requireBrowserSession(http.HandlerFunc(s.handleDeleteSeat)))
-	s.mux.Handle("POST /plan/members/{mxid}/lock", s.requireBrowserSession(http.HandlerFunc(s.handleLockSeat)))
-	s.mux.Handle("POST /plan/members/{mxid}/unlock", s.requireBrowserSession(http.HandlerFunc(s.handleUnlockSeat)))
 	s.mux.Handle("POST /plan/checkout/start", s.requireBrowserSession(http.HandlerFunc(s.handleCheckout)))
 	s.mux.Handle("POST /plan/billing-portal/open", s.requireBrowserSession(http.HandlerFunc(s.handlePortal)))
 	s.mux.Handle("POST /plan/seats/update", s.requireBrowserSession(http.HandlerFunc(s.handleChangeSeatCount)))
@@ -144,24 +133,6 @@ func (s *Server) handlePlan(w http.ResponseWriter, r *http.Request) {
 		}
 		data.Plan, data.Seats = state.Plan, state.Seats
 		if data.Plan != nil {
-			data.CanManageAccess = data.Plan.SubscriptionStatus == "active"
-			if data.CanManageAccess && s.accounts != nil {
-				for i := range data.Seats {
-					username := strings.TrimSuffix(strings.TrimPrefix(data.Seats[i].MXID, "@"), ":"+s.cfg.ServerName)
-					user, err := s.accounts.GetUserByUsername(r.Context(), username)
-					switch {
-					case err != nil:
-						logPlanFailure("load member access", err)
-						data.Seats[i].AccessState = "Access state unavailable"
-					case user.DeactivatedAt != nil:
-						data.Seats[i].AccessState = "Deactivated"
-					case user.LockedAt != nil:
-						data.Seats[i].AccessState = "Locked"
-					default:
-						data.Seats[i].AccessState = "Unlocked"
-					}
-				}
-			}
 			switch data.Plan.SubscriptionStatus {
 			case "none", "failed", "cancelled", "expired":
 				data.CanCheckout = true
@@ -432,61 +403,6 @@ func (s *Server) handleDeleteSeat(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (s *Server) handleLockSeat(w http.ResponseWriter, r *http.Request) {
-	s.handleSeatAccess(w, r, true)
-}
-
-func (s *Server) handleUnlockSeat(w http.ResponseWriter, r *http.Request) {
-	s.handleSeatAccess(w, r, false)
-}
-
-func (s *Server) handleSeatAccess(w http.ResponseWriter, r *http.Request, locked bool) {
-	client, p, _, ok := s.command(r)
-	if !ok || s.accounts == nil {
-		commandUnavailable(w)
-		return
-	}
-	mxid := r.PathValue("mxid")
-	if !validateLocalMXID(mxid, s.cfg.ServerName) {
-		http.Error(w, "invalid request", http.StatusBadRequest)
-		return
-	}
-	state, err := client.PlanState(r.Context(), p)
-	if err != nil {
-		logPlanFailure("authorize member access", err)
-		commandUnavailable(w)
-		return
-	}
-	allowed := false
-	if state.Plan != nil && state.Plan.SubscriptionStatus == "active" {
-		for _, seat := range state.Seats {
-			if seat.MXID == mxid {
-				allowed = true
-				break
-			}
-		}
-	}
-	if !allowed {
-		http.Error(w, "An active plan owner can manage only their own members.", http.StatusForbidden)
-		return
-	}
-	username := strings.TrimSuffix(strings.TrimPrefix(mxid, "@"), ":"+s.cfg.ServerName)
-	user, err := s.accounts.GetUserByUsername(r.Context(), username)
-	if err == nil {
-		if locked {
-			err = s.accounts.LockUser(r.Context(), user.ID)
-		} else {
-			err = s.accounts.UnlockUser(r.Context(), user.ID)
-		}
-	}
-	if err != nil {
-		logPlanFailure("change member access", err)
-		http.Error(w, "Could not change member access.", http.StatusBadGateway)
-		return
-	}
-	w.WriteHeader(http.StatusNoContent)
-}
-
 type quantityRequest struct {
 	Quantity int `json:"quantity"`
 }
@@ -646,9 +562,9 @@ func logPlanFailure(operation string, err error) {
 }
 
 type pageData struct {
-	LoggedIn, TestMode                                           bool
-	MXID, RegisterURL, SeatPrice                                 string
-	Plan                                                         *Plan
-	Seats                                                        []Seat
-	CanCheckout, CheckoutActive, CanChangeSeats, CanManageAccess bool
+	LoggedIn, TestMode                          bool
+	MXID, RegisterURL, SeatPrice                string
+	Plan                                        *Plan
+	Seats                                       []Seat
+	CanCheckout, CheckoutActive, CanChangeSeats bool
 }

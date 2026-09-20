@@ -19,7 +19,9 @@
 //     itself — see user_emails below for email presence.
 //   - crates/handlers/src/admin/v1/users/lock.rs — POST
 //     /api/admin/v1/users/{ulid}/lock changes the reversible account lock. Janitor deliberately
-//     has no unlock capability; Plan exposes manual recovery to the paying team owner.
+//     has no unlock capability; Plan has no MAS-admin capability.
+//   - crates/handlers/src/admin/v1/users/deactivate.rs — POST
+//     /api/admin/v1/users/{ulid}/deactivate schedules permanent account cleanup.
 //   - crates/handlers/src/admin/v1/user_emails/list.rs — GET /api/admin/v1/user-emails returns
 //     UserEmail resources: {created_at, user_id, email}. Supports filter[user]=<ulid> but is also
 //     listable unfiltered, so ListUserEmails fetches the whole list once per sweep and the caller
@@ -32,7 +34,9 @@
 package masadmin
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -388,6 +392,65 @@ func (c *Client) UnlockUser(ctx context.Context, userID string) error {
 		return fmt.Errorf("masadmin: unlock user: response remained locked")
 	}
 	return nil
+}
+
+// DeactivateUser permanently removes a MAS account and asks the homeserver to erase its
+// account-owned data. This is reserved for Janitor's terminal lifecycle operation; Plan never
+// receives this client or its credential.
+func (c *Client) DeactivateUser(ctx context.Context, userID string) error {
+	if !validMASULID(userID) {
+		return fmt.Errorf("masadmin: deactivate user: invalid user identity")
+	}
+	attrs, err := c.changeUserState(ctx, userID, "deactivate", map[string]any{"skip_erase": false})
+	if err != nil {
+		return err
+	}
+	if attrs.DeactivatedAt == nil {
+		return fmt.Errorf("masadmin: deactivate user: response had no deactivated_at")
+	}
+	return nil
+}
+
+func (c *Client) changeUserState(ctx context.Context, userID, action string, body map[string]any) (attrs userAttrs, resultErr error) {
+	token, err := c.token(ctx)
+	if err != nil {
+		return userAttrs{}, err
+	}
+	encoded, err := json.Marshal(body)
+	if err != nil {
+		return userAttrs{}, fmt.Errorf("masadmin: encode %s user request: %w", action, err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		c.baseURL+"/api/admin/v1/users/"+url.PathEscape(userID)+"/"+action, bytes.NewReader(encoded))
+	if err != nil {
+		return userAttrs{}, errors.New("masadmin: create " + action + " request failed")
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return userAttrs{}, masadminTransportError("masadmin: "+action+" user", err)
+	}
+	if resp.StatusCode == http.StatusNotFound {
+		body, readErr, closeErr := httpdiag.ReadAndClose(resp.Body)
+		return userAttrs{}, errors.Join(fmt.Errorf("masadmin: %s user: %w", action, ErrUserNotFound), httpdiag.NewResponseError("masadmin: "+action+" user not-found response", resp.StatusCode, body, readErr, closeErr))
+	}
+	if resp.StatusCode != http.StatusOK {
+		description, drainErr := describeError(resp)
+		closeErr := httpdiag.WrapCause("masadmin response body close", resp.Body.Close())
+		return userAttrs{}, errors.Join(fmt.Errorf("masadmin: %s user: %s", action, description), drainErr, closeErr)
+	}
+	defer func() { appendResponseBodyCloseError(&resultErr, resp.Body) }()
+	var out struct {
+		Data resource[userAttrs] `json:"data"`
+	}
+	if err := jsonbody.Decode(resp.Body, &out); err != nil {
+		return userAttrs{}, fmt.Errorf("masadmin: decode %s user: %w", action, err)
+	}
+	if out.Data.ID != userID || !validMASUsername(out.Data.Attributes.Username) || out.Data.Attributes.CreatedAt.IsZero() {
+		return userAttrs{}, fmt.Errorf("masadmin: %s user response had unexpected identity", action)
+	}
+	return out.Data.Attributes, nil
 }
 
 func (c *Client) changeUserLock(ctx context.Context, userID, action string) (attrs userAttrs, resultErr error) {

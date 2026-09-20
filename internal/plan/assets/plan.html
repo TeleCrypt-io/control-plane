@@ -57,6 +57,11 @@
               <span class="status-pill">{{.Plan.SubscriptionStatus}}</span>
             </div>
             <dl class="metrics">
+              {{if .Plan.DisplayName}}<div><dt>Plan</dt><dd>{{.Plan.DisplayName}}</dd></div>{{end}}
+              {{if ge .Plan.MonthlyCents 0}}<div><dt>Price</dt><dd>{{.Plan.MonthlyPrice}}</dd></div>{{end}}
+              {{if gt .Plan.MemberLimit 0}}<div><dt>Member limit</dt><dd>{{.Plan.MemberLimit}}</dd></div>{{end}}
+              {{if .Plan.StorageBytes}}<div><dt>Storage</dt><dd>{{.Plan.StorageAllowance}}</dd></div>{{end}}
+              {{if .Plan.StorageBytes}}<div><dt>Storage used</dt><dd>{{.Plan.StorageUsage}} of {{.Plan.StorageAllowance}}</dd></div>{{end}}
               <div><dt>Paid seats</dt><dd>{{.Plan.PaidSeats}}</dd></div>
               {{if .Plan.PendingPaidSeats}}<div><dt>Pending seats</dt><dd>{{.Plan.PendingPaidSeats}}</dd></div>{{end}}
             </dl>
@@ -85,16 +90,11 @@
               </div>
               <span class="seat-count">{{len .Seats}} attached</span>
             </div>
-            {{if .CanManageAccess}}<p>Lock a member to block access, including existing sessions. Unlock restores access. Changes to existing sessions can take up to two minutes. Their paid seat stays attached.</p>{{end}}
             <ul class="seat-list">
               {{range .Seats}}
               <li>
-                <span>{{.MXID}}{{if .AccessState}} <small>{{.AccessState}}</small>{{end}}</span>
+                <span>{{.MXID}}</span>
                 <div class="actions">
-                {{if $.CanManageAccess}}
-                <button class="btn btn-sm" type="button" data-seat-access="lock" data-mxid="{{.MXID}}">Lock</button>
-                <button class="btn btn-sm" type="button" data-seat-access="unlock" data-mxid="{{.MXID}}">Unlock</button>
-                {{end}}
                 <button class="btn btn-danger btn-sm" type="button" data-remove-seat data-mxid="{{.MXID}}">Remove</button>
                 </div>
               </li>

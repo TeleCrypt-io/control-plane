@@ -1,152 +1,366 @@
-# tier_controller — fail-closed capability restrictions for unverified users.
-#
-# Installed by the standalone Synapse server container image from the exact wheel release and loaded by
-# Synapse's `modules:` configuration. It is not copied into the Controlplane image. Inverted tier
-# model: everyone is RESTRICTED (no uploads, no m.room.encryption) unless user_type == 'verified'.
-# NULL/absent user_type (the default for a freshly registered account, agent or human) is
-# restricted; only an explicit 'verified' user_type lifts the restriction. Verified uploads also
-# obey the fixed per-file and per-user original-media limits below.
-#
-# Callback signatures + return-value handling verified against the exact Synapse 1.159.0 package:
-#   - media_repository_callbacks.is_user_allowed_to_upload_media_of_size(user_id, size) -> bool.
-#   - spamchecker_callbacks.user_may_create_room(user_id, room_config) accepts NOT_SPAM, Codes,
-#     (Codes, dict), or bool.
-#   - spamchecker_callbacks.check_event_for_spam(event) accepts NOT_SPAM, Codes, (Codes, dict),
-#     or str. We use the tuple form to provide the client-visible error message.
+"""Native Synapse capability policy for TeleCrypt.
+
+Entitlement state is published by Cashier into Synapse's local ``user_type`` column;
+the admission decisions here do not open a database connection or perform a remote
+policy lookup. Successful media spam checks send best-effort accounting notifications
+to the pod-local Cashier endpoint after capturing the request context.
+"""
+
 from __future__ import annotations
 
+import json
 import logging
+import os
 from typing import Any
 
 from synapse.api.errors import Codes
-from synapse.module_api import ModuleApi, NOT_SPAM
+from synapse.logging.context import current_context
+from synapse.module_api import ModuleApi, NOT_SPAM, make_deferred_yieldable, run_in_background
+from synapse.module_api.callbacks.ratelimit_callbacks import RatelimitOverride
+from twisted.web.client import readBody
+from twisted.web.http_headers import Headers
 
 logger = logging.getLogger(__name__)
 
+WILD = "wild"
 VERIFIED = "verified"
+UPLOADS_BLOCKED = "uploads_blocked"
+PAID_USER_TYPES = frozenset((VERIFIED, UPLOADS_BLOCKED))
 
 BYTES_PER_MIB = 1024**2
-BYTES_PER_GIB = 1024**3
-
-# Synapse's max_upload_size is the primary per-file limit. Keep the same bound here so the
-# callback cannot admit a request that the surrounding media path is not meant to process.
 MAX_MEDIA_BYTES = 128 * BYTES_PER_MIB
-MAX_USER_MEDIA_BYTES = 50 * BYTES_PER_GIB
+
+# The permission entry is both the MSC3089 branch permission and the storage-room
+# marker. Ordinary chat rooms do not contain it.
+STORAGE_MARKER = "org.matrix.msc3089.branch"
+STORAGE_ROOM_TYPE = "m.space"
+
+# Cashier is a private same-pod endpoint. Keep this fixed until a native Synapse
+# module configuration field exists; this module never sends these notifications via
+# the public ingress.
+CASHIER_INTERNAL_URL = "http://127.0.0.1:9011"
+UPLOAD_WEBHOOK_PATH = "/internal/cashier/file_upload_webhook"
+DELETE_WEBHOOK_PATH = "/internal/cashier/file_delete_webhook"
+
+FREE_MESSAGE_RATE = 0.5
+FREE_MESSAGE_BURST = 10
+PAID_MESSAGE_RATE = 1.0
+PAID_MESSAGE_BURST = 20
 
 _DENIAL_MESSAGE = (
-    "This account needs an active paid team seat for uploads and encryption. "
-    "Ask your team's paying owner to assign a seat or restore access in Plan at "
-    "https://backend.telecrypt.io/plan/overview. "
-    "See https://www.telecrypt.io/llms.txt"
+    "This account needs a paid TeleCrypt capability for encrypted messaging. "
+    "Open Plan to restore access: https://backend.telecrypt.io/plan/overview"
+)
+_STORAGE_DENIAL_MESSAGE = (
+    "Storage rooms require an active paid capability with uploads enabled. "
+    "Open Plan to restore uploads: https://backend.telecrypt.io/plan/overview"
 )
 
 
+def _event_type(event: Any) -> str | None:
+    if isinstance(event, dict):
+        return event.get("type")
+    return getattr(event, "type", None) or getattr(event, "event_type", None)
+
+
+def _event_state_key(event: Any) -> str:
+    if isinstance(event, dict):
+        return str(event.get("state_key", ""))
+    return str(getattr(event, "state_key", ""))
+
+
+def _event_content(event: Any) -> dict[str, Any]:
+    if isinstance(event, dict):
+        content = event.get("content", {})
+    else:
+        getter = getattr(event, "get_content", None)
+        content = getter() if getter is not None else getattr(event, "content", {})
+    return content if isinstance(content, dict) else {}
+
+
+def _event_sender(event: Any) -> str:
+    if isinstance(event, dict):
+        return str(event.get("sender", ""))
+    return str(getattr(event, "sender", ""))
+
+
+def _requester_user_id(requester: Any) -> str:
+    user = getattr(requester, "user", requester)
+    to_string = getattr(user, "to_string", None)
+    if to_string is not None:
+        return str(to_string())
+    return str(user)
+
+
+def _state_event(state_events: Any, event_type: str, state_key: str = "") -> Any:
+    if not state_events:
+        return None
+    if isinstance(state_events, dict):
+        value = state_events.get((event_type, state_key))
+        if value is not None:
+            return value
+        value = state_events.get(event_type)
+        if isinstance(value, dict):
+            return value.get(state_key)
+        if value is not None and state_key == "":
+            return value
+    return None
+
+
 class TierController:
+    """Apply the local user type to native Synapse policy callbacks."""
+
     def __init__(self, _config: dict[str, Any], api: ModuleApi) -> None:
-        self._run_db_interaction = api.run_db_interaction
+        self._api = api
 
         api.register_media_repository_callbacks(
             is_user_allowed_to_upload_media_of_size=self.is_user_allowed_to_upload_media_of_size,
+            on_media_deleted=self.on_media_deleted,
+        )
+        api.register_ratelimit_callbacks(
+            get_ratelimit_override_for_user=self.get_ratelimit_override_for_user,
         )
         api.register_spam_checker_callbacks(
             user_may_create_room=self.user_may_create_room,
             check_event_for_spam=self.check_event_for_spam,
+            check_media_file_for_spam=self.check_media_file_for_spam,
+        )
+        api.register_third_party_rules_callbacks(
+            on_create_room=self.on_create_room,
+            check_event_allowed=self.check_event_allowed,
         )
 
     async def _get_user_type(self, user_id: str) -> str | None:
-        def txn(cursor: Any) -> str | None:
-            cursor.execute("SELECT user_type FROM users WHERE name = %s", (user_id,))
-            row = cursor.fetchone()
-            return row[0] if row else None
-
+        """Read Synapse's local user projection through its native module API."""
         try:
-            user_type = await self._run_db_interaction(
-                "tier_controller_get_user_type", txn
-            )
+            info = await self._api.get_userinfo_by_id(user_id)
         except Exception:
-            logger.exception(
-                "tier_controller: user_type lookup failed for %s, failing closed", user_id
-            )
+            logger.exception("tier_controller: native user info lookup failed for %s", user_id)
             return None
-
-        return user_type
-
-    async def _is_restricted(self, user_id: str) -> bool:
-        return await self._get_user_type(user_id) != VERIFIED
-
-    async def _get_upload_snapshot(self, user_id: str) -> tuple[str | None, Any]:
-        """Read the verified projection and original-media usage in one DB interaction."""
-
-        def txn(cursor: Any) -> tuple[str | None, Any]:
-            cursor.execute("SELECT user_type FROM users WHERE name = %s", (user_id,))
-            user_row = cursor.fetchone()
-            user_type = user_row[0] if user_row else None
-            if user_type != VERIFIED:
-                return user_type, None
-
-            # URL-preview rows share this table but are not user-uploaded originals. Thumbnails,
-            # remote media, deleted rows, and staging files are outside this query by design.
-            cursor.execute(
-                # PostgreSQL returns SUM(bigint) as numeric. Cast the bounded result back to a
-                # BIGINT so the callback's strict integer validation sees the same value as
-                # Synapse's media metadata API, while an overflowing/malformed sum still fails
-                # closed through the database interaction error path.
-                "SELECT COALESCE(SUM(media_length), 0)::BIGINT "
-                "FROM local_media_repository "
-                "WHERE user_id = %s AND url_cache IS NULL",
-                (user_id,),
-            )
-            usage_row = cursor.fetchone()
-            return user_type, usage_row[0] if usage_row else None
-
-        try:
-            snapshot = await self._run_db_interaction(
-                "tier_controller_get_upload_snapshot", txn
-            )
-        except Exception:
-            logger.exception(
-                "tier_controller: upload policy lookup failed for %s, failing closed", user_id
-            )
-            return None, None
-
-        return snapshot
-
-    @staticmethod
-    def _nonnegative_integer(value: Any) -> int | None:
-        if type(value) is not int or value < 0:
+        if info is None:
             return None
-        return value
+        value = getattr(info, "user_type", None)
+        return value if isinstance(value, str) else None
+
+    async def _is_paid(self, user_id: str) -> bool:
+        return (await self._get_user_type(user_id)) in PAID_USER_TYPES
 
     async def is_user_allowed_to_upload_media_of_size(self, user_id: str, size: int) -> bool:
-        proposed_size = self._nonnegative_integer(size)
-        if proposed_size is None or proposed_size > MAX_MEDIA_BYTES:
-            return False
+        """Allow admission only for the explicit uploads-enabled local state.
 
-        user_type, current_usage = await self._get_upload_snapshot(user_id)
-        if user_type != VERIFIED:
+        Team quota and usage belong to Cashier. They are reconciled asynchronously and
+        therefore must not be looked up from this request callback.
+        """
+        if type(size) is not int or size < 0 or size > MAX_MEDIA_BYTES:
             return False
-        usage = self._nonnegative_integer(current_usage)
-        if usage is None or usage > MAX_USER_MEDIA_BYTES:
-            return False
-        return usage + proposed_size <= MAX_USER_MEDIA_BYTES
+        return await self._get_user_type(user_id) == VERIFIED
 
-    async def user_may_create_room(self, user_id: str, room_config: dict) -> Any:
-        if not await self._is_restricted(user_id):
+    async def get_ratelimit_override_for_user(
+        self, user_id: str, limiter_name: str
+    ) -> RatelimitOverride | None:
+        # Keep Synapse's native limiter selection. Only message actions receive the
+        # product's per-user paid/free rates.
+        if "message" not in limiter_name.lower():
+            return None
+        if await self._is_paid(user_id):
+            return RatelimitOverride(per_second=PAID_MESSAGE_RATE, burst_count=PAID_MESSAGE_BURST)
+        return RatelimitOverride(per_second=FREE_MESSAGE_RATE, burst_count=FREE_MESSAGE_BURST)
+
+    async def user_may_create_room(self, user_id: str, room_config: dict[str, Any]) -> Any:
+        if self._is_storage_creation(room_config):
+            if await self._get_user_type(user_id) != VERIFIED:
+                return Codes.FORBIDDEN, {"error": _STORAGE_DENIAL_MESSAGE}
             return NOT_SPAM
-        # Synapse does not run createRoom's initial_state events through check_event_for_spam.
-        # The user_may_create_room callback receives the complete request body, so reject an
-        # encryption state event here before the room is created.
+
+        # Synapse does not send createRoom initial_state events through the event spam
+        # callback. Every room must declare encryption before it is created, including Free.
         initial_state = room_config.get("initial_state", [])
-        if isinstance(initial_state, list) and any(
-            isinstance(event, dict) and event.get("type") == "m.room.encryption"
+        if not isinstance(initial_state, list) or not any(
+            _event_type(event) == "m.room.encryption" and _event_state_key(event) == ""
             for event in initial_state
         ):
             return Codes.FORBIDDEN, {"error": _DENIAL_MESSAGE}
         return NOT_SPAM
 
     async def check_event_for_spam(self, event: Any) -> Any:
-        if event.type != "m.room.encryption" or not event.is_state():
-            return NOT_SPAM
-        if await self._is_restricted(event.sender):
+        is_state = getattr(event, "is_state", lambda: False)
+        if _event_type(event) in ("m.room.message", "m.sticker") and not is_state():
             return Codes.FORBIDDEN, {"error": _DENIAL_MESSAGE}
         return NOT_SPAM
+
+    @staticmethod
+    def _request_context_user_id() -> str | None:
+        """Capture the authenticated user from Synapse's upload request context.
+
+        ``check_media_file_for_spam`` has no user argument. The request context is
+        captured before detached accounting work starts, as required by Synapse's
+        logging-context propagation rules. Missing context only loses a notification;
+        it never rejects a media upload.
+        """
+        try:
+            request = getattr(current_context(), "request", None)
+            requester = getattr(request, "requester", None)
+            user = getattr(requester, "user", None)
+            to_string = getattr(user, "to_string", None)
+            user_id = to_string() if to_string is not None else None
+        except Exception:
+            logger.exception("tier_controller: could not capture media uploader")
+            return None
+        return str(user_id) if user_id else None
+
+    async def check_media_file_for_spam(self, file: Any, file_info: Any) -> Any:
+        """Queue upload accounting after local media spam admission.
+
+        This hook also sees remote media, thumbnails, and URL previews. Only a local
+        non-thumbnail file is an account upload. The hook runs before Synapse commits
+        its media row, so the notification is deliberately best effort and cannot
+        affect the upload result.
+        """
+        if (
+            getattr(file_info, "server_name", None) is not None
+            or getattr(file_info, "thumbnail", None) is not None
+            or bool(getattr(file_info, "url_cache", False))
+        ):
+            return NOT_SPAM
+        media_id = getattr(file_info, "file_id", None)
+        path = getattr(file, "path", None)
+        user_id = self._request_context_user_id()
+        if not isinstance(media_id, str) or not media_id or not user_id or not isinstance(path, str):
+            logger.warning("tier_controller: media upload notification lacks local identity")
+            return NOT_SPAM
+        try:
+            size_bytes = os.stat(path).st_size
+        except OSError:
+            logger.exception("tier_controller: could not determine uploaded media size for %s", media_id)
+            return NOT_SPAM
+        if size_bytes < 0:
+            return NOT_SPAM
+        run_in_background(self._notify_upload, user_id, media_id, size_bytes)
+        return NOT_SPAM
+
+    async def on_media_deleted(self, media_id: str) -> None:
+        """Queue deletion accounting using only the stable media ID."""
+        if not isinstance(media_id, str) or not media_id:
+            return
+        run_in_background(self._notify_delete, media_id)
+
+    async def _notify_upload(self, user_id: str, media_id: str, size_bytes: int) -> None:
+        try:
+            await self._post_cashier(
+                UPLOAD_WEBHOOK_PATH,
+                {"user_id": user_id, "media_id": media_id, "size_bytes": size_bytes},
+            )
+        except Exception:
+            logger.exception("tier_controller: upload accounting notification failed for %s", media_id)
+
+    async def _notify_delete(self, media_id: str) -> None:
+        try:
+            await self._post_cashier(DELETE_WEBHOOK_PATH, {"media_id": media_id})
+        except Exception:
+            logger.exception("tier_controller: deletion accounting notification failed for %s", media_id)
+
+    async def _post_cashier(self, path: str, payload: dict[str, Any]) -> None:
+        body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+        response = await self._api.http_client.request(
+            "POST",
+            CASHIER_INTERNAL_URL + path,
+            data=body,
+            headers=Headers({b"Content-Type": [b"application/json"]}),
+        )
+        response_body = await make_deferred_yieldable(readBody(response))
+        if not 200 <= response.code < 300:
+            raise RuntimeError(
+                f"Cashier notification returned HTTP {response.code}: "
+                f"{response_body[:256].decode('utf-8', errors='replace')}"
+            )
+
+    @staticmethod
+    def _is_storage_creation(room_config: dict[str, Any]) -> bool:
+        initial_state = room_config.get("initial_state", [])
+        if not isinstance(initial_state, list):
+            initial_state = []
+        power_levels = None
+        room_create = room_config.get("creation_content")
+        for event in initial_state:
+            event_type = _event_type(event)
+            if event_type == "m.room.create" and _event_state_key(event) == "":
+                room_create = _event_content(event)
+            elif event_type == "m.room.power_levels" and _event_state_key(event) == "":
+                power_levels = _event_content(event)
+        if not isinstance(room_create, dict) or room_create.get("type") != STORAGE_ROOM_TYPE:
+            return False
+        if power_levels is None:
+            power_levels = room_config.get("power_level_content_override")
+        marker_events = power_levels.get("events", {}) if isinstance(power_levels, dict) else {}
+        return marker_events.get(STORAGE_MARKER) == 100
+
+    @staticmethod
+    def _fixed_power_levels(owner: str) -> dict[str, Any]:
+        return {
+            "ban": 100,
+            "events": {
+                "m.room.name": 100,
+                "m.room.message": 0,
+                "m.room.message.encrypted": 0,
+                "m.sticker": 0,
+                "m.space.child": 100,
+                "m.space.parent": 100,
+                "m.room.power_levels": 100,
+                STORAGE_MARKER: 100,
+            },
+            "events_default": 0,
+            "invite": 100,
+            "kick": 100,
+            "redact": 100,
+            "state_default": 0,
+            "users": {owner: 100},
+            "users_default": 0,
+        }
+
+    async def on_create_room(
+        self, requester: Any, room_config: dict[str, Any], is_requester_admin: bool
+    ) -> None:
+        """Canonicalize storage permissions before Synapse persists the room."""
+        if not self._is_storage_creation(room_config):
+            return
+        owner = _requester_user_id(requester)
+        fixed = self._fixed_power_levels(owner)
+        room_config["power_level_content_override"] = fixed
+        initial_state = room_config.get("initial_state")
+        if not isinstance(initial_state, list):
+            initial_state = []
+        if any(
+            _event_type(event) == "m.room.power_levels" and _event_state_key(event) == ""
+            for event in initial_state
+        ):
+            room_config["initial_state"] = [
+                (
+                    {
+                        "type": "m.room.power_levels",
+                        "state_key": "",
+                        "content": fixed,
+                    }
+                    if _event_type(event) == "m.room.power_levels" and _event_state_key(event) == ""
+                    else event
+                )
+                for event in initial_state
+            ]
+
+    async def check_event_allowed(
+        self, event: Any, state_events: Any
+    ) -> tuple[bool, dict[str, Any] | None]:
+        """Keep storage power levels immutable, including for the creator."""
+        if _event_type(event) != "m.room.power_levels" or _event_state_key(event) != "":
+            return True, None
+        current = _state_event(state_events, "m.room.power_levels", "")
+        current_content = _event_content(current)
+        marker_events = current_content.get("events", {})
+        if not isinstance(marker_events, dict) or marker_events.get(STORAGE_MARKER) != 100:
+            return True, None
+        users = current_content.get("users")
+        if not isinstance(users, dict) or len(users) != 1:
+            return False, {"error": "Storage room permissions are invalid."}
+        owner, owner_level = next(iter(users.items()))
+        if owner_level != 100 or _event_content(event) != self._fixed_power_levels(str(owner)):
+            return False, {"error": "Storage room permissions are fixed."}
+        return True, None

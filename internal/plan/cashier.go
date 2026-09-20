@@ -5,6 +5,7 @@ package plan
 
 import (
 	"context"
+	"fmt"
 )
 
 // Principal is the authenticated Matrix identity established by Plan's MAS OIDC session.
@@ -18,16 +19,53 @@ type Principal struct {
 // identifiers and billing credentials are intentionally never returned to the browser-facing
 // Plan service.
 type Plan struct {
+	// TierID is the stable billing identifier. DisplayName is presentation only;
+	// Plan must never use it as an authorization or provider key.
+	TierID             int16  `json:"tier_id"`
+	DisplayName        string `json:"display_name"`
+	MonthlyCents       int64  `json:"monthly_cents"`
+	StorageBytes       int64  `json:"storage_bytes"`
+	MemberLimit        int    `json:"member_limit"`
+	UsageBytes         int64  `json:"usage_bytes"`
 	SubscriptionStatus string `json:"subscription_status"`
 	PaidSeats          int    `json:"paid_seats"`
 	PendingPaidSeats   *int   `json:"pending_paid_seats"`
 	HasBillingAccount  bool   `json:"has_billing_account"`
 }
 
+func (p Plan) MonthlyPrice() string {
+	return fmt.Sprintf("€%.2f/month", float64(p.MonthlyCents)/100)
+}
+
+func (p Plan) StorageAllowance() string {
+	return formatStorageBytes(p.StorageBytes)
+}
+
+func (p Plan) StorageUsage() string {
+	return formatStorageBytes(p.UsageBytes)
+}
+
+func formatStorageBytes(bytes int64) string {
+	if bytes < 0 {
+		return "unavailable"
+	}
+	const (
+		gb = int64(1_000_000_000)
+		tb = 1_000 * gb
+	)
+	switch {
+	case bytes >= tb && bytes%tb == 0:
+		return fmt.Sprintf("%d TB", bytes/tb)
+	case bytes >= gb && bytes%gb == 0:
+		return fmt.Sprintf("%d GB", bytes/gb)
+	default:
+		return fmt.Sprintf("%d bytes", bytes)
+	}
+}
+
 // Seat is a Matrix account attached to a plan.
 type Seat struct {
-	MXID        string `json:"mxid"`
-	AccessState string `json:"-"`
+	MXID string `json:"mxid"`
 }
 
 // PlanState is all information the Plan renderer needs for one authenticated principal.

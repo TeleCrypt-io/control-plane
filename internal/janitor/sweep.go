@@ -1,5 +1,7 @@
-// Package janitor implements Janitor's one-shot maintenance process. Cashier owns entitlement;
-// Janitor consumes only Cashier's two narrow views and the MAS admin API.
+// Package janitor implements one scheduled lifecycle-maintenance run. It has no HTTP server and
+// does not call Cashier: paid-entitlement exclusions are read from its private view, account
+// registration state comes from MAS, and provider state is read once through an optional
+// read-only reconciler.
 package janitor
 
 import (
@@ -17,9 +19,9 @@ import (
 )
 
 const (
-	lockAfter             = 48 * time.Hour
-	cashierAdminLocalpart = "cashier"
-	auditCleanupTimeout   = 2 * time.Second
+	initialFreeSuspendAfter = 48 * time.Hour
+	cashierAdminLocalpart   = "cashier"
+	auditCleanupTimeout     = 2 * time.Second
 )
 
 type Config struct {
@@ -33,7 +35,25 @@ type masAdminClient interface {
 	ListUserEmails(context.Context) ([]masadmin.UserEmail, error)
 	GetUser(context.Context, string) (masadmin.User, error)
 	HasUserEmail(context.Context, string) (bool, error)
-	LockUser(context.Context, string) error
+}
+
+type synapseAdminClient interface {
+	SuspendUser(context.Context, string, bool) error
+}
+
+// Discrepancy is intentionally provider-neutral. Janitor reports it to the owner and does not
+// mutate Cashier, subscriptions, memberships, or files as a consequence.
+type Discrepancy struct {
+	TeamID       string
+	Subscription string
+	Kind         string
+	Detail       string
+}
+
+// DodoReconciler performs one bounded read-only provider snapshot. Implementations must use a
+// read-only API key and must not expose a provider loop or a write operation.
+type DodoReconciler interface {
+	Reconcile(context.Context) ([]Discrepancy, error)
 }
 
 type store interface {
@@ -49,21 +69,29 @@ type Mailer interface {
 }
 
 type Sweeper struct {
-	mas    masAdminClient
-	store  store
-	mailer Mailer
-	cfg    Config
+	mas     masAdminClient
+	synapse synapseAdminClient
+	store   store
+	mailer  Mailer
+	dodo    DodoReconciler
+	cfg     Config
 }
 
+// NewSweeper is retained for callers that only need MAS/audit wiring. Production uses
+// NewLifecycleSweeper so native Synapse suspension is always available.
 func NewSweeper(mas masAdminClient, store store, mailer Mailer, cfg Config) *Sweeper {
 	return &Sweeper{mas: mas, store: store, mailer: mailer, cfg: cfg}
+}
+
+func NewLifecycleSweeper(mas masAdminClient, synapse synapseAdminClient, store store, mailer Mailer, dodo DodoReconciler, cfg Config) *Sweeper {
+	return &Sweeper{mas: mas, synapse: synapse, store: store, mailer: mailer, dodo: dodo, cfg: cfg}
 }
 
 type sweepState struct {
 	runID         uuid.UUID
 	considered    int64
 	skipped       int64
-	locked        int64
+	locked        int64 // historical audit column; counts native suspensions for compatibility
 	failures      int64
 	notification  string
 	failureReason string
@@ -119,9 +147,8 @@ func (s *Sweeper) finishedEvent(state *sweepState, status, outcome, reason strin
 	}
 }
 
-// Sweep performs one complete run and always attempts the required finished event after a
-// started event. Identity failure occurs before a run is authorized, so it intentionally emits no
-// audit row. Failure to write either required row is itself a non-success result.
+// Sweep performs exactly one complete run. It has no provider retry loop and always attempts the
+// terminal audit row after a run has been authorized and its started row has been written.
 func (s *Sweeper) Sweep(ctx context.Context) error {
 	if err := db.ValidateDeploymentProfile(s.cfg.ServerName, s.cfg.BillingEnvironment); err != nil {
 		return err
@@ -171,12 +198,15 @@ func (s *Sweeper) Sweep(ctx context.Context) error {
 	}
 	state.considered = int64(len(users))
 	state.addLabel("mas_users")
-	if err := s.sweepLocks(ctx, users, exclusions, state); err != nil {
+	if err := s.sweepLifecycle(ctx, users, exclusions, state); err != nil {
 		return finish(err)
 	}
 	if ctx.Err() != nil {
 		state.fail("cancelled", "cancelled")
 		return finish(httpdiag.WrapCause("janitor: sweep canceled", ctx.Err()))
+	}
+	if err := s.sweepProvider(ctx, state); err != nil {
+		return finish(err)
 	}
 	var emails []masadmin.UserEmail
 	if s.cfg.OwnerEmail != "" {
@@ -200,8 +230,6 @@ func (s *Sweeper) Sweep(ctx context.Context) error {
 	return finish(nil)
 }
 
-// boundedAuditContext keeps the required terminal event writable after cancellation while still
-// bounding cleanup. An already-canceled parent would otherwise cancel its child immediately.
 func boundedAuditContext(parent context.Context) (context.Context, context.CancelFunc) {
 	if parent == nil || parent.Err() != nil {
 		return context.WithTimeout(context.Background(), auditCleanupTimeout)
@@ -229,8 +257,15 @@ func (s *Sweeper) mxid(username string) string {
 	return fmt.Sprintf("@%s:%s", username, s.cfg.ServerName)
 }
 
-func (s *Sweeper) sweepLocks(ctx context.Context, users []masadmin.User, exclusions map[string]struct{}, state *sweepState) error {
-	cutoff := time.Now().Add(-lockAfter)
+// sweepLifecycle maps the initial Free 48-hour rule to native Synapse suspension. MAS locks are
+// deliberately left alone: operator locks are separate state and must not be cleared or reused as
+// billing recovery. Rich departure timestamps come from the future lifecycle view; until that view
+// is present, this run only has enough information to enforce initial Free registration.
+func (s *Sweeper) sweepLifecycle(ctx context.Context, users []masadmin.User, exclusions map[string]struct{}, state *sweepState) error {
+	if s.synapse == nil {
+		return nil
+	}
+	cutoff := time.Now().Add(-initialFreeSuspendAfter)
 	for _, snapshot := range users {
 		if ctx.Err() != nil {
 			state.fail("cancelled", "cancelled")
@@ -242,14 +277,7 @@ func (s *Sweeper) sweepLocks(ctx context.Context, users []masadmin.User, exclusi
 			state.fail("mas", "candidate_recheck")
 			return fmt.Errorf("janitor: MAS candidate identity is invalid")
 		}
-		// This fixed MAS service identity is not a human or test account. Keep the
-		// exclusion local and unconditional rather than manufacturing an email or
-		// paid-entitlement projection for it.
-		if snapshot.Username == cashierAdminLocalpart {
-			state.skipped++
-			continue
-		}
-		if snapshot.LockedAt != nil || snapshot.DeactivatedAt != nil || !snapshot.CreatedAt.Before(cutoff) {
+		if snapshot.Username == cashierAdminLocalpart || snapshot.LockedAt != nil || snapshot.DeactivatedAt != nil || !snapshot.CreatedAt.Before(cutoff) {
 			state.skipped++
 			continue
 		}
@@ -264,19 +292,10 @@ func (s *Sweeper) sweepLocks(ctx context.Context, users []masadmin.User, exclusi
 			state.fail("mas", "candidate_recheck")
 			return httpdiag.WrapCause("janitor: candidate recheck failed", err)
 		}
-		currentMXID := s.mxid(current.Username)
-		if current.ID != snapshot.ID || currentMXID == "" || currentMXID != mxid || current.CreatedAt.IsZero() || !current.CreatedAt.Equal(snapshot.CreatedAt) {
+		if current.ID != snapshot.ID || current.Username != snapshot.Username || current.CreatedAt.IsZero() || !current.CreatedAt.Equal(snapshot.CreatedAt) || current.LockedAt != nil || current.DeactivatedAt != nil {
 			state.skipped++
 			state.fail("lock_readback", "candidate_recheck")
 			return fmt.Errorf("janitor: candidate recheck returned inconsistent identity")
-		}
-		if current.LockedAt != nil || current.DeactivatedAt != nil || !current.CreatedAt.Before(cutoff) {
-			state.skipped++
-			continue
-		}
-		if _, excluded := exclusions[currentMXID]; excluded {
-			state.skipped++
-			continue
 		}
 		hasEmail, err := s.mas.HasUserEmail(ctx, current.ID)
 		if err != nil {
@@ -288,29 +307,40 @@ func (s *Sweeper) sweepLocks(ctx context.Context, users []masadmin.User, exclusi
 			state.skipped++
 			continue
 		}
-		if err := s.mas.LockUser(ctx, current.ID); err != nil {
+		if err := s.synapse.SuspendUser(ctx, mxid, true); err != nil {
 			state.fail("lock", "lock")
-			return httpdiag.WrapCause("janitor: account lock failed", err)
-		}
-		locked, err := s.mas.GetUser(ctx, current.ID)
-		if err != nil || locked.ID != current.ID || locked.Username != current.Username || !locked.CreatedAt.Equal(current.CreatedAt) || locked.LockedAt == nil {
-			state.fail("lock_readback", "lock_readback")
-			if err != nil {
-				return httpdiag.WrapCause("janitor: account lock readback failed", err)
-			}
-			return fmt.Errorf("janitor: account lock readback returned inconsistent state")
-		}
-		postEmail, err := s.mas.HasUserEmail(ctx, current.ID)
-		if err != nil || postEmail {
-			state.fail("lock_readback", "lock_readback")
-			if err != nil {
-				return httpdiag.WrapCause("janitor: account lock email readback failed", err)
-			}
-			return fmt.Errorf("janitor: account lock email readback found an email")
+			return httpdiag.WrapCause("janitor: account suspension failed", err)
 		}
 		state.locked++
 		state.addLabel("lock")
 	}
+	return nil
+}
+
+func (s *Sweeper) sweepProvider(ctx context.Context, state *sweepState) error {
+	if s.dodo == nil {
+		return nil
+	}
+	discrepancies, err := s.dodo.Reconcile(ctx)
+	if err != nil {
+		state.notification = "failed"
+		return &operationError{reason: "notification", err: httpdiag.WrapCause("provider reconciliation failed", err)}
+	}
+	if len(discrepancies) == 0 || s.cfg.OwnerEmail == "" {
+		return nil
+	}
+	rows := make([]string, 0, len(discrepancies))
+	for _, discrepancy := range discrepancies {
+		rows = append(rows, fmt.Sprintf("%s %s %s", discrepancy.TeamID, discrepancy.Subscription, discrepancy.Kind))
+	}
+	sort.Strings(rows)
+	body := "Dodo reconciliation found discrepancies; no automatic correction was applied.\r\n\r\n" + strings.Join(rows, "\r\n") + "\r\n"
+	if err := s.mailer.Send(ctx, s.cfg.OwnerEmail, "TeleCrypt.io: billing reconciliation discrepancies", body); err != nil {
+		state.notification = "failed"
+		return &operationError{reason: "notification", err: httpdiag.WrapCause("provider discrepancy notification failed", err)}
+	}
+	state.notification = "succeeded"
+	state.addLabel("notification")
 	return nil
 }
 

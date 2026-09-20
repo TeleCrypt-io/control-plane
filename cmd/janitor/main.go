@@ -1,6 +1,6 @@
-// Command janitor is TeleCrypt.io's one-shot maintenance process holding a standing MAS admin
-// credential. Each invocation locks stale unclaimed agent accounts via MAS's admin API and, when
-// configured, emails the owner a digest of new human sign-ups awaiting review.
+// Command janitor is TeleCrypt.io's one-shot lifecycle process. Each invocation uses its standing
+// MAS and Synapse admin credentials for the agreed account-maintenance operation and, when
+// configured, performs one read-only Dodo reconciliation and emails discrepancies.
 //
 // Janitor is a one-shot process and opens no listening network port.
 package main
@@ -17,6 +17,7 @@ import (
 	"github.com/TeleCrypt-io/controlplane/internal/db"
 	"github.com/TeleCrypt-io/controlplane/internal/janitor"
 	"github.com/TeleCrypt-io/controlplane/internal/masadmin"
+	"github.com/TeleCrypt-io/controlplane/internal/synapseadmin"
 )
 
 func main() {
@@ -89,6 +90,11 @@ func run() (runErr error) {
 
 func build(cfg *config.JanitorConfig, store *db.Store) *janitor.Sweeper {
 	masClient := masadmin.NewClient(cfg.MASAdminURL, cfg.MASAdminClientID, cfg.MASAdminClientSecret)
+	synapseClient := synapseadmin.NewClient(cfg.SynapseAdminURL, cfg.SynapseAdminToken)
+	var dodoReader janitor.DodoReconciler
+	if cfg.DodoReadOnlyAPIURL != "" {
+		dodoReader = janitor.NewDodoReader(cfg.DodoReadOnlyAPIURL, cfg.DodoReadOnlyAPIKey)
+	}
 	mailer := &janitor.SMTPMailer{
 		Host:     cfg.SMTPHost,
 		Port:     janitorSMTPPort,
@@ -97,7 +103,7 @@ func build(cfg *config.JanitorConfig, store *db.Store) *janitor.Sweeper {
 		From:     cfg.SMTPFrom,
 	}
 
-	return janitor.NewSweeper(masClient, store, mailer, janitor.Config{
+	return janitor.NewLifecycleSweeper(masClient, synapseClient, store, mailer, dodoReader, janitor.Config{
 		ServerName: cfg.ServerName, BillingEnvironment: cfg.BillingEnvironment,
 		OwnerEmail: cfg.OwnerEmail,
 	})

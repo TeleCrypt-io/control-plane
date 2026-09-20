@@ -1,4 +1,5 @@
-"""Unit tests for the installed tier_controller wheel against the exact Synapse runtime."""
+"""Focused tests for the installed tier_controller wheel."""
+
 import asyncio
 import inspect
 import pathlib
@@ -6,8 +7,6 @@ import site
 import sys
 from types import SimpleNamespace
 
-# Running this file from the source checkout would otherwise put the source package ahead of the
-# wheel under test. CI mounts this file separately and installs the wheel into site-packages.
 source_dir = pathlib.Path(__file__).resolve().parent
 sys.path[:] = [entry for entry in sys.path if pathlib.Path(entry or ".").resolve() != source_dir]
 
@@ -16,7 +15,7 @@ from synapse.module_api import NOT_SPAM
 import tier_controller
 from tier_controller import (
     MAX_MEDIA_BYTES,
-    MAX_USER_MEDIA_BYTES,
+    STORAGE_MARKER,
     TierController,
     _DENIAL_MESSAGE,
 )
@@ -28,21 +27,13 @@ if not any(root in module_path.parents for root in site_packages):
 
 
 class FakeModuleApi:
-    """Duck-typed stand-in for synapse.module_api.ModuleApi."""
-
-    def __init__(
-        self,
-        user_types: dict,
-        media_usage: dict,
-        db_error: bool = False,
-    ):
-        self.user_types = user_types
-        self.media_usage = media_usage
-        self.db_error = db_error
-        self.db_calls = []
-        self.queries = []
+    def __init__(self, user_types=None, lookup_error=False):
+        self.user_types = user_types or {}
+        self.lookup_error = lookup_error
         self.registered_media = {}
         self.registered_spam = {}
+        self.registered_rules = {}
+        self.registered_rates = {}
 
     def register_media_repository_callbacks(self, **callbacks):
         self.registered_media.update(callbacks)
@@ -50,231 +41,168 @@ class FakeModuleApi:
     def register_spam_checker_callbacks(self, **callbacks):
         self.registered_spam.update(callbacks)
 
-    async def run_db_interaction(self, desc, func):
-        self.db_calls.append(desc)
-        if self.db_error:
-            raise RuntimeError("simulated db failure")
-        if desc == "tier_controller_get_user_type":
-            return _run_user_type(self, func)
-        if desc == "tier_controller_get_upload_snapshot":
-            return _run_upload_snapshot(self, func)
-        raise AssertionError(f"unexpected desc {desc}")
+    def register_third_party_rules_callbacks(self, **callbacks):
+        self.registered_rules.update(callbacks)
+
+    def register_ratelimit_callbacks(self, **callbacks):
+        self.registered_rates.update(callbacks)
+
+    async def get_userinfo_by_id(self, user_id):
+        if self.lookup_error:
+            raise RuntimeError("native lookup failed")
+        if user_id not in self.user_types:
+            return None
+        return SimpleNamespace(user_type=self.user_types[user_id])
 
 
-def _run_user_type(api, func):
-    class RecordingCursor:
-        def __init__(self, table):
-            self.table = table
-
-        def execute(self, sql, args):
-            self.user_id = args[0]
-            api.queries.append((sql, args))
-
-        def fetchone(self):
-            val = self.table.get(self.user_id, "__missing__")
-            if val == "__missing__":
-                return None
-            return (val,)
-
-    return func(RecordingCursor(api.user_types))
+def make_module(user_types=None, lookup_error=False):
+    api = FakeModuleApi(user_types, lookup_error)
+    return TierController({}, api), api
 
 
-def _run_upload_snapshot(api, func):
-    class RecordingCursor:
-        def __init__(self):
-            self.user_id = None
-            self.query = ""
-
-        def execute(self, sql, args):
-            self.query = sql
-            self.user_id = args[0]
-            api.queries.append((sql, args))
-
-        def fetchone(self):
-            if "SELECT user_type" in self.query:
-                val = api.user_types.get(self.user_id, "__missing__")
-                return None if val == "__missing__" else (val,)
-            return (api.media_usage.get(self.user_id, 0),)
-
-    return func(RecordingCursor())
-
-
-def make_module(
-    user_types=None,
-    media_usage=None,
-    db_error=False,
-):
-    api = FakeModuleApi(
-        user_types or {}, media_usage or {}, db_error=db_error
-    )
-    module = TierController({}, api)
-    return module, api
-
-
-async def upload_decision(module, user_id, size):
+async def upload(module, user_id, size):
     return await module.is_user_allowed_to_upload_media_of_size(user_id, size)
 
 
-def make_event(event_type, sender, is_state=True):
-    return SimpleNamespace(type=event_type, sender=sender, is_state=lambda: is_state)
-
-
-async def test_unverified_denied_upload():
-    module, _ = make_module(user_types={"@a:x": "unverified"})
-    assert await upload_decision(module, "@a:x", 100) is False
-
-
-async def test_verified_allowed_upload():
-    module, _ = make_module(user_types={"@a:x": "verified"})
-    assert await upload_decision(module, "@a:x", 100) is True
-
-
-async def test_null_type_denied_upload():
-    module, _ = make_module(user_types={"@a:x": None})
-    assert await upload_decision(module, "@a:x", 100) is False
-
-
-async def test_unknown_legacy_type_denied_upload():
-    module, _ = make_module(user_types={"@a:x": "paid_agent"})
-    assert await upload_decision(module, "@a:x", 100) is False
-
-
-async def test_upload_boundaries():
-    module, _ = make_module(user_types={"@a:x": "verified"})
-    assert await upload_decision(module, "@a:x", 0) is True
-    assert await upload_decision(
-        module, "@a:x", MAX_MEDIA_BYTES - 1
-    ) is True
-    assert await upload_decision(module, "@a:x", MAX_MEDIA_BYTES) is True
-    assert await upload_decision(module, "@a:x", MAX_MEDIA_BYTES + 1) is False
-
-
-async def test_upload_quota_boundaries():
-    module, _ = make_module(
-        user_types={"@a:x": "verified"},
-        media_usage={"@a:x": MAX_USER_MEDIA_BYTES - 1},
+def event(event_type, sender="@alice:test", content=None, state_key="", is_state=True):
+    return SimpleNamespace(
+        type=event_type,
+        sender=sender,
+        state_key=state_key,
+        get_content=lambda: content or {},
+        is_state=lambda: is_state,
     )
-    assert await upload_decision(module, "@a:x", 1) is True
-    assert await upload_decision(module, "@a:x", 2) is False
 
-    module, _ = make_module(
-        user_types={"@a:x": "verified"},
-        media_usage={"@a:x": MAX_USER_MEDIA_BYTES},
+
+async def test_local_user_type_controls_upload_without_sql_usage_lookup():
+    module, api = make_module({"@free:test": "wild", "@paid:test": "verified", "@blocked:test": "uploads_blocked"})
+    assert await upload(module, "@free:test", 1) is False
+    assert await upload(module, "@paid:test", MAX_MEDIA_BYTES) is True
+    assert await upload(module, "@blocked:test", 1) is False
+    assert api.registered_media
+    assert "on_media_deleted" in api.registered_media
+    assert "check_media_file_for_spam" in api.registered_spam
+    assert not hasattr(api, "run_db_interaction")
+
+
+async def test_native_lookup_failure_fails_closed_for_upload_but_encryption_is_native():
+    module, _ = make_module(lookup_error=True)
+    assert await upload(module, "@paid:test", 1) is False
+    assert await module.check_event_for_spam(event("m.room.encryption")) is NOT_SPAM
+
+
+async def test_media_notifications_use_upload_identity_and_media_only_for_delete():
+    module, _ = make_module()
+    calls = []
+
+    async def post(path, payload):
+        calls.append((path, payload))
+
+    module._post_cashier = post
+    await module._notify_upload("@owner:test", "media-1", 42)
+    await module._notify_delete("media-1")
+    assert calls == [
+        ("/internal/cashier/file_upload_webhook", {"user_id": "@owner:test", "media_id": "media-1", "size_bytes": 42}),
+        ("/internal/cashier/file_delete_webhook", {"media_id": "media-1"}),
+    ]
+
+
+async def test_paid_user_types_allow_encryption_and_message_rates_are_native():
+    module, _ = make_module({"@verified:test": "verified", "@blocked:test": "uploads_blocked"})
+    assert await module.check_event_for_spam(event("m.room.encryption", "@verified:test")) is NOT_SPAM
+    assert await module.check_event_for_spam(event("m.room.encryption", "@blocked:test")) is NOT_SPAM
+    free_module, _ = make_module({"@free:test": "wild"})
+    free_rate = await free_module.get_ratelimit_override_for_user("@free:test", "room_message")
+    paid_rate = await module.get_ratelimit_override_for_user("@verified:test", "room_message")
+    assert (free_rate.per_second, free_rate.burst_count) == (0.5, 10)
+    assert (paid_rate.per_second, paid_rate.burst_count) == (1.0, 20)
+    assert await module.get_ratelimit_override_for_user("@verified:test", "registration") is None
+
+
+async def test_free_encrypted_room_is_allowed_before_creation():
+    module, _ = make_module({"@free:test": "wild"})
+    config = {"initial_state": [{"type": "m.room.encryption", "state_key": "", "content": {}}]}
+    assert await module.user_may_create_room("@free:test", config) is NOT_SPAM
+
+
+async def test_plain_message_is_rejected_for_every_account():
+    module, _ = make_module({"@free:test": "wild", "@paid:test": "verified"})
+    for user_id in ("@free:test", "@paid:test"):
+        assert await module.check_event_for_spam(event("m.room.message", user_id, is_state=False)) == (
+            Codes.FORBIDDEN,
+            {"error": _DENIAL_MESSAGE},
+        )
+
+
+async def test_plain_room_is_rejected_before_creation():
+    module, _ = make_module({"@free:test": "wild"})
+    assert await module.user_may_create_room("@free:test", {"initial_state": []}) == (
+        Codes.FORBIDDEN,
+        {"error": _DENIAL_MESSAGE},
     )
-    assert await upload_decision(module, "@a:x", 0) is True
-    assert await upload_decision(module, "@a:x", 1) is False
 
 
-async def test_upload_rejects_negative_size_or_usage():
-    module, _ = make_module(
-        user_types={"@a:x": "verified"}, media_usage={"@a:x": -1}
-    )
-    assert await upload_decision(module, "@a:x", 1) is False
-
-    module, _ = make_module(user_types={"@a:x": "verified"})
-    assert await upload_decision(module, "@a:x", -1) is False
-
-
-async def test_unverified_encrypted_initial_state_denied_before_room_creation():
-    module, _ = make_module(
-        user_types={"@a:x": "unverified"}
-    )
-    room_config = {
-        "preset": "private_chat",
+async def test_storage_creation_gets_fixed_owner_readers_permissions_and_marker():
+    module, _ = make_module({"@owner:test": "verified"})
+    config = {
         "initial_state": [
-            {
-                "type": "m.room.encryption",
-                "state_key": "",
-                "content": {"algorithm": "m.megolm.v1.aes-sha2"},
-            }
-        ],
+            {"type": "m.room.create", "state_key": "", "content": {"type": "m.space"}},
+            {"type": "org.matrix.msc3088.room.purpose", "state_key": "org.matrix.msc3089.tree", "content": {"org.matrix.msc3088.enabled": True}},
+            {"type": "m.room.power_levels", "state_key": "", "content": {"users": {"@attacker:test": 100}, "events": {STORAGE_MARKER: 100}}},
+        ]
     }
-    assert await module.user_may_create_room("@a:x", room_config) == (
-        Codes.FORBIDDEN,
-        {"error": _DENIAL_MESSAGE},
+    requester = SimpleNamespace(user=SimpleNamespace(to_string=lambda: "@owner:test"))
+    await module.on_create_room(requester, config, False)
+    power = [item for item in config["initial_state"] if item["type"] == "m.room.power_levels"][0]
+    assert power["content"]["users"] == {"@owner:test": 100}
+    assert power["content"]["users_default"] == 0
+    assert power["content"]["ban"] == 100
+    assert power["content"]["invite"] == 100
+    assert power["content"]["state_default"] == 0
+    assert power["content"]["events_default"] == 0
+    assert power["content"]["events"]["m.room.name"] == 100
+    assert power["content"]["events"]["m.room.message"] == 0
+    assert power["content"]["events"]["m.room.message.encrypted"] == 0
+    assert power["content"]["events"]["m.sticker"] == 0
+    assert power["content"]["events"]["m.space.child"] == 100
+    assert power["content"]["events"]["m.space.parent"] == 100
+    assert power["content"]["events"][STORAGE_MARKER] == 100
+
+
+async def test_storage_power_levels_cannot_be_changed_even_by_owner():
+    module, _ = make_module({"@owner:test": "verified"})
+    fixed = module._fixed_power_levels("@owner:test")
+    current = event("m.room.power_levels", content=fixed)
+    changed = dict(fixed)
+    changed["users"] = {"@owner:test": 100, "@reader:test": 100}
+    allowed, error = await module.check_event_allowed(
+        event("m.room.power_levels", sender="@owner:test", content=changed),
+        {("m.room.power_levels", ""): current},
     )
+    assert allowed is False
+    assert error == {"error": "Storage room permissions are fixed."}
 
 
-async def test_verified_encrypted_initial_state_allowed():
-    module, _ = make_module(user_types={"@a:x": "verified"})
-    room_config = {
-        "initial_state": [
-            {
-                "type": "m.room.encryption",
-                "state_key": "",
-                "content": {"algorithm": "m.megolm.v1.aes-sha2"},
-            }
-        ],
+async def test_storage_sdk_creation_uses_effective_creation_content_and_override():
+    module, _ = make_module({"@owner:test": "verified"})
+    config = {
+        "creation_content": {"type": "m.space"},
+        "power_level_content_override": {"events": {STORAGE_MARKER: 100}},
+        "initial_state": [],
     }
-    assert await module.user_may_create_room("@a:x", room_config) is NOT_SPAM
+    requester = SimpleNamespace(user=SimpleNamespace(to_string=lambda: "@owner:test"))
+    await module.on_create_room(requester, config, False)
+    assert config["power_level_content_override"]["users"] == {"@owner:test": 100}
+    assert config["power_level_content_override"]["events"][STORAGE_MARKER] == 100
 
 
-async def test_unverified_unencrypted_room_is_allowed():
-    module, api = make_module(user_types={"@a:x": "unverified"})
-    assert await module.user_may_create_room("@a:x", {}) is NOT_SPAM
-    assert api.db_calls == ["tier_controller_get_user_type"]
-
-
-async def test_unverified_encryption_denied():
-    module, _ = make_module(user_types={"@a:x": "unverified"})
-    assert await module.check_event_for_spam(make_event("m.room.encryption", "@a:x")) == (
-        Codes.FORBIDDEN,
-        {"error": _DENIAL_MESSAGE},
+async def test_unmarked_power_levels_remain_native():
+    module, _ = make_module({"@owner:test": "verified"})
+    allowed, error = await module.check_event_allowed(
+        event("m.room.power_levels", content={"users": {"@owner:test": 100}}),
+        {("m.room.power_levels", ""): event("m.room.power_levels", content={"users": {"@owner:test": 100}})},
     )
-
-
-async def test_verified_encryption_allowed():
-    module, _ = make_module(user_types={"@a:x": "verified"})
-    assert await module.check_event_for_spam(make_event("m.room.encryption", "@a:x")) is NOT_SPAM
-
-
-async def test_null_type_encryption_denied():
-    module, _ = make_module(user_types={"@a:x": None})
-    assert await module.check_event_for_spam(make_event("m.room.encryption", "@a:x")) == (
-        Codes.FORBIDDEN,
-        {"error": _DENIAL_MESSAGE},
-    )
-
-
-async def test_non_encryption_event_ignored():
-    module, _ = make_module(user_types={"@a:x": "unverified"})
-    assert await module.check_event_for_spam(make_event("m.room.message", "@a:x")) is NOT_SPAM
-
-
-async def test_encryption_event_non_state_ignored():
-    module, _ = make_module(user_types={"@a:x": "unverified"})
-    assert await module.check_event_for_spam(
-        make_event("m.room.encryption", "@a:x", is_state=False)
-    ) is NOT_SPAM
-
-
-async def test_db_error_fails_closed_on_upload():
-    module, _ = make_module(user_types={"@a:x": "verified"}, db_error=True)
-    assert await upload_decision(module, "@a:x", 100) is False
-
-
-async def test_db_error_still_allows_unencrypted_room_creation():
-    module, _ = make_module(user_types={"@a:x": "verified"}, db_error=True)
-    assert await module.user_may_create_room("@a:x", {}) is NOT_SPAM
-
-
-async def test_user_type_grant_and_revocation_are_visible_immediately():
-    module, api = make_module(user_types={"@a:x": None})
-    assert await upload_decision(module, "@a:x", 100) is False
-
-    api.user_types["@a:x"] = "verified"
-    assert await upload_decision(module, "@a:x", 100) is True
-
-    api.user_types["@a:x"] = None
-    assert await upload_decision(module, "@a:x", 100) is False
-
-
-async def test_db_error_recovers_on_next_decision():
-    module, api = make_module(user_types={"@a:x": "verified"}, db_error=True)
-    assert await upload_decision(module, "@a:x", 100) is False
-
-    api.db_error = False
-    assert await upload_decision(module, "@a:x", 100) is True
+    assert (allowed, error) == (True, None)
 
 
 if __name__ == "__main__":

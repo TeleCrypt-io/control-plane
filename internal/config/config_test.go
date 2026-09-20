@@ -27,8 +27,6 @@ func setRequiredPlanEnv(t *testing.T) {
 		"SERVER_NAME":                "example.invalid",
 		"BILLING_ENVIRONMENT":        "test",
 		"MAS_OIDC_CLIENT_ID":         testPlanClientID,
-		"MAS_ADMIN_CLIENT_ID":        testPlanClientID,
-		"MAS_ADMIN_CLIENT_SECRET":    "admin-test-secret",
 		"MAS_OIDC_CLIENT_SECRET":     "test-secret",
 		"PLAN_SESSION_KEY":           strings.Repeat("s", 32),
 		"PLAN_ASSERTION_PRIVATE_KEY": testPlanPrivateKey(),
@@ -42,6 +40,7 @@ func setRequiredJanitorEnv(t *testing.T) {
 	for key, value := range map[string]string{
 		"MAS_ADMIN_CLIENT_ID":     testJanitorClientID,
 		"MAS_ADMIN_CLIENT_SECRET": "secret",
+		"SYNAPSE_ADMIN_TOKEN":     "synapse-admin-token",
 		"JANITOR_DB_URL":          "postgres://janitor:secret@db/database",
 		"SERVER_NAME":             "example.invalid",
 		"BILLING_ENVIRONMENT":     "test",
@@ -232,6 +231,9 @@ func TestLoadJanitorLoadsPrivateDatabaseURL(t *testing.T) {
 	if got, want := cfg.MASAdminURL, "http://127.0.0.1:8081"; got != want {
 		t.Fatalf("MASAdminURL = %q, want %q", got, want)
 	}
+	if got, want := cfg.SynapseAdminURL, "http://127.0.0.1:8008"; got != want {
+		t.Fatalf("SynapseAdminURL = %q, want %q", got, want)
+	}
 	if got, want := cfg.JanitorDBURL, "postgres://janitor:secret@db/database"; got != want {
 		t.Fatalf("JanitorDBURL = %q, want %q", got, want)
 	}
@@ -376,19 +378,14 @@ func TestRegistrationLoadRejectsInvalidHostname(t *testing.T) {
 	}
 }
 
-func TestLoadPlanRequiresMASAccountCredential(t *testing.T) {
+func TestLoadPlanRejectsMASAdminEnvironment(t *testing.T) {
 	for _, name := range []string{"MAS_ADMIN_CLIENT_ID", "MAS_ADMIN_CLIENT_SECRET"} {
 		t.Run(name, func(t *testing.T) {
 			setRequiredPlanEnv(t)
-			t.Setenv(name, "")
+			t.Setenv(name, "privileged-value")
 			if _, err := LoadPlan(); err == nil || !strings.Contains(err.Error(), name) {
-				t.Fatalf("LoadPlan = %v, want missing %s", err, name)
+				t.Fatalf("LoadPlan = %v, want rejected %s", err, name)
 			}
 		})
-	}
-	setRequiredPlanEnv(t)
-	cfg, err := LoadPlan()
-	if err != nil || cfg.MASAdminURL != "http://127.0.0.1:8081" || cfg.MASAdminClientID != testPlanClientID || cfg.MASAdminClientSecret != "admin-test-secret" {
-		t.Fatalf("Plan MAS admin configuration = %#v, %v", cfg, err)
 	}
 }

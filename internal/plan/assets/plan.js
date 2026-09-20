@@ -93,20 +93,3 @@ document.querySelector("#open-portal")?.addEventListener("click", openPortal);
 document.querySelectorAll("[data-remove-seat]").forEach((button) => {
   button.addEventListener("click", reportFailure(() => removeSeat(button.dataset.mxid)));
 });
-
-async function changeSeatAccess(button) {
-  button.disabled = true;
-  try {
-    const r = await command("/plan/members/" + encodeURIComponent(button.dataset.mxid) + "/" + button.dataset.seatAccess, { method: "POST" });
-    if (r.ok) { alert(button.dataset.seatAccess === "lock" ? "Member locked." : "Member unlocked."); location.reload(); }
-    else alert(await r.text());
-  } catch (error) {
-    alert(error.message);
-  } finally {
-    button.disabled = false;
-  }
-}
-
-document.querySelectorAll("[data-seat-access]").forEach((button) => {
-  button.addEventListener("click", () => changeSeatAccess(button));
-});

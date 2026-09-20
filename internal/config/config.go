@@ -68,7 +68,11 @@ type JanitorConfig struct {
 	MASAdminURL          string
 	MASAdminClientID     string
 	MASAdminClientSecret string
+	SynapseAdminURL      string
+	SynapseAdminToken    string
 	JanitorDBURL         string
+	DodoReadOnlyAPIURL   string
+	DodoReadOnlyAPIKey   string
 	ServerName           string
 	OwnerEmail           string
 	SMTPHost             string
@@ -87,7 +91,11 @@ func LoadJanitor() (*JanitorConfig, error) {
 		MASAdminURL:          masAdminURL,
 		MASAdminClientID:     os.Getenv("MAS_ADMIN_CLIENT_ID"),
 		MASAdminClientSecret: os.Getenv("MAS_ADMIN_CLIENT_SECRET"),
+		SynapseAdminURL:      synapseAdminURL,
+		SynapseAdminToken:    os.Getenv("SYNAPSE_ADMIN_TOKEN"),
 		JanitorDBURL:         os.Getenv("JANITOR_DB_URL"),
+		DodoReadOnlyAPIURL:   os.Getenv("DODO_READ_ONLY_API_URL"),
+		DodoReadOnlyAPIKey:   os.Getenv("DODO_READ_ONLY_API_KEY"),
 		ServerName:           serverName,
 		OwnerEmail:           os.Getenv("OWNER_EMAIL"),
 		SMTPHost:             os.Getenv("SMTP_HOST"),
@@ -97,7 +105,8 @@ func LoadJanitor() (*JanitorConfig, error) {
 	}
 	required := []envValue{
 		{"MAS_ADMIN_CLIENT_ID", c.MASAdminClientID},
-		{"MAS_ADMIN_CLIENT_SECRET", c.MASAdminClientSecret}, {"JANITOR_DB_URL", c.JanitorDBURL},
+		{"MAS_ADMIN_CLIENT_SECRET", c.MASAdminClientSecret}, {"SYNAPSE_ADMIN_TOKEN", c.SynapseAdminToken},
+		{"JANITOR_DB_URL", c.JanitorDBURL},
 		{"SERVER_NAME", c.ServerName},
 	}
 	if err := requireEnvValues(required, "missing required env vars"); err != nil {
@@ -113,6 +122,17 @@ func LoadJanitor() (*JanitorConfig, error) {
 	}
 	if err := rejectSurroundingWhitespace(optional); err != nil {
 		return nil, err
+	}
+	if c.DodoReadOnlyAPIURL != "" || c.DodoReadOnlyAPIKey != "" {
+		if err := requireEnvValues([]envValue{{"DODO_READ_ONLY_API_URL", c.DodoReadOnlyAPIURL}, {"DODO_READ_ONLY_API_KEY", c.DodoReadOnlyAPIKey}}, "missing required Janitor Dodo read-only env vars"); err != nil {
+			return nil, err
+		}
+		if c.OwnerEmail == "" {
+			return nil, fmt.Errorf("OWNER_EMAIL is required when Janitor Dodo read-only reconciliation is enabled")
+		}
+		if err := validatePublicHTTPSURL(c.DodoReadOnlyAPIURL, "DODO_READ_ONLY_API_URL"); err != nil {
+			return nil, err
+		}
 	}
 	mailConfigured := false
 	for _, value := range optional {
@@ -139,12 +159,9 @@ func LoadJanitor() (*JanitorConfig, error) {
 	return c, nil
 }
 
-// PlanConfig contains the browser-facing service configuration. It has no payment,
+// PlanConfig contains the browser-facing service configuration. Plan has no MAS-admin,
 // Synapse-admin, or database credentials.
 type PlanConfig struct {
-	MASAdminURL             string
-	MASAdminClientID        string
-	MASAdminClientSecret    string
 	BillingEnvironment      string
 	ServerName              string
 	BackendPublicURL        string
@@ -163,9 +180,6 @@ func LoadPlan() (*PlanConfig, error) {
 		return nil, err
 	}
 	c := &PlanConfig{
-		MASAdminURL:             masAdminURL,
-		MASAdminClientID:        os.Getenv("MAS_ADMIN_CLIENT_ID"),
-		MASAdminClientSecret:    os.Getenv("MAS_ADMIN_CLIENT_SECRET"),
 		BillingEnvironment:      billingEnvironment,
 		ServerName:              serverName,
 		BackendPublicURL:        endpoints.origin,
@@ -179,16 +193,17 @@ func LoadPlan() (*PlanConfig, error) {
 	if _, present := os.LookupEnv("SESSION_KEY"); present {
 		return nil, fmt.Errorf("SESSION_KEY must be unset; use PLAN_SESSION_KEY")
 	}
+	for _, key := range []string{"MAS_ADMIN_CLIENT_ID", "MAS_ADMIN_CLIENT_SECRET"} {
+		if _, present := os.LookupEnv(key); present {
+			return nil, fmt.Errorf("%s must be unset for Plan", key)
+		}
+	}
 	required := []envValue{
-		{"MAS_ADMIN_CLIENT_ID", c.MASAdminClientID}, {"MAS_ADMIN_CLIENT_SECRET", c.MASAdminClientSecret},
 		{"MAS_OIDC_CLIENT_ID", c.MASClientID}, {"MAS_OIDC_CLIENT_SECRET", c.MASClientSecret},
 		{"PLAN_SESSION_KEY", c.PlanSessionKey}, {"PLAN_ASSERTION_PRIVATE_KEY", c.PlanAssertionPrivateKey},
 	}
 	if err := requireEnvValues(required, "missing required env var"); err != nil {
 		return nil, err
-	}
-	if !validMASClientID(c.MASAdminClientID) {
-		return nil, fmt.Errorf("MAS_ADMIN_CLIENT_ID must be a canonical 26-character MAS ULID")
 	}
 	if !validMASClientID(c.MASClientID) {
 		return nil, fmt.Errorf("MAS_OIDC_CLIENT_ID must be a canonical 26-character MAS ULID")
@@ -209,6 +224,7 @@ func LoadPlan() (*PlanConfig, error) {
 const (
 	masAdminURL        = "http://127.0.0.1:8081"
 	masInternalURL     = "http://127.0.0.1:8082"
+	synapseAdminURL    = "http://127.0.0.1:8008"
 	cashierInternalURL = "http://127.0.0.1:9011"
 )
 
