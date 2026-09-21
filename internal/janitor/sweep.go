@@ -1,6 +1,5 @@
 // Package janitor implements one scheduled lifecycle-maintenance run. It has no HTTP server.
-// Cashier owns entitlement and lifecycle state; Janitor executes only the time-due actions
-// exposed through its narrow database view/functions.
+// Cashier owns entitlement state; Janitor reads its ordinary tables and executes due lifecycle work.
 package janitor
 
 import (
@@ -14,10 +13,7 @@ import (
 	"github.com/TeleCrypt-io/controlplane/internal/db"
 	"github.com/TeleCrypt-io/controlplane/internal/httpdiag"
 	"github.com/TeleCrypt-io/controlplane/internal/masadmin"
-	"github.com/google/uuid"
 )
-
-const auditCleanupTimeout = 2 * time.Second
 
 type Config struct {
 	ServerName         string
@@ -50,9 +46,9 @@ type mediaRemovalClient interface {
 type lifecycleStore interface {
 	SyncLifecycleAccount(context.Context, string, time.Time) error
 	LifecycleActions(context.Context) ([]db.LifecycleAction, error)
-	ExecuteSuspension(context.Context, string, int64, func(context.Context, string) error) (bool, error)
-	StartRemoval(context.Context, string, int64) (bool, int64, error)
-	FinishRemoval(context.Context, string, int64) (bool, error)
+	ExecuteSuspension(context.Context, string, func(context.Context, string) error) (bool, error)
+	StartRemoval(context.Context, string) (bool, error)
+	FinishRemoval(context.Context, string) (bool, error)
 }
 
 // Discrepancy is intentionally provider-neutral. Janitor reports it to the owner and does not
@@ -75,11 +71,9 @@ type cashierSubscriptionSnapshotReader interface {
 }
 
 type store interface {
-	VerifyDeploymentIdentity(context.Context, string, string) error
 	lifecycleStore
 	JanitorDigestCursor(context.Context) (db.DigestCursor, bool, error)
 	SetJanitorDigestCursor(context.Context, db.DigestCursor) error
-	InsertRunEvent(context.Context, db.RunEvent) error
 }
 
 type Mailer interface {
@@ -99,176 +93,63 @@ func NewLifecycleSweeper(mas masAdminClient, synapse synapseAdminClient, store s
 	return &Sweeper{mas: mas, synapse: synapse, store: store, mailer: mailer, dodo: dodo, cfg: cfg}
 }
 
-type sweepState struct {
-	runID         uuid.UUID
-	considered    int64
-	skipped       int64
-	locked        int64 // historical audit column; counts native suspensions for compatibility
-	failures      int64
-	notification  string
-	failureReason string
-	labels        []string
-	labelSet      map[string]struct{}
-}
-
-type operationError struct {
-	reason string
-	err    error
-}
-
-func (e *operationError) Error() string { return e.err.Error() }
-func (e *operationError) Unwrap() error { return e.err }
-
-func (s *sweepState) addLabel(label string) {
-	if s.labelSet == nil {
-		s.labelSet = make(map[string]struct{})
-	}
-	if _, exists := s.labelSet[label]; exists {
-		return
-	}
-	s.labelSet[label] = struct{}{}
-	s.labels = append(s.labels, label)
-}
-
-func (s *sweepState) fail(reason, label string) {
-	s.failures++
-	if s.failureReason == "" {
-		s.failureReason = reason
-	}
-	if label != "" {
-		s.addLabel(label)
-	}
-}
-
-func (s *Sweeper) startedEvent(runID uuid.UUID) db.RunEvent {
-	return db.RunEvent{
-		EventID: uuid.New(), RunID: runID, EventKind: "started", Status: "started", Outcome: "pending", Reason: "pending",
-		ServerName: s.cfg.ServerName, BillingEnvironment: s.cfg.BillingEnvironment,
-		NotificationStatus: "not_attempted", Labels: []string{"audit_started"},
-	}
-}
-
-func (s *Sweeper) finishedEvent(state *sweepState, status, outcome, reason string) db.RunEvent {
-	labels := append([]string(nil), state.labels...)
-	labels = append(labels, "audit_finished")
-	return db.RunEvent{
-		EventID: uuid.New(), RunID: state.runID, EventKind: "finished", Status: status, Outcome: outcome, Reason: reason,
-		ServerName: s.cfg.ServerName, BillingEnvironment: s.cfg.BillingEnvironment,
-		Considered: state.considered, Skipped: state.skipped, LockedOrWouldLock: state.locked,
-		Failures: state.failures, NotificationStatus: state.notification, Labels: labels,
-	}
-}
-
-// Sweep performs exactly one complete run. It has no provider retry loop and always attempts the
-// terminal audit row after a run has been authorized and its started row has been written.
+// Sweep performs exactly one complete nightly run. Dodo reconciliation and email are read-only
+// reporting paths; lifecycle changes use the direct Cashier tables through ordinary SQL.
 func (s *Sweeper) Sweep(ctx context.Context) error {
-	if err := db.ValidateDeploymentProfile(s.cfg.ServerName, s.cfg.BillingEnvironment); err != nil {
-		return err
-	}
-	if err := s.store.VerifyDeploymentIdentity(ctx, s.cfg.ServerName, s.cfg.BillingEnvironment); err != nil {
-		return httpdiag.WrapCause("janitor: deployment identity validation failed", err)
-	}
-	runID := uuid.New()
-	state := &sweepState{runID: runID, notification: "not_attempted"}
-	if err := s.store.InsertRunEvent(ctx, s.startedEvent(runID)); err != nil {
-		return httpdiag.WrapCause("janitor: started audit event failed", err)
-	}
-
-	finish := func(baseErr error) error {
-		finishCtx, cancelFinish := boundedAuditContext(ctx)
-		defer cancelFinish()
-		if baseErr == nil && state.failures == 0 {
-			reason := "no_eligible_accounts"
-			if state.locked > 0 {
-				reason = "disabled"
-			}
-			if err := s.store.InsertRunEvent(finishCtx, s.finishedEvent(state, "succeeded", "success", reason)); err != nil {
-				return httpdiag.WrapCause("janitor: finished audit event failed", err)
-			}
-			return nil
-		}
-		reason := state.failureReason
-		if reason == "" {
-			reason = "audit"
-		}
-		if err := s.store.InsertRunEvent(finishCtx, s.finishedEvent(state, "failed", "operational_failure", reason)); err != nil {
-			return errors.Join(baseErr, httpdiag.WrapCause("janitor: finished audit event failed", err))
-		}
-		return baseErr
-	}
-
 	users, err := s.mas.ListUsers(ctx)
 	if err != nil {
-		state.fail("mas", "mas_users")
-		return finish(httpdiag.WrapCause("janitor: list users failed", err))
+		return httpdiag.WrapCause("janitor: list users failed", err)
 	}
-	state.considered = int64(len(users))
-	state.addLabel("mas_users")
-	if err := s.sweepAuthoritativeLifecycle(ctx, users, s.store, state); err != nil {
-		return finish(err)
+	if err := s.sweepAuthoritativeLifecycle(ctx, users, s.store); err != nil {
+		return err
 	}
 	if ctx.Err() != nil {
-		state.fail("cancelled", "cancelled")
-		return finish(httpdiag.WrapCause("janitor: sweep canceled", ctx.Err()))
+		return httpdiag.WrapCause("janitor: sweep canceled", ctx.Err())
 	}
-	if err := s.sweepProvider(ctx, state); err != nil {
-		return finish(err)
+	if err := s.sweepProvider(ctx); err != nil {
+		return err
 	}
 	var emails []masadmin.UserEmail
 	if s.cfg.OwnerEmail != "" {
 		emails, err = s.mas.ListUserEmails(ctx)
 		if err != nil {
-			state.fail("mas", "mas_emails")
-			return finish(httpdiag.WrapCause("janitor: list user emails failed", err))
+			return httpdiag.WrapCause("janitor: list user emails failed", err)
 		}
-		state.addLabel("mas_emails")
 	}
-	if err := s.sweepDigest(ctx, users, emails, state); err != nil {
-		reason, label := "notification", "notification"
-		var operation *operationError
-		if errors.As(err, &operation) {
-			reason = operation.reason
-			label = failureLabel(operation.reason)
-		}
-		state.fail(reason, label)
-		return finish(httpdiag.WrapCause("janitor: digest failed", err))
+	if err := s.sweepDigest(ctx, users, emails); err != nil {
+		return httpdiag.WrapCause("janitor: digest failed", err)
 	}
-	return finish(nil)
+	return nil
 }
 
-func (s *Sweeper) sweepAuthoritativeLifecycle(ctx context.Context, users []masadmin.User, lifecycle lifecycleStore, state *sweepState) error {
+func (s *Sweeper) sweepAuthoritativeLifecycle(ctx context.Context, users []masadmin.User, lifecycle lifecycleStore) error {
 	for _, snapshot := range users {
 		mxid := s.mxid(snapshot.Username)
 		if mxid == "" || snapshot.DeactivatedAt != nil {
 			continue
 		}
 		if err := lifecycle.SyncLifecycleAccount(ctx, mxid, snapshot.CreatedAt); err != nil {
-			state.fail("database", "database")
 			return httpdiag.WrapCause("janitor: synchronize lifecycle account", err)
 		}
 	}
 	actions, err := lifecycle.LifecycleActions(ctx)
 	if err != nil {
-		state.fail("database", "database")
 		return httpdiag.WrapCause("janitor: read lifecycle actions", err)
 	}
-	state.addLabel("lifecycle")
 	usersByUsername := make(map[string]masadmin.User, len(users))
 	for _, user := range users {
 		usersByUsername[user.Username] = user
 	}
 	for _, action := range actions {
 		if ctx.Err() != nil {
-			state.fail("cancelled", "cancelled")
 			return httpdiag.WrapCause("janitor: lifecycle sweep canceled", ctx.Err())
 		}
 		switch action.Action {
 		case "suspend":
 			if action.DesiredUserType == nil || *action.DesiredUserType != "wild" {
-				state.fail("database", "database")
 				return fmt.Errorf("janitor: Cashier returned an unsupported lifecycle projection")
 			}
-			applied, err := lifecycle.ExecuteSuspension(ctx, action.MXID, action.Revision, func(callCtx context.Context, desired string) error {
+			if _, err := lifecycle.ExecuteSuspension(ctx, action.MXID, func(callCtx context.Context, desired string) error {
 				policy, ok := s.synapse.(synapsePolicyClient)
 				if !ok {
 					return errors.New("synapse admin client does not support user_type projection")
@@ -284,38 +165,27 @@ func (s *Sweeper) sweepAuthoritativeLifecycle(ctx context.Context, users []masad
 					return err
 				}
 				return s.synapse.SuspendUser(callCtx, action.MXID, true)
-			})
-			if err != nil {
-				state.fail("lock", "lock")
+			}); err != nil {
 				return httpdiag.WrapCause("janitor: suspend lifecycle account", err)
 			}
-			if applied {
-				state.locked++
-				state.addLabel("lock")
-			}
 		case "start_removal":
-			started, nextRevision, err := lifecycle.StartRemoval(ctx, action.MXID, action.Revision)
+			started, err := lifecycle.StartRemoval(ctx, action.MXID)
 			if err != nil {
-				state.fail("database", "database")
 				return httpdiag.WrapCause("janitor: start lifecycle removal", err)
 			}
 			if started {
 				if err := s.finishExternalRemoval(ctx, action.MXID, usersByUsername); err != nil {
-					state.fail("mas", "mas_users")
 					return err
 				}
-				if _, err := lifecycle.FinishRemoval(ctx, action.MXID, nextRevision); err != nil {
-					state.fail("database", "database")
+				if _, err := lifecycle.FinishRemoval(ctx, action.MXID); err != nil {
 					return httpdiag.WrapCause("janitor: finish lifecycle removal", err)
 				}
 			}
 		case "finish_removal":
 			if err := s.finishExternalRemoval(ctx, action.MXID, usersByUsername); err != nil {
-				state.fail("mas", "mas_users")
 				return err
 			}
-			if _, err := lifecycle.FinishRemoval(ctx, action.MXID, action.Revision); err != nil {
-				state.fail("database", "database")
+			if _, err := lifecycle.FinishRemoval(ctx, action.MXID); err != nil {
 				return httpdiag.WrapCause("janitor: finish lifecycle removal", err)
 			}
 		}
@@ -350,24 +220,6 @@ func (s *Sweeper) finishExternalRemoval(ctx context.Context, mxid string, users 
 	return nil
 }
 
-func boundedAuditContext(parent context.Context) (context.Context, context.CancelFunc) {
-	if parent == nil || parent.Err() != nil {
-		return context.WithTimeout(context.Background(), auditCleanupTimeout)
-	}
-	return context.WithTimeout(parent, auditCleanupTimeout)
-}
-
-func failureLabel(reason string) string {
-	switch reason {
-	case "mas":
-		return "mas_users"
-	case "database", "notification", "audit", "cancelled", "lock", "lock_readback":
-		return reason
-	default:
-		return "audit"
-	}
-}
-
 func (s *Sweeper) mxid(username string) string {
 	if !masadmin.ValidMXID(username, s.cfg.ServerName) {
 		return ""
@@ -375,22 +227,21 @@ func (s *Sweeper) mxid(username string) string {
 	return fmt.Sprintf("@%s:%s", username, s.cfg.ServerName)
 }
 
-func (s *Sweeper) sweepProvider(ctx context.Context, state *sweepState) error {
+func (s *Sweeper) sweepProvider(ctx context.Context) error {
 	if s.dodo == nil {
 		return nil
 	}
 	provider, err := s.dodo.Subscriptions(ctx)
 	if err != nil {
-		state.notification = "failed"
-		return &operationError{reason: "notification", err: httpdiag.WrapCause("provider reconciliation failed", err)}
+		return httpdiag.WrapCause("provider reconciliation failed", err)
 	}
 	reader, ok := s.store.(cashierSubscriptionSnapshotReader)
 	if !ok {
-		return &operationError{reason: "database", err: errors.New("Cashier subscription snapshot is unavailable")}
+		return errors.New("Cashier subscription snapshot is unavailable")
 	}
 	local, err := reader.ProviderSubscriptionSnapshot(ctx)
 	if err != nil {
-		return &operationError{reason: "database", err: httpdiag.WrapCause("Cashier subscription snapshot failed", err)}
+		return httpdiag.WrapCause("Cashier subscription snapshot failed", err)
 	}
 	discrepancies := compareSubscriptionSnapshots(provider, local)
 	if len(discrepancies) == 0 || s.cfg.OwnerEmail == "" {
@@ -403,11 +254,8 @@ func (s *Sweeper) sweepProvider(ctx context.Context, state *sweepState) error {
 	sort.Strings(rows)
 	body := "Dodo reconciliation found discrepancies; no automatic correction was applied.\r\n\r\n" + strings.Join(rows, "\r\n") + "\r\n"
 	if err := s.mailer.Send(ctx, s.cfg.OwnerEmail, "TeleCrypt.io: billing reconciliation discrepancies", body); err != nil {
-		state.notification = "failed"
-		return &operationError{reason: "notification", err: httpdiag.WrapCause("provider discrepancy notification failed", err)}
+		return httpdiag.WrapCause("provider discrepancy notification failed", err)
 	}
-	state.notification = "succeeded"
-	state.addLabel("notification")
 	return nil
 }
 
@@ -442,23 +290,23 @@ func compareSubscriptionSnapshots(provider []ProviderSubscription, local []db.Su
 	return discrepancies
 }
 
-func (s *Sweeper) sweepDigest(ctx context.Context, users []masadmin.User, emails []masadmin.UserEmail, state *sweepState) error {
+func (s *Sweeper) sweepDigest(ctx context.Context, users []masadmin.User, emails []masadmin.UserEmail) error {
 	if s.cfg.OwnerEmail == "" {
 		return nil
 	}
 	cursor, found, err := s.store.JanitorDigestCursor(ctx)
 	if err != nil {
-		return &operationError{reason: "database", err: httpdiag.WrapCause("digest cursor read failed", err)}
+		return httpdiag.WrapCause("digest cursor read failed", err)
 	}
 	if !found {
 		cursor = db.DigestCursor{CreatedAt: time.Unix(0, 0).UTC()}
 	} else if !cursor.Valid() {
-		return &operationError{reason: "database", err: fmt.Errorf("digest cursor is invalid")}
+		return fmt.Errorf("digest cursor is invalid")
 	}
 	usersByID := make(map[string]masadmin.User, len(users))
 	for _, user := range users {
 		if !validEventID(user.ID) || user.Username == "" || user.CreatedAt.IsZero() {
-			return &operationError{reason: "mas", err: fmt.Errorf("digest user snapshot is invalid")}
+			return fmt.Errorf("digest user snapshot is invalid")
 		}
 		usersByID[user.ID] = user
 	}
@@ -472,11 +320,11 @@ func (s *Sweeper) sweepDigest(ctx context.Context, users []masadmin.User, emails
 	var high masadmin.UserEmail
 	for _, email := range emails {
 		if !validEventID(email.ID) || !validEventID(email.UserID) || email.CreatedAt.IsZero() {
-			return &operationError{reason: "mas", err: fmt.Errorf("digest email snapshot is invalid")}
+			return fmt.Errorf("digest email snapshot is invalid")
 		}
 		if after(email.CreatedAt, email.ID) {
 			if _, ok := usersByID[email.UserID]; !ok {
-				return &operationError{reason: "mas", err: fmt.Errorf("digest snapshots disagree")}
+				return fmt.Errorf("digest snapshots disagree")
 			}
 			if high.ID == "" || before(high, email) {
 				high = email
@@ -498,18 +346,18 @@ func (s *Sweeper) sweepDigest(ctx context.Context, users []masadmin.User, emails
 		}
 		user, ok := usersByID[userID]
 		if !ok {
-			return &operationError{reason: "mas", err: fmt.Errorf("digest snapshots disagree")}
+			return fmt.Errorf("digest snapshots disagree")
 		}
 		mxid := s.mxid(user.Username)
 		if mxid == "" {
-			return &operationError{reason: "mas", err: fmt.Errorf("digest user identity is invalid")}
+			return fmt.Errorf("digest user identity is invalid")
 		}
 		candidates = append(candidates, candidate{mxid: mxid, userCreatedAt: user.CreatedAt, email: email})
 	}
 	if len(candidates) == 0 {
 		if high.ID != "" {
 			if err := s.store.SetJanitorDigestCursor(ctx, db.DigestCursor{CreatedAt: high.CreatedAt, EmailID: high.ID}); err != nil {
-				return &operationError{reason: "database", err: httpdiag.WrapCause("digest cursor advance failed", err)}
+				return httpdiag.WrapCause("digest cursor advance failed", err)
 			}
 		}
 		return nil
@@ -521,14 +369,11 @@ func (s *Sweeper) sweepDigest(ctx context.Context, users []masadmin.User, emails
 		fmt.Fprintf(&body, "%s  created %s\r\n", candidate.mxid, candidate.userCreatedAt.Format(time.RFC3339))
 	}
 	if err := s.mailer.Send(ctx, s.cfg.OwnerEmail, fmt.Sprintf("TeleCrypt.io: %d new sign-up(s) awaiting review", len(candidates)), body.String()); err != nil {
-		state.notification = "failed"
-		return &operationError{reason: "notification", err: httpdiag.WrapCause("notification delivery failed", err)}
+		return httpdiag.WrapCause("notification delivery failed", err)
 	}
-	state.notification = "succeeded"
-	state.addLabel("notification")
 	if high.ID != "" {
 		if err := s.store.SetJanitorDigestCursor(ctx, db.DigestCursor{CreatedAt: high.CreatedAt, EmailID: high.ID}); err != nil {
-			return &operationError{reason: "database", err: httpdiag.WrapCause("digest cursor advance failed", err)}
+			return httpdiag.WrapCause("digest cursor advance failed", err)
 		}
 	}
 	return nil

@@ -1,8 +1,6 @@
 package config
 
 import (
-	"crypto/ed25519"
-	"encoding/base64"
 	"os"
 	"strings"
 	"testing"
@@ -13,28 +11,19 @@ const (
 	testJanitorClientID = "01J00000000000000000000001"
 )
 
-func testPlanPrivateKey() string {
-	seed := make([]byte, ed25519.SeedSize)
-	for i := range seed {
-		seed[i] = byte(i + 1)
-	}
-	return base64.RawURLEncoding.EncodeToString(ed25519.NewKeyFromSeed(seed))
-}
-
 func setRequiredPlanEnv(t *testing.T) {
 	t.Helper()
 	for key, value := range map[string]string{
-		"SERVER_NAME":                "example.invalid",
-		"BILLING_ENVIRONMENT":        "test",
-		"MAS_OIDC_CLIENT_ID":         testPlanClientID,
-		"MAS_OIDC_CLIENT_SECRET":     "test-secret",
-		"PLAN_SESSION_KEY":           strings.Repeat("s", 32),
-		"PLAN_ASSERTION_PRIVATE_KEY": testPlanPrivateKey(),
-		"PLAN_BILLING_LINK_1":        "https://checkout.example.invalid/tier-1",
-		"PLAN_BILLING_LINK_2":        "https://checkout.example.invalid/tier-2",
-		"PLAN_BILLING_LINK_3":        "https://checkout.example.invalid/tier-3",
-		"PLAN_BILLING_LINK_4":        "https://checkout.example.invalid/tier-4",
-		"PLAN_BILLING_PORTAL_URL":    "https://portal.example.invalid/login",
+		"SERVER_NAME":             "example.invalid",
+		"BILLING_ENVIRONMENT":     "test",
+		"MAS_OIDC_CLIENT_ID":      testPlanClientID,
+		"MAS_OIDC_CLIENT_SECRET":  "test-secret",
+		"PLAN_SESSION_KEY":        strings.Repeat("s", 32),
+		"PLAN_BILLING_LINK_1":     "https://checkout.example.invalid/tier-1",
+		"PLAN_BILLING_LINK_2":     "https://checkout.example.invalid/tier-2",
+		"PLAN_BILLING_LINK_3":     "https://checkout.example.invalid/tier-3",
+		"PLAN_BILLING_LINK_4":     "https://checkout.example.invalid/tier-4",
+		"PLAN_BILLING_PORTAL_URL": "https://portal.example.invalid/login",
 	} {
 		t.Setenv(key, value)
 	}
@@ -180,15 +169,12 @@ func TestLoadPlanRejectsShortPlanSessionKey(t *testing.T) {
 }
 
 func TestLoadPlanRejectsSurroundingWhitespaceInSecrets(t *testing.T) {
-	for _, name := range []string{"MAS_OIDC_CLIENT_ID", "MAS_OIDC_CLIENT_SECRET", "PLAN_SESSION_KEY", "PLAN_ASSERTION_PRIVATE_KEY"} {
+	for _, name := range []string{"MAS_OIDC_CLIENT_ID", "MAS_OIDC_CLIENT_SECRET", "PLAN_SESSION_KEY"} {
 		t.Run(name, func(t *testing.T) {
 			setRequiredPlanEnv(t)
 			value := " secret "
 			if name == "PLAN_SESSION_KEY" {
 				value = " " + strings.Repeat("s", 32)
-			}
-			if name == "PLAN_ASSERTION_PRIVATE_KEY" {
-				value = " " + testPlanPrivateKey()
 			}
 			t.Setenv(name, value)
 			if _, err := LoadPlan(); err == nil || !strings.Contains(err.Error(), name) {
@@ -203,22 +189,6 @@ func TestLoadPlanRejectsLegacySessionKeyName(t *testing.T) {
 	t.Setenv("SESSION_KEY", strings.Repeat("s", 32))
 	if _, err := LoadPlan(); err == nil || !strings.Contains(err.Error(), "SESSION_KEY") {
 		t.Fatalf("LoadPlan error = %v, want legacy SESSION_KEY rejection", err)
-	}
-}
-
-func TestLoadPlanRejectsInvalidPrivateKeyMaterial(t *testing.T) {
-	for _, value := range []string{
-		strings.Repeat("A", 86),
-		base64.RawURLEncoding.EncodeToString(make([]byte, ed25519.PrivateKeySize)),
-		base64.RawURLEncoding.EncodeToString(make([]byte, ed25519.PrivateKeySize)) + "=",
-	} {
-		t.Run(value, func(t *testing.T) {
-			setRequiredPlanEnv(t)
-			t.Setenv("PLAN_ASSERTION_PRIVATE_KEY", value)
-			if _, err := LoadPlan(); err == nil || !strings.Contains(err.Error(), "PLAN_ASSERTION_PRIVATE_KEY") {
-				t.Fatalf("LoadPlan error = %v, want invalid PLAN_ASSERTION_PRIVATE_KEY rejection", err)
-			}
-		})
 	}
 }
 

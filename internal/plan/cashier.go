@@ -9,8 +9,7 @@ import (
 )
 
 // Principal is the authenticated Matrix identity established by Plan's MAS OIDC session.
-// Cashier must treat it as an assertion to verify, not as a client-supplied authorization
-// decision. HTTPCashierClient carries it in a short-lived, audience-bound, signed assertion.
+// Cashier uses it to authorize the private request against its own team and membership state.
 type Principal struct {
 	MXID string
 }
@@ -85,14 +84,13 @@ type BillingLink struct {
 // database access. Every command is performed for principal; Cashier must derive ownership from
 // that identity rather than accepting browser-supplied ownership identifiers.
 //
-// Implementations must use short-lived, audience-bound Plan assertions on the shared pod's
-// loopback connection. Monetary commands must accept and durably honour requestID for safe
-// browser retries.
+// Implementations must use the shared pod's private connection. Cashier derives ownership from
+// the authenticated principal and ordinary database constraints make repeated commands harmless.
 type CashierClient interface {
 	PlanState(ctx context.Context, principal Principal) (PlanState, error)
-	AttachMember(ctx context.Context, principal Principal, requestID, mxid string) error
+	AttachMember(ctx context.Context, principal Principal, mxid string) error
 	// RemoveMember detaches a target for an owner.
-	RemoveMember(ctx context.Context, principal Principal, requestID, mxid string) error
+	RemoveMember(ctx context.Context, principal Principal, mxid string) error
 	// LeaveMember detaches the authenticated member; Cashier enforces the owner rule.
-	LeaveMember(ctx context.Context, principal Principal, requestID string) error
+	LeaveMember(ctx context.Context, principal Principal) error
 }

@@ -7,7 +7,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -26,7 +25,7 @@ func main() {
 	}
 }
 
-func run() (runErr error) {
+func run() error {
 	cfg, err := config.LoadJanitor()
 	if err != nil {
 		slog.Error("config", "error", err.Error())
@@ -44,37 +43,9 @@ func run() (runErr error) {
 		return err
 	}
 	defer pool.Close()
-	if err := db.ValidateJanitorRole(ctx, pool); err != nil {
-		slog.Error("db role", "error", err.Error())
-		return err
-	}
-	invocationLock, err := db.AcquireJanitorInvocationLock(ctx, pool)
-	if err != nil {
-		slog.Error("janitor single-flight", "error", err.Error())
-		return err
-	}
-	defer func() {
-		if releaseErr := invocationLock.Release(ctx); releaseErr != nil {
-			slog.Error("janitor invocation-lock release", "error", releaseErr.Error())
-			runErr = errors.Join(runErr, releaseErr)
-		}
-	}()
-
-	if err := db.ValidateJanitorSchemaACL(ctx, pool); err != nil {
-		slog.Error("db schema contract", "error", err.Error())
-		return err
-	}
 	store := db.NewStore(pool)
 	if err := db.Migrate(ctx, pool); err != nil {
 		slog.Error("migrate", "error", err.Error())
-		return err
-	}
-	if err := store.VerifyDeploymentIdentity(ctx, cfg.ServerName, cfg.BillingEnvironment); err != nil {
-		slog.Error("deployment identity", "error", err.Error())
-		return err
-	}
-	if err := db.ValidateJanitorDatabaseContract(ctx, pool); err != nil {
-		slog.Error("db contract", "error", err.Error())
 		return err
 	}
 

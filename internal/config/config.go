@@ -2,9 +2,6 @@
 package config
 
 import (
-	"bytes"
-	"crypto/ed25519"
-	"encoding/base64"
 	"fmt"
 	"net/mail"
 	"net/url"
@@ -61,8 +58,8 @@ func (c *Config) ValidateRegistration() error {
 	return nil
 }
 
-// JanitorConfig is Janitor configuration. Cashier alone writes payment state; Janitor verifies
-// its deployment identity before it reads the two Cashier-owned Janitor views.
+// JanitorConfig is Janitor configuration. Cashier alone writes payment state; Janitor reads
+// Cashier's ordinary lifecycle and provider tables using its dedicated database role.
 type JanitorConfig struct {
 	BillingEnvironment   string
 	MASAdminURL          string
@@ -162,21 +159,20 @@ func LoadJanitor() (*JanitorConfig, error) {
 // PlanConfig contains the browser-facing service configuration. Plan has no MAS-admin,
 // Synapse-admin, or database credentials.
 type PlanConfig struct {
-	BillingEnvironment      string
-	ServerName              string
-	BackendPublicURL        string
-	MASInternalURL          string
-	PlanPublicURL           string
-	CashierInternalURL      string // fixed pod-local endpoint
-	MASClientID             string
-	MASClientSecret         string
-	PlanSessionKey          string
-	PlanAssertionPrivateKey string
-	BillingLink1            string
-	BillingLink2            string
-	BillingLink3            string
-	BillingLink4            string
-	BillingPortalURL        string
+	BillingEnvironment string
+	ServerName         string
+	BackendPublicURL   string
+	MASInternalURL     string
+	PlanPublicURL      string
+	CashierInternalURL string // fixed pod-local endpoint
+	MASClientID        string
+	MASClientSecret    string
+	PlanSessionKey     string
+	BillingLink1       string
+	BillingLink2       string
+	BillingLink3       string
+	BillingLink4       string
+	BillingPortalURL   string
 }
 
 func LoadPlan() (*PlanConfig, error) {
@@ -185,20 +181,19 @@ func LoadPlan() (*PlanConfig, error) {
 		return nil, err
 	}
 	c := &PlanConfig{
-		BillingEnvironment:      billingEnvironment,
-		ServerName:              serverName,
-		BackendPublicURL:        endpoints.origin,
-		MASInternalURL:          masInternalURL,
-		CashierInternalURL:      cashierInternalURL,
-		MASClientID:             os.Getenv("MAS_OIDC_CLIENT_ID"),
-		MASClientSecret:         os.Getenv("MAS_OIDC_CLIENT_SECRET"),
-		PlanSessionKey:          os.Getenv("PLAN_SESSION_KEY"),
-		PlanAssertionPrivateKey: os.Getenv("PLAN_ASSERTION_PRIVATE_KEY"),
-		BillingLink1:            os.Getenv("PLAN_BILLING_LINK_1"),
-		BillingLink2:            os.Getenv("PLAN_BILLING_LINK_2"),
-		BillingLink3:            os.Getenv("PLAN_BILLING_LINK_3"),
-		BillingLink4:            os.Getenv("PLAN_BILLING_LINK_4"),
-		BillingPortalURL:        os.Getenv("PLAN_BILLING_PORTAL_URL"),
+		BillingEnvironment: billingEnvironment,
+		ServerName:         serverName,
+		BackendPublicURL:   endpoints.origin,
+		MASInternalURL:     masInternalURL,
+		CashierInternalURL: cashierInternalURL,
+		MASClientID:        os.Getenv("MAS_OIDC_CLIENT_ID"),
+		MASClientSecret:    os.Getenv("MAS_OIDC_CLIENT_SECRET"),
+		PlanSessionKey:     os.Getenv("PLAN_SESSION_KEY"),
+		BillingLink1:       os.Getenv("PLAN_BILLING_LINK_1"),
+		BillingLink2:       os.Getenv("PLAN_BILLING_LINK_2"),
+		BillingLink3:       os.Getenv("PLAN_BILLING_LINK_3"),
+		BillingLink4:       os.Getenv("PLAN_BILLING_LINK_4"),
+		BillingPortalURL:   os.Getenv("PLAN_BILLING_PORTAL_URL"),
 	}
 	if _, present := os.LookupEnv("SESSION_KEY"); present {
 		return nil, fmt.Errorf("SESSION_KEY must be unset; use PLAN_SESSION_KEY")
@@ -210,7 +205,7 @@ func LoadPlan() (*PlanConfig, error) {
 	}
 	required := []envValue{
 		{"MAS_OIDC_CLIENT_ID", c.MASClientID}, {"MAS_OIDC_CLIENT_SECRET", c.MASClientSecret},
-		{"PLAN_SESSION_KEY", c.PlanSessionKey}, {"PLAN_ASSERTION_PRIVATE_KEY", c.PlanAssertionPrivateKey},
+		{"PLAN_SESSION_KEY", c.PlanSessionKey},
 	}
 	if err := requireEnvValues(required, "missing required env var"); err != nil {
 		return nil, err
@@ -220,9 +215,6 @@ func LoadPlan() (*PlanConfig, error) {
 	}
 	if len(c.PlanSessionKey) < 32 {
 		return nil, fmt.Errorf("PLAN_SESSION_KEY must contain at least 32 bytes")
-	}
-	if err := validatePlanAssertionPrivateKey(c.PlanAssertionPrivateKey); err != nil {
-		return nil, err
 	}
 	for _, link := range []envValue{
 		{"PLAN_BILLING_LINK_1", c.BillingLink1},
@@ -383,19 +375,6 @@ func parseMailbox(name, value string) (string, error) {
 		return "", fmt.Errorf("%s must be a valid email address", name)
 	}
 	return address.Address, nil
-}
-
-func validatePlanAssertionPrivateKey(value string) error {
-	decoded, err := base64.RawURLEncoding.Strict().DecodeString(value)
-	if err != nil || len(decoded) != ed25519.PrivateKeySize ||
-		base64.RawURLEncoding.EncodeToString(decoded) != value {
-		return fmt.Errorf("PLAN_ASSERTION_PRIVATE_KEY must be a raw URL-safe base64 Ed25519 private key")
-	}
-	expected := ed25519.NewKeyFromSeed(decoded[:ed25519.SeedSize])
-	if !bytes.Equal(decoded, expected) {
-		return fmt.Errorf("PLAN_ASSERTION_PRIVATE_KEY must contain a seed-matching Ed25519 private key")
-	}
-	return nil
 }
 
 func validatePublicHTTPSURL(raw, name string) error {

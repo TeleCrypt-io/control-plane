@@ -1,4 +1,4 @@
-// Every command reports a rejected request as well as an HTTP error. Keep retries explicit.
+// Every command reports a rejected request as well as an HTTP error.
 function reportFailure(action) {
   return async (...args) => {
     try { await action(...args); }
@@ -6,14 +6,9 @@ function reportFailure(action) {
   };
 }
 
-async function command(url, o = {}) {
-  o.headers = Object.assign({}, o.headers, { "X-TeleCrypt-Request-ID": crypto.randomUUID() });
-  return fetch(url, o);
-}
-
 async function addMember(e) {
   e.preventDefault();
-  const r = await command("/plan/members/add", {
+  const r = await fetch("/plan/members/add", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ mxid: e.target.mxid.value.trim() }),
@@ -23,12 +18,12 @@ async function addMember(e) {
 }
 
 async function removeMember(mxid) {
-  const r = await command("/plan/members/" + encodeURIComponent(mxid) + "/remove", { method: "POST" });
+  const r = await fetch("/plan/members/" + encodeURIComponent(mxid) + "/remove", { method: "POST" });
   if (r.ok) location.reload(); else alert(await r.text());
 }
 
 async function leaveTeam() {
-  const r = await command("/plan/members/leave", { method: "POST" });
+  const r = await fetch("/plan/members/leave", { method: "POST" });
   if (r.ok) location.reload(); else alert(await r.text());
 }
 

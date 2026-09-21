@@ -46,24 +46,22 @@ func (f *fakeSynapse) ReadUserType(_ context.Context, mxid string) (*string, err
 }
 
 type fakeStore struct {
-	events   []db.RunEvent
 	actions  []db.LifecycleAction
 	schedule map[string]bool
 }
 
-func (f *fakeStore) VerifyDeploymentIdentity(context.Context, string, string) error { return nil }
 func (f *fakeStore) SyncLifecycleAccount(_ context.Context, mxid string, createdAt time.Time) error {
 	if f.schedule != nil && f.schedule[mxid] {
-		f.actions = append(f.actions, db.LifecycleAction{MXID: mxid, Revision: 1, Action: "suspend", DueAt: createdAt.Add(48 * time.Hour), DesiredUserType: stringPtr("wild")})
+		f.actions = append(f.actions, db.LifecycleAction{MXID: mxid, Action: "suspend", DueAt: createdAt.Add(48 * time.Hour), DesiredUserType: stringPtr("wild")})
 	}
 	return nil
 }
 func (f *fakeStore) LifecycleActions(context.Context) ([]db.LifecycleAction, error) {
 	return append([]db.LifecycleAction(nil), f.actions...), nil
 }
-func (f *fakeStore) ExecuteSuspension(ctx context.Context, mxid string, revision int64, apply func(context.Context, string) error) (bool, error) {
+func (f *fakeStore) ExecuteSuspension(ctx context.Context, mxid string, apply func(context.Context, string) error) (bool, error) {
 	for i, action := range f.actions {
-		if action.MXID == mxid && action.Revision == revision && action.Action == "suspend" {
+		if action.MXID == mxid && action.Action == "suspend" {
 			if err := apply(ctx, "wild"); err != nil {
 				return false, err
 			}
@@ -73,20 +71,14 @@ func (f *fakeStore) ExecuteSuspension(ctx context.Context, mxid string, revision
 	}
 	return false, nil
 }
-func (f *fakeStore) StartRemoval(context.Context, string, int64) (bool, int64, error) {
-	return false, 0, nil
-}
-func (f *fakeStore) FinishRemoval(context.Context, string, int64) (bool, error) { return false, nil }
+func (f *fakeStore) StartRemoval(context.Context, string) (bool, error)  { return false, nil }
+func (f *fakeStore) FinishRemoval(context.Context, string) (bool, error) { return false, nil }
 func (f *fakeStore) JanitorDigestCursor(context.Context) (db.DigestCursor, bool, error) {
 	return db.DigestCursor{}, false, nil
 }
 
 func stringPtr(value string) *string                                               { return &value }
 func (f *fakeStore) SetJanitorDigestCursor(context.Context, db.DigestCursor) error { return nil }
-func (f *fakeStore) InsertRunEvent(_ context.Context, event db.RunEvent) error {
-	f.events = append(f.events, event)
-	return nil
-}
 func (f *fakeStore) ProviderSubscriptionSnapshot(context.Context) ([]db.SubscriptionSnapshot, error) {
 	return []db.SubscriptionSnapshot{{SubscriptionID: "sub-1", Status: "active"}}, nil
 }
@@ -126,9 +118,6 @@ func TestSweepSuspendsInitialFreeAccountThroughSynapse(t *testing.T) {
 	}
 	if len(synapse.suspended) != 1 || synapse.suspended[0] != "@free:stage.telecrypt.io" {
 		t.Fatalf("suspensions = %#v", synapse.suspended)
-	}
-	if len(store.events) != 2 || store.events[1].LockedOrWouldLock != 1 {
-		t.Fatalf("audit events = %#v", store.events)
 	}
 }
 

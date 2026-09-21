@@ -30,14 +30,14 @@ func (f *fakeCashier) PlanState(_ context.Context, p Principal) (PlanState, erro
 	f.principal = p
 	return f.state, f.planErr
 }
-func (f *fakeCashier) AttachMember(context.Context, Principal, string, string) error {
+func (f *fakeCashier) AttachMember(context.Context, Principal, string) error {
 	return errors.New("unused")
 }
-func (f *fakeCashier) RemoveMember(_ context.Context, p Principal, _ string, mxid string) error {
+func (f *fakeCashier) RemoveMember(_ context.Context, p Principal, mxid string) error {
 	f.principal, f.removed = p, mxid
 	return nil
 }
-func (f *fakeCashier) LeaveMember(_ context.Context, p Principal, _ string) error {
+func (f *fakeCashier) LeaveMember(_ context.Context, p Principal) error {
 	f.principal, f.removed = p, p.MXID
 	return nil
 }
@@ -648,13 +648,13 @@ type errorCashier struct {
 func (c *errorCashier) PlanState(_ context.Context, _ Principal) (PlanState, error) {
 	return PlanState{}, &CashierError{StatusCode: c.status, Message: c.message}
 }
-func (c *errorCashier) AttachMember(_ context.Context, _ Principal, _ string, _ string) error {
+func (c *errorCashier) AttachMember(_ context.Context, _ Principal, _ string) error {
 	return &CashierError{StatusCode: c.status, Message: c.message}
 }
-func (c *errorCashier) RemoveMember(_ context.Context, _ Principal, _ string, _ string) error {
+func (c *errorCashier) RemoveMember(_ context.Context, _ Principal, _ string) error {
 	return &CashierError{StatusCode: c.status, Message: c.message}
 }
-func (c *errorCashier) LeaveMember(_ context.Context, _ Principal, _ string) error {
+func (c *errorCashier) LeaveMember(_ context.Context, _ Principal) error {
 	return &CashierError{StatusCode: c.status, Message: c.message}
 }
 
@@ -706,7 +706,6 @@ func authenticatedPlanRequest(t *testing.T, srv *Server, method, path, body stri
 	req := httptest.NewRequest(method, path, strings.NewReader(body))
 	req.AddCookie(cookieRecorder.Result().Cookies()[0])
 	req.Header.Set("Origin", "https://backend.stage.telecrypt.io")
-	req.Header.Set("X-TeleCrypt-Request-ID", "b3987ed2-51a4-4b04-b5f5-b915683d0cf5")
 	return req
 }
 

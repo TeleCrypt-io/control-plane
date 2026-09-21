@@ -308,21 +308,17 @@ func singleOAuthParam(values url.Values, name string) (string, bool) {
 	return entries[0], true
 }
 
-func (s *Server) command(r *http.Request) (CashierClient, Principal, string, bool) {
+func (s *Server) command(r *http.Request) (CashierClient, Principal, bool) {
 	client, err := s.client()
 	if err != nil {
 		logPlanFailure("load Cashier client for command", err)
-		return nil, Principal{}, "", false
+		return nil, Principal{}, false
 	}
 	p, ok := principalFromContext(r.Context())
 	if !ok {
-		return nil, Principal{}, "", false
+		return nil, Principal{}, false
 	}
-	requestID := r.Header.Get("X-TeleCrypt-Request-ID")
-	if _, err := uuid.Parse(requestID); err != nil {
-		return nil, Principal{}, "", false
-	}
-	return client, p, requestID, true
+	return client, p, true
 }
 func commandUnavailable(w http.ResponseWriter) {
 	http.Error(w, "Plan is temporarily unavailable", http.StatusServiceUnavailable)
@@ -348,7 +344,7 @@ func validateLocalMXID(mxid, serverName string) bool {
 	return len(parts) == 2 && parts[1] == serverName && validateLocalpart(parts[0])
 }
 func (s *Server) handleAddMember(w http.ResponseWriter, r *http.Request) {
-	client, p, id, ok := s.command(r)
+	client, p, ok := s.command(r)
 	if !ok {
 		commandUnavailable(w)
 		return
@@ -358,14 +354,14 @@ func (s *Server) handleAddMember(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid request", http.StatusBadRequest)
 		return
 	}
-	if err := client.AttachMember(r.Context(), p, id, req.MXID); err != nil {
+	if err := client.AttachMember(r.Context(), p, req.MXID); err != nil {
 		writeCashierActionError(w, err, "could not attach member")
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
 func (s *Server) handleRemoveMember(w http.ResponseWriter, r *http.Request) {
-	client, p, id, ok := s.command(r)
+	client, p, ok := s.command(r)
 	if !ok {
 		commandUnavailable(w)
 		return
@@ -375,7 +371,7 @@ func (s *Server) handleRemoveMember(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid request", http.StatusBadRequest)
 		return
 	}
-	if err := client.RemoveMember(r.Context(), p, id, mxid); err != nil {
+	if err := client.RemoveMember(r.Context(), p, mxid); err != nil {
 		writeCashierActionError(w, err, "could not remove member")
 		return
 	}
@@ -385,12 +381,12 @@ func (s *Server) handleRemoveMember(w http.ResponseWriter, r *http.Request) {
 // handleLeaveTeam lets an attached member request removal of their own membership. Cashier
 // verifies membership, enforces the billing-owner rule, and applies the lifecycle transition.
 func (s *Server) handleLeaveTeam(w http.ResponseWriter, r *http.Request) {
-	client, p, id, ok := s.command(r)
+	client, p, ok := s.command(r)
 	if !ok {
 		commandUnavailable(w)
 		return
 	}
-	if err := client.LeaveMember(r.Context(), p, id); err != nil {
+	if err := client.LeaveMember(r.Context(), p); err != nil {
 		writeCashierActionError(w, err, "could not leave team")
 		return
 	}

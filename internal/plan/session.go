@@ -23,8 +23,8 @@ const (
 var errUnauthorized = errors.New("unauthorized")
 
 // Session holds Plan's browser-session signing key and the exact homeserver identity it serves.
-// It is deliberately Plan-owned rather than shared with Cashier: Cashier receives a separate
-// short-lived internal assertion from HTTPCashierClient.
+// It is deliberately Plan-owned rather than shared with Cashier: Cashier receives only the
+// authenticated Matrix identity over the fixed private pod-local connection.
 type Session struct {
 	key        []byte
 	serverName string

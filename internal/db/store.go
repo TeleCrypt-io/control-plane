@@ -1,4 +1,4 @@
-// Package db stores Janitor's maintenance state and its read-only view of Cashier entitlements.
+// Package db stores Janitor's maintenance state and reads Cashier's ordinary tables.
 package db
 
 import (
@@ -8,7 +8,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -17,20 +16,6 @@ type Store struct{ pool *pgxpool.Pool }
 
 func NewStore(pool *pgxpool.Pool) *Store { return &Store{pool: pool} }
 
-const (
-	maxDeploymentIdentityRows = 1
-)
-
-// LifecycleAction is the already-calculated action exposed by Cashier. Janitor
-// never reconstructs subscription, team, quota, or grace state.
-type LifecycleAction struct {
-	MXID            string
-	Revision        int64
-	Action          string
-	DueAt           time.Time
-	DesiredUserType *string
-}
-
 type SubscriptionSnapshot struct {
 	SubscriptionID    string
 	Status            string
@@ -38,34 +23,37 @@ type SubscriptionSnapshot struct {
 	TeamID            string
 }
 
-// ProviderSubscriptionSnapshot is the only billing state Janitor may read from
-// Cashier. It is used for reporting discrepancies, never for entitlement writes.
+// ProviderSubscriptionSnapshot reads Cashier's billing tables for reconciliation only. Janitor
+// never writes provider, payment, or membership state as a result of this comparison.
 func (s *Store) ProviderSubscriptionSnapshot(ctx context.Context) ([]SubscriptionSnapshot, error) {
-	rows, err := s.pool.Query(ctx, `SELECT subscription_id, status, COALESCE(provider_product_id, ''), team_id::text FROM cashier.janitor_subscription_snapshot ORDER BY subscription_id COLLATE "C"`)
+	rows, err := s.pool.Query(ctx, `
+		SELECT binding.subscription_id, binding.status, COALESCE(team.provider_product_id, ''), binding.team_id::text
+		FROM cashier.dodo_subscription_bindings AS binding
+		JOIN cashier.teams AS team ON team.id = binding.team_id
+		WHERE binding.is_current
+		ORDER BY binding.subscription_id COLLATE "C"`)
 	if err != nil {
-		return nil, fmt.Errorf("read Cashier subscription snapshot: %w", err)
+		return nil, fmt.Errorf("read Cashier subscription bindings: %w", err)
 	}
 	defer rows.Close()
 	var result []SubscriptionSnapshot
 	for rows.Next() {
 		var snapshot SubscriptionSnapshot
 		if err := rows.Scan(&snapshot.SubscriptionID, &snapshot.Status, &snapshot.ProviderProductID, &snapshot.TeamID); err != nil {
-			return nil, fmt.Errorf("scan Cashier subscription snapshot: %w", err)
+			return nil, fmt.Errorf("scan Cashier subscription binding: %w", err)
 		}
 		if snapshot.SubscriptionID == "" || snapshot.Status == "" {
-			return nil, fmt.Errorf("Cashier subscription snapshot contains an invalid row")
+			return nil, fmt.Errorf("Cashier subscription binding contains an invalid row")
 		}
 		result = append(result, snapshot)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate Cashier subscription snapshot: %w", err)
+		return nil, fmt.Errorf("iterate Cashier subscription bindings: %w", err)
 	}
 	return result, nil
 }
 
-// ValidateServerName accepts the deployment hostname used to derive public endpoints and to bind
-// append-only Janitor audit records. The Cashier deployment-identity view remains the authority
-// for which deployment is connected to a database.
+// ValidateServerName accepts the hostname used to construct Matrix identities and public URLs.
 func ValidateServerName(serverName string) error {
 	if len(serverName) == 0 || len(serverName) > 253 || strings.TrimSpace(serverName) != serverName {
 		return fmt.Errorf("SERVER_NAME must be a valid hostname")
@@ -84,271 +72,221 @@ func ValidateServerName(serverName string) error {
 	return nil
 }
 
-// ValidateDeploymentProfile is the one profile check shared by Plan, Janitor, and audit writes.
-// Billing mode is explicit and never inferred from credentials or a hostname alone.
+// ValidateDeploymentProfile validates the explicit billing mode. It is configuration validation;
+// Janitor does not compare it with a second deployment-identity record in Cashier.
 func ValidateDeploymentProfile(serverName, billingEnvironment string) error {
 	if err := ValidateServerName(serverName); err != nil {
 		return err
 	}
-	switch {
-	case billingEnvironment == "test" || billingEnvironment == "live":
-		return nil
-	default:
+	if billingEnvironment != "test" && billingEnvironment != "live" {
 		return fmt.Errorf("invalid SERVER_NAME/BILLING_ENVIRONMENT profile")
-	}
-}
-
-// VerifyDeploymentIdentity re-reads Cashier's owner-rights identity view. Janitor deliberately
-// has no access to Cashier base tables, including deployment_identity.
-func (s *Store) VerifyDeploymentIdentity(ctx context.Context, serverName, billingEnvironment string) error {
-	if err := ValidateDeploymentProfile(serverName, billingEnvironment); err != nil {
-		return err
-	}
-	rows, err := s.pool.Query(ctx, `SELECT server_name, billing_environment FROM cashier.janitor_deployment_identity LIMIT $1`, maxDeploymentIdentityRows+1)
-	if err != nil {
-		return fmt.Errorf("read private Cashier deployment identity: %w", err)
-	}
-	defer rows.Close()
-	var rowCount int
-	var boundServerName, boundBillingEnvironment string
-	for rows.Next() {
-		rowCount++
-		if err := rows.Scan(&boundServerName, &boundBillingEnvironment); err != nil {
-			return fmt.Errorf("scan private Cashier deployment identity: %w", err)
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("iterate private Cashier deployment identity: %w", err)
-	}
-	if rowCount == 0 {
-		return fmt.Errorf("private Cashier has not bound the deployment identity")
-	}
-	if rowCount != 1 {
-		return fmt.Errorf("Cashier deployment identity view must contain exactly one row")
-	}
-	if boundServerName != serverName || boundBillingEnvironment != billingEnvironment {
-		return fmt.Errorf("Cashier deployment identity is bound to server %q and billing environment %q, not %q and %q", boundServerName, boundBillingEnvironment, serverName, billingEnvironment)
 	}
 	return nil
 }
 
-type lifecycleSuspensionResult struct {
+// LifecycleAction is calculated from Cashier's account, team, and membership tables. A nightly
+// Janitor run is the only lifecycle writer, so row locks are sufficient; no revision or function
+// protocol is needed.
+type LifecycleAction struct {
+	MXID            string
+	Action          string
 	DueAt           time.Time
-	DesiredUserType string
+	DesiredUserType *string
 }
 
-// SyncLifecycleAccount lets Cashier initialize the authoritative 48-hour clock
-// from MAS without giving Janitor access to Cashier tables.
+// paidMembershipSQL is evaluated with an account_ledger row aliased as account. Fixed tiers use
+// the same oldest-member ordering as Cashier's entitlement calculation.
+const paidMembershipSQL = `
+	EXISTS (
+		SELECT 1
+		FROM (
+			SELECT s.mxid, s.team_id, t.tier_id,
+				row_number() OVER (PARTITION BY s.team_id ORDER BY s.created_at ASC, s.mxid COLLATE "C" ASC) AS member_rank
+			FROM cashier.seats AS s
+			JOIN cashier.teams AS t ON t.id = s.team_id
+			WHERE t.subscription_status IN ('active', 'past_due', 'on_hold')
+			  AND t.tier_id BETWEEN 1 AND 4
+		) AS paid
+		WHERE paid.mxid = account.mxid
+		  AND paid.member_rank <= CASE paid.tier_id
+			WHEN 1 THEN 3
+			WHEN 2 THEN 10
+			WHEN 3 THEN 25
+			WHEN 4 THEN 100
+			ELSE 0
+		  END
+	)`
+
+// SyncLifecycleAccount records a MAS account if Cashier has not seen it yet and initializes the
+// normal 48-hour free-account suspension deadline. Existing lifecycle decisions are preserved.
 func (s *Store) SyncLifecycleAccount(ctx context.Context, mxid string, createdAt time.Time) error {
 	if mxid == "" || createdAt.IsZero() {
 		return fmt.Errorf("invalid lifecycle account")
 	}
-	if _, err := s.pool.Exec(ctx, `SELECT cashier.janitor_sync_account($1, $2)`, mxid, createdAt); err != nil {
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO cashier.account_ledger (mxid, created_at, suspend_due_at)
+		VALUES ($1, $2, $2 + interval '48 hours')
+		ON CONFLICT (mxid) DO UPDATE
+		SET created_at = LEAST(account_ledger.created_at, EXCLUDED.created_at),
+		    suspend_due_at = CASE
+				WHEN account_ledger.removed_at IS NULL
+				 AND account_ledger.departure_at IS NULL
+				 AND account_ledger.grace_tier_id IS NULL
+				 AND account_ledger.suspended_at IS NULL
+				 AND account_ledger.removal_started_at IS NULL
+				THEN LEAST(COALESCE(account_ledger.suspend_due_at, EXCLUDED.suspend_due_at), EXCLUDED.suspend_due_at)
+				ELSE account_ledger.suspend_due_at
+			END,
+		    updated_at = now()`, mxid, createdAt)
+	if err != nil {
 		return fmt.Errorf("sync Cashier lifecycle account: %w", err)
 	}
 	return nil
 }
 
 func (s *Store) LifecycleActions(ctx context.Context) ([]LifecycleAction, error) {
-	rows, err := s.pool.Query(ctx, `SELECT mxid, revision, action, due_at, desired_user_type FROM cashier.janitor_lifecycle_actions ORDER BY due_at, mxid COLLATE "C"`)
+	query := `
+		SELECT mxid, action, due_at, desired_user_type
+		FROM (
+			SELECT account.mxid, 'suspend'::text AS action, account.suspend_due_at AS due_at, 'wild'::text AS desired_user_type
+			FROM cashier.account_ledger AS account
+			WHERE account.removed_at IS NULL
+			  AND account.suspend_due_at IS NOT NULL AND account.suspend_due_at <= now()
+			  AND account.suspended_at IS NULL AND account.removal_started_at IS NULL
+			  AND NOT ` + paidMembershipSQL + `
+			  AND NOT EXISTS (
+				SELECT 1 FROM cashier.account_ledger AS grace
+				WHERE grace.mxid = account.mxid
+				  AND grace.grace_tier_id BETWEEN 1 AND 4
+				  AND grace.suspend_due_at > now()
+			  )
+			UNION ALL
+			SELECT account.mxid, 'start_removal'::text AS action,
+			       account.suspended_at + CASE WHEN account.departure_at IS NULL THEN interval '30 days' ELSE interval '90 days' END,
+			       NULL::text
+			FROM cashier.account_ledger AS account
+			WHERE account.removed_at IS NULL AND account.suspended_at IS NOT NULL
+			  AND account.suspended_at + CASE WHEN account.departure_at IS NULL THEN interval '30 days' ELSE interval '90 days' END <= now()
+			  AND account.removal_started_at IS NULL
+			  AND NOT ` + paidMembershipSQL + `
+			UNION ALL
+			SELECT account.mxid, 'finish_removal'::text AS action, account.removal_started_at, NULL::text
+			FROM cashier.account_ledger AS account
+			WHERE account.removed_at IS NULL AND account.removal_started_at IS NOT NULL
+		) AS actions
+		ORDER BY due_at, mxid COLLATE "C"`
+	rows, err := s.pool.Query(ctx, query)
 	if err != nil {
-		return nil, fmt.Errorf("query Cashier lifecycle actions: %w", err)
+		return nil, fmt.Errorf("query Cashier lifecycle tables: %w", err)
 	}
 	defer rows.Close()
 	var actions []LifecycleAction
 	for rows.Next() {
 		var action LifecycleAction
-		if err := rows.Scan(&action.MXID, &action.Revision, &action.Action, &action.DueAt, &action.DesiredUserType); err != nil {
-			return nil, fmt.Errorf("scan Cashier lifecycle action: %w", err)
-		}
-		if action.MXID == "" || (action.Action != "suspend" && action.Action != "start_removal" && action.Action != "finish_removal") {
-			return nil, fmt.Errorf("Cashier lifecycle view returned an invalid action")
+		if err := rows.Scan(&action.MXID, &action.Action, &action.DueAt, &action.DesiredUserType); err != nil {
+			return nil, fmt.Errorf("scan Cashier lifecycle row: %w", err)
 		}
 		actions = append(actions, action)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate Cashier lifecycle actions: %w", err)
+		return nil, fmt.Errorf("iterate Cashier lifecycle rows: %w", err)
 	}
 	return actions, nil
 }
 
-// ExecuteSuspension holds Cashier's account lock while Janitor performs the
-// two native Synapse changes. A paid recovery therefore either commits before
-// this transition or waits and immediately reverses it; it cannot be lost.
-func (s *Store) ExecuteSuspension(ctx context.Context, mxid string, revision int64, apply func(context.Context, string) error) (bool, error) {
+// ExecuteSuspension locks one account row while the policy and Synapse callbacks run, then records
+// the native suspension timestamp. The callbacks are idempotent and the nightly job is single-use.
+func (s *Store) ExecuteSuspension(ctx context.Context, mxid string, apply func(context.Context, string) error) (bool, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return false, fmt.Errorf("begin lifecycle suspension: %w", err)
 	}
 	defer func() { _ = tx.Rollback(context.Background()) }()
-	var claim lifecycleSuspensionResult
-	if err := tx.QueryRow(ctx, `SELECT due_at, desired_user_type FROM cashier.janitor_claim_suspension($1, $2)`, mxid, revision).Scan(&claim.DueAt, &claim.DesiredUserType); err != nil {
+	var dueAt time.Time
+	query := `SELECT account.suspend_due_at FROM cashier.account_ledger AS account
+		WHERE account.mxid = $1 AND account.removed_at IS NULL
+		  AND account.suspend_due_at IS NOT NULL AND account.suspend_due_at <= now()
+		  AND account.suspended_at IS NULL AND account.removal_started_at IS NULL
+		  AND NOT ` + paidMembershipSQL + `
+		FOR UPDATE`
+	if err := tx.QueryRow(ctx, query, mxid).Scan(&dueAt); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return false, nil
 		}
-		return false, fmt.Errorf("claim lifecycle suspension: %w", err)
+		return false, fmt.Errorf("lock lifecycle suspension: %w", err)
 	}
-	if claim.DesiredUserType != "wild" {
-		return false, fmt.Errorf("Cashier returned unsupported suspension state %q", claim.DesiredUserType)
-	}
-	if err := apply(ctx, claim.DesiredUserType); err != nil {
+	if err := apply(ctx, "wild"); err != nil {
 		return false, err
 	}
-	var nextRevision int64
-	var suspendedAt time.Time
-	if err := tx.QueryRow(ctx, `SELECT revision, suspended_at FROM cashier.janitor_complete_suspension($1, $2)`, mxid, revision).Scan(&nextRevision, &suspendedAt); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return false, nil
-		}
-		return false, fmt.Errorf("complete lifecycle suspension: %w", err)
+	if _, err := tx.Exec(ctx, `UPDATE cashier.account_ledger SET suspended_at = now(), updated_at = now() WHERE mxid = $1`, mxid); err != nil {
+		return false, fmt.Errorf("record lifecycle suspension: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return false, fmt.Errorf("commit lifecycle suspension: %w", err)
 	}
-	_ = nextRevision
-	_ = suspendedAt
 	return true, nil
 }
 
-func (s *Store) StartRemoval(ctx context.Context, mxid string, revision int64) (bool, int64, error) {
-	var nextRevision int64
-	var startedAt time.Time
-	err := s.pool.QueryRow(ctx, `SELECT revision, removal_started_at FROM cashier.janitor_start_removal($1, $2)`, mxid, revision).Scan(&nextRevision, &startedAt)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return false, 0, nil
-	}
+func (s *Store) StartRemoval(ctx context.Context, mxid string) (bool, error) {
+	tx, err := s.pool.Begin(ctx)
 	if err != nil {
-		return false, 0, fmt.Errorf("start lifecycle removal: %w", err)
+		return false, fmt.Errorf("begin lifecycle removal: %w", err)
 	}
-	return true, nextRevision, nil
+	defer func() { _ = tx.Rollback(context.Background()) }()
+	var started time.Time
+	query := `SELECT account.suspended_at FROM cashier.account_ledger AS account
+		WHERE account.mxid = $1 AND account.removed_at IS NULL AND account.suspended_at IS NOT NULL
+		  AND account.suspended_at + CASE WHEN account.departure_at IS NULL THEN interval '30 days' ELSE interval '90 days' END <= now()
+		  AND account.removal_started_at IS NULL AND NOT ` + paidMembershipSQL + `
+		FOR UPDATE`
+	if err := tx.QueryRow(ctx, query, mxid).Scan(&started); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return false, nil
+		}
+		return false, fmt.Errorf("lock lifecycle removal: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `UPDATE cashier.account_ledger SET removal_started_at = now(), updated_at = now() WHERE mxid = $1`, mxid); err != nil {
+		return false, fmt.Errorf("record lifecycle removal start: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return false, fmt.Errorf("commit lifecycle removal start: %w", err)
+	}
+	return true, nil
 }
 
-func (s *Store) FinishRemoval(ctx context.Context, mxid string, revision int64) (bool, error) {
-	var nextRevision int64
-	var removedAt time.Time
-	err := s.pool.QueryRow(ctx, `SELECT revision, removed_at FROM cashier.janitor_finish_removal($1, $2)`, mxid, revision).Scan(&nextRevision, &removedAt)
-	if errors.Is(err, pgx.ErrNoRows) {
+func (s *Store) FinishRemoval(ctx context.Context, mxid string) (bool, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return false, fmt.Errorf("begin lifecycle cleanup: %w", err)
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+	var started time.Time
+	if err := tx.QueryRow(ctx, `SELECT removal_started_at FROM cashier.account_ledger WHERE mxid = $1 AND removed_at IS NULL AND removal_started_at IS NOT NULL FOR UPDATE`, mxid).Scan(&started); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return false, nil
+		}
+		return false, fmt.Errorf("lock lifecycle cleanup: %w", err)
+	}
+	var paid bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM cashier.seats AS s JOIN cashier.teams AS t ON t.id = s.team_id WHERE s.mxid = $1 AND t.subscription_status IN ('active', 'past_due', 'on_hold') AND t.tier_id BETWEEN 1 AND 4)`, mxid).Scan(&paid); err != nil {
+		return false, fmt.Errorf("check paid membership before cleanup: %w", err)
+	}
+	if paid {
 		return false, nil
 	}
-	if err != nil {
-		return false, fmt.Errorf("finish lifecycle removal: %w", err)
+	if _, err := tx.Exec(ctx, `UPDATE cashier.account_ledger SET removed_at = now(), updated_at = now() WHERE mxid = $1`, mxid); err != nil {
+		return false, fmt.Errorf("record lifecycle cleanup: %w", err)
 	}
-	_ = nextRevision
-	_ = removedAt
+	if _, err := tx.Exec(ctx, `DELETE FROM cashier.seats WHERE mxid = $1`, mxid); err != nil {
+		return false, fmt.Errorf("delete removed member: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM cashier.teams AS team WHERE team.admin_mxid = $1 AND NOT EXISTS (SELECT 1 FROM cashier.seats AS seat WHERE seat.team_id = team.id) AND NOT EXISTS (SELECT 1 FROM cashier.dodo_subscription_bindings AS binding WHERE binding.team_id = team.id)`, mxid); err != nil {
+		return false, fmt.Errorf("delete empty team: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return false, fmt.Errorf("commit lifecycle cleanup: %w", err)
+	}
 	return true, nil
-}
-
-// RunEvent is the bounded, append-only Janitor audit record. It deliberately contains no
-// account identifiers, email addresses, provider errors, tokens, or free-form text.
-type RunEvent struct {
-	EventID            uuid.UUID
-	RunID              uuid.UUID
-	EventKind          string
-	Status             string
-	Outcome            string
-	Reason             string
-	ServerName         string
-	BillingEnvironment string
-	Considered         int64
-	Skipped            int64
-	LockedOrWouldLock  int64
-	Failures           int64
-	NotificationStatus string
-	Labels             []string
-}
-
-var allowedRunEventLabels = map[string]struct{}{
-	"database": {}, "mas_users": {}, "mas_emails": {},
-	"candidate_recheck": {}, "lock": {}, "lock_readback": {}, "notification": {},
-	"audit_started": {}, "audit_finished": {}, "cancelled": {}, "lifecycle": {},
-}
-
-func validateRunEvent(event RunEvent) error {
-	if event.EventID == uuid.Nil || event.RunID == uuid.Nil {
-		return fmt.Errorf("Janitor audit event IDs must be nonzero UUIDs")
-	}
-	if err := ValidateDeploymentProfile(event.ServerName, event.BillingEnvironment); err != nil {
-		return err
-	}
-	if event.Considered < 0 || event.Skipped < 0 || event.LockedOrWouldLock < 0 || event.Failures < 0 {
-		return fmt.Errorf("Janitor audit aggregates must be nonnegative")
-	}
-	if event.NotificationStatus != "not_attempted" && event.NotificationStatus != "succeeded" && event.NotificationStatus != "failed" {
-		return fmt.Errorf("invalid Janitor audit notification status")
-	}
-	if len(event.Labels) > 16 {
-		return fmt.Errorf("Janitor audit labels exceed sixteen entries")
-	}
-	seen := make(map[string]struct{}, len(event.Labels))
-	for _, label := range event.Labels {
-		if _, ok := allowedRunEventLabels[label]; !ok {
-			return fmt.Errorf("Janitor audit label is not allowlisted")
-		}
-		if _, duplicate := seen[label]; duplicate {
-			return fmt.Errorf("Janitor audit labels must be unique")
-		}
-		seen[label] = struct{}{}
-	}
-	if event.EventKind == "started" {
-		if event.Status != "started" || event.Outcome != "pending" || event.Reason != "pending" || event.NotificationStatus != "not_attempted" {
-			return fmt.Errorf("invalid Janitor started audit state")
-		}
-		if event.Considered != 0 || event.Skipped != 0 || event.LockedOrWouldLock != 0 || event.Failures != 0 {
-			return fmt.Errorf("started Janitor audit event must have zero aggregates")
-		}
-		return nil
-	}
-	if event.EventKind != "finished" {
-		return fmt.Errorf("invalid Janitor audit event kind")
-	}
-	if event.Status == "succeeded" {
-		if event.Outcome != "success" {
-			return fmt.Errorf("invalid Janitor success audit outcome")
-		}
-		if event.Failures != 0 {
-			return fmt.Errorf("successful Janitor audit event must have zero failures")
-		}
-		if event.Reason != "disabled" && event.Reason != "no_eligible_accounts" {
-			return fmt.Errorf("invalid Janitor success audit reason")
-		}
-		if event.Reason == "no_eligible_accounts" && event.LockedOrWouldLock != 0 {
-			return fmt.Errorf("no-eligible Janitor audit event has a lock count")
-		}
-		if event.Reason == "disabled" && (event.Outcome != "success" || event.LockedOrWouldLock == 0) {
-			return fmt.Errorf("disabled Janitor audit event is inconsistent")
-		}
-	} else if event.Status != "failed" || event.Outcome != "operational_failure" {
-		return fmt.Errorf("invalid Janitor finished audit state")
-	} else {
-		if event.Failures == 0 {
-			return fmt.Errorf("failed Janitor audit event must have a failure count")
-		}
-		switch event.Reason {
-		case "database", "mas", "notification", "audit", "cancelled", "lock", "lock_readback":
-		default:
-			return fmt.Errorf("invalid Janitor failure audit reason")
-		}
-	}
-	return nil
-}
-
-func (s *Store) InsertRunEvent(ctx context.Context, event RunEvent) error {
-	if err := validateRunEvent(event); err != nil {
-		return err
-	}
-	labels := append([]string(nil), event.Labels...)
-	_, err := s.pool.Exec(ctx, `
-		INSERT INTO janitor.run_events
-		(event_id, run_id, event_kind, status, outcome, reason, server_name, billing_environment,
-		 dry_run, considered, skipped, locked_or_would_lock, failures, notification_status, labels)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, FALSE, $9, $10, $11, $12, $13, $14)`,
-		event.EventID, event.RunID, event.EventKind, event.Status, event.Outcome, event.Reason,
-		event.ServerName, event.BillingEnvironment, event.Considered, event.Skipped,
-		event.LockedOrWouldLock, event.Failures, event.NotificationStatus, labels)
-	if err != nil {
-		return fmt.Errorf("insert Janitor audit event: %w", err)
-	}
-	return nil
 }
 
 // DigestCursor identifies the last email-attachment event included in a successfully delivered
@@ -358,8 +296,6 @@ type DigestCursor struct {
 	EmailID   string
 }
 
-// Valid reports whether the cursor can be ordered without ambiguity against canonical MAS email
-// resource ULIDs.
 func (c DigestCursor) Valid() bool {
 	if c.CreatedAt.IsZero() || len(c.EmailID) != 26 || c.EmailID[0] > '7' {
 		return false
@@ -396,8 +332,7 @@ func (s *Store) SetJanitorDigestCursor(ctx context.Context, cursor DigestCursor)
 		SET created_at = EXCLUDED.created_at, email_id = EXCLUDED.email_id
 		WHERE current_cursor.created_at < EXCLUDED.created_at
 		   OR (current_cursor.created_at = EXCLUDED.created_at
-		       AND current_cursor.email_id COLLATE pg_catalog."C"
-		           < EXCLUDED.email_id COLLATE pg_catalog."C")
+		       AND current_cursor.email_id COLLATE pg_catalog."C" < EXCLUDED.email_id COLLATE pg_catalog."C")
 	`, cursor.CreatedAt, cursor.EmailID)
 	if err != nil {
 		return fmt.Errorf("upsert janitor_digest_cursor: %w", err)
