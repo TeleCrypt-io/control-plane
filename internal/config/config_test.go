@@ -269,10 +269,17 @@ func TestLoadJanitorRequiresCompleteSMTP(t *testing.T) {
 		t.Fatalf("LoadJanitor error = %v, want invalid OWNER_EMAIL", err)
 	}
 
+}
+
+func TestLoadJanitorRunsDodoReconciliationWithoutOptionalMail(t *testing.T) {
 	setRequiredJanitorEnv(t)
-	t.Setenv("OWNER_EMAIL", "")
-	if _, err := LoadJanitor(); err == nil || !strings.Contains(err.Error(), "OWNER_EMAIL") {
-		t.Fatalf("LoadJanitor test profile accepted missing OWNER_EMAIL: %v", err)
+	for _, name := range []string{"OWNER_EMAIL", "SMTP_HOST", "SMTP_USERNAME", "SMTP_PASSWORD", "SMTP_FROM"} {
+		t.Setenv(name, "")
+	}
+	t.Setenv("DODO_READ_ONLY_API_URL", "https://test.dodopayments.com")
+	t.Setenv("DODO_READ_ONLY_API_KEY", "read-only-test-key")
+	if _, err := LoadJanitor(); err != nil {
+		t.Fatalf("LoadJanitor with Dodo reconciliation and optional mail disabled: %v", err)
 	}
 }
 

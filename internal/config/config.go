@@ -124,9 +124,6 @@ func LoadJanitor() (*JanitorConfig, error) {
 		if err := requireEnvValues([]envValue{{"DODO_READ_ONLY_API_URL", c.DodoReadOnlyAPIURL}, {"DODO_READ_ONLY_API_KEY", c.DodoReadOnlyAPIKey}}, "missing required Janitor Dodo read-only env vars"); err != nil {
 			return nil, err
 		}
-		if c.OwnerEmail == "" {
-			return nil, fmt.Errorf("OWNER_EMAIL is required when Janitor Dodo read-only reconciliation is enabled")
-		}
 		if err := validatePublicHTTPSURL(c.DodoReadOnlyAPIURL, "DODO_READ_ONLY_API_URL"); err != nil {
 			return nil, err
 		}
