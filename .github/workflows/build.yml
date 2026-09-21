@@ -245,14 +245,11 @@ jobs:
           docker run --detach --network host --name "$registration_name" \
             --env SERVER_NAME=example.invalid "$IMAGE_REF" /registration
           docker run --detach --network host --name "$plan_name" \
-            --env SERVER_NAME=example.invalid --env BILLING_ENVIRONMENT=test \
-            --env MAS_OIDC_CLIENT_ID=01J00000000000000000000000 \
-            --env MAS_OIDC_CLIENT_SECRET=smoke-secret \
-            --env MAS_ADMIN_CLIENT_ID=01J00000000000000000000000 \
-            --env MAS_ADMIN_CLIENT_SECRET=smoke-admin-secret \
-            --env PLAN_SESSION_KEY=ssssssssssssssssssssssssssssssss \
-            --env PLAN_ASSERTION_PRIVATE_KEY=AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyB5tVYuj-ZU-UB4sRLoqYunkB-FOuaVvtfg45ELrQSWZA \
-            "$IMAGE_REF" /plan
+          --env SERVER_NAME=example.invalid --env BILLING_ENVIRONMENT=test \
+          --env MAS_OIDC_CLIENT_ID=01J00000000000000000000000 \
+          --env MAS_OIDC_CLIENT_SECRET=smoke-secret \
+          --env PLAN_SESSION_KEY=ssssssssssssssssssssssssssssssss \
+          "$IMAGE_REF" /plan
           wait_for_status() {
             local url="$1" expected="$2" status
             for _ in $(seq 1 30); do
