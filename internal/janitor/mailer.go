@@ -11,7 +11,7 @@ import (
 	"sync"
 )
 
-// SMTPMailer sends the owner digest as plain text over a TLS-required SMTP connection.
+// SMTPMailer sends the operator report as plain text over a TLS-required SMTP connection.
 // It negotiates STARTTLS explicitly and fails closed if the server does not advertise STARTTLS
 // or if the TLS handshake fails — it never authenticates or sends in plaintext. Authentication
 // uses smtp.PlainAuth only after a successful STARTTLS upgrade. SMTP operations are canceled when

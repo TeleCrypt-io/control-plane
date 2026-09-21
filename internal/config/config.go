@@ -71,7 +71,7 @@ type JanitorConfig struct {
 	DodoReadOnlyAPIURL   string
 	DodoReadOnlyAPIKey   string
 	ServerName           string
-	OwnerEmail           string
+	OperatorEmail        string
 	SMTPHost             string
 	SMTPUsername         string
 	SMTPPassword         string
@@ -94,7 +94,7 @@ func LoadJanitor() (*JanitorConfig, error) {
 		DodoReadOnlyAPIURL:   os.Getenv("DODO_READ_ONLY_API_URL"),
 		DodoReadOnlyAPIKey:   os.Getenv("DODO_READ_ONLY_API_KEY"),
 		ServerName:           serverName,
-		OwnerEmail:           os.Getenv("OWNER_EMAIL"),
+		OperatorEmail:        os.Getenv("OPERATOR_EMAIL"),
 		SMTPHost:             os.Getenv("SMTP_HOST"),
 		SMTPUsername:         os.Getenv("SMTP_USERNAME"),
 		SMTPPassword:         os.Getenv("SMTP_PASSWORD"),
@@ -113,7 +113,7 @@ func LoadJanitor() (*JanitorConfig, error) {
 		return nil, fmt.Errorf("MAS_ADMIN_CLIENT_ID must be a canonical 26-character MAS ULID")
 	}
 	optional := []envValue{
-		{"OWNER_EMAIL", c.OwnerEmail}, {"SMTP_HOST", c.SMTPHost},
+		{"OPERATOR_EMAIL", c.OperatorEmail}, {"SMTP_HOST", c.SMTPHost},
 		{"SMTP_USERNAME", c.SMTPUsername}, {"SMTP_PASSWORD", c.SMTPPassword},
 		{"SMTP_FROM", c.SMTPFrom},
 	}
@@ -137,13 +137,13 @@ func LoadJanitor() (*JanitorConfig, error) {
 	}
 	if mailConfigured {
 		if err := requireEnvValues([]envValue{
-			{"OWNER_EMAIL", c.OwnerEmail}, {"SMTP_HOST", c.SMTPHost},
+			{"OPERATOR_EMAIL", c.OperatorEmail}, {"SMTP_HOST", c.SMTPHost},
 			{"SMTP_USERNAME", c.SMTPUsername}, {"SMTP_PASSWORD", c.SMTPPassword},
 			{"SMTP_FROM", c.SMTPFrom},
 		}, "missing required Janitor mail env vars"); err != nil {
 			return nil, err
 		}
-		if c.OwnerEmail, err = parseMailbox("OWNER_EMAIL", c.OwnerEmail); err != nil {
+		if c.OperatorEmail, err = parseMailbox("OPERATOR_EMAIL", c.OperatorEmail); err != nil {
 			return nil, err
 		}
 		if c.SMTPFrom, err = parseMailbox("SMTP_FROM", c.SMTPFrom); err != nil {

@@ -76,7 +76,7 @@ func build(cfg *config.JanitorConfig, store *db.Store) *janitor.Sweeper {
 
 	return janitor.NewLifecycleSweeper(masClient, synapseClient, store, mailer, dodoReader, janitor.Config{
 		ServerName: cfg.ServerName, BillingEnvironment: cfg.BillingEnvironment,
-		OwnerEmail: cfg.OwnerEmail,
+		OperatorEmail: cfg.OperatorEmail,
 	})
 }
 

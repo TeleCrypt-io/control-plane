@@ -18,7 +18,7 @@ import (
 type Config struct {
 	ServerName         string
 	BillingEnvironment string
-	OwnerEmail         string
+	OperatorEmail      string
 }
 
 type masAdminClient interface {
@@ -51,7 +51,7 @@ type lifecycleStore interface {
 	FinishRemoval(context.Context, string) (bool, error)
 }
 
-// Discrepancy is intentionally provider-neutral. Janitor reports it to the owner and does not
+// Discrepancy is intentionally provider-neutral. Janitor reports it to the operator and does not
 // mutate Cashier, subscriptions, memberships, or files as a consequence.
 type Discrepancy struct {
 	TeamID       string
@@ -110,7 +110,7 @@ func (s *Sweeper) Sweep(ctx context.Context) error {
 		return err
 	}
 	var emails []masadmin.UserEmail
-	if s.cfg.OwnerEmail != "" {
+	if s.cfg.OperatorEmail != "" {
 		emails, err = s.mas.ListUserEmails(ctx)
 		if err != nil {
 			return httpdiag.WrapCause("janitor: list user emails failed", err)
@@ -244,7 +244,7 @@ func (s *Sweeper) sweepProvider(ctx context.Context) error {
 		return httpdiag.WrapCause("Cashier subscription snapshot failed", err)
 	}
 	discrepancies := compareSubscriptionSnapshots(provider, local)
-	if len(discrepancies) == 0 || s.cfg.OwnerEmail == "" {
+	if len(discrepancies) == 0 || s.cfg.OperatorEmail == "" {
 		return nil
 	}
 	rows := make([]string, 0, len(discrepancies))
@@ -253,7 +253,7 @@ func (s *Sweeper) sweepProvider(ctx context.Context) error {
 	}
 	sort.Strings(rows)
 	body := "Dodo reconciliation found discrepancies; no automatic correction was applied.\r\n\r\n" + strings.Join(rows, "\r\n") + "\r\n"
-	if err := s.mailer.Send(ctx, s.cfg.OwnerEmail, "TeleCrypt.io: billing reconciliation discrepancies", body); err != nil {
+	if err := s.mailer.Send(ctx, s.cfg.OperatorEmail, "TeleCrypt.io: billing reconciliation discrepancies", body); err != nil {
 		return httpdiag.WrapCause("provider discrepancy notification failed", err)
 	}
 	return nil
@@ -291,7 +291,7 @@ func compareSubscriptionSnapshots(provider []ProviderSubscription, local []db.Su
 }
 
 func (s *Sweeper) sweepDigest(ctx context.Context, users []masadmin.User, emails []masadmin.UserEmail) error {
-	if s.cfg.OwnerEmail == "" {
+	if s.cfg.OperatorEmail == "" {
 		return nil
 	}
 	cursor, found, err := s.store.JanitorDigestCursor(ctx)
@@ -368,7 +368,7 @@ func (s *Sweeper) sweepDigest(ctx context.Context, users []masadmin.User, emails
 	for _, candidate := range candidates {
 		fmt.Fprintf(&body, "%s  created %s\r\n", candidate.mxid, candidate.userCreatedAt.Format(time.RFC3339))
 	}
-	if err := s.mailer.Send(ctx, s.cfg.OwnerEmail, fmt.Sprintf("TeleCrypt.io: %d new sign-up(s) awaiting review", len(candidates)), body.String()); err != nil {
+	if err := s.mailer.Send(ctx, s.cfg.OperatorEmail, fmt.Sprintf("TeleCrypt.io: %d new sign-up(s) awaiting review", len(candidates)), body.String()); err != nil {
 		return httpdiag.WrapCause("notification delivery failed", err)
 	}
 	if high.ID != "" {

@@ -105,7 +105,7 @@ func oldUser(username string) masadmin.User {
 }
 
 func testConfig() Config {
-	return Config{ServerName: "stage.telecrypt.io", BillingEnvironment: "test", OwnerEmail: "owner@example.test"}
+	return Config{ServerName: "stage.telecrypt.io", BillingEnvironment: "test", OperatorEmail: "operator@example.test"}
 }
 
 func TestSweepSuspendsInitialFreeAccountThroughSynapse(t *testing.T) {

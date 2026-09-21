@@ -42,7 +42,7 @@ func setRequiredJanitorEnv(t *testing.T) {
 		"SMTP_USERNAME":           "janitor@example.test",
 		"SMTP_PASSWORD":           "smtp-secret",
 		"SMTP_FROM":               "noreply@example.test",
-		"OWNER_EMAIL":             "owner@example.test",
+		"OPERATOR_EMAIL":          "operator@example.test",
 	} {
 		t.Setenv(key, value)
 	}
@@ -58,7 +58,7 @@ func setLiveJanitorEnv(t *testing.T) {
 	t.Setenv("SMTP_USERNAME", "janitor@example.test")
 	t.Setenv("SMTP_PASSWORD", "smtp-secret")
 	t.Setenv("SMTP_FROM", "noreply@example.test")
-	t.Setenv("OWNER_EMAIL", "owner@example.test")
+	t.Setenv("OPERATOR_EMAIL", "operator@example.test")
 }
 
 func TestLoadPlanDerivesPublicURLsFromServerName(t *testing.T) {
@@ -252,28 +252,28 @@ func TestLoadJanitorRequiresCompleteSMTP(t *testing.T) {
 	for _, name := range []string{"SMTP_HOST", "SMTP_USERNAME", "SMTP_PASSWORD", "SMTP_FROM"} {
 		t.Setenv(name, "")
 	}
-	t.Setenv("OWNER_EMAIL", "")
+	t.Setenv("OPERATOR_EMAIL", "")
 	if _, err := LoadJanitor(); err != nil {
 		t.Fatalf("LoadJanitor without optional mail configuration: %v", err)
 	}
 
 	setLiveJanitorEnv(t)
-	t.Setenv("OWNER_EMAIL", "")
-	if _, err := LoadJanitor(); err == nil || !strings.Contains(err.Error(), "OWNER_EMAIL") {
-		t.Fatalf("LoadJanitor error = %v, want missing OWNER_EMAIL", err)
+	t.Setenv("OPERATOR_EMAIL", "")
+	if _, err := LoadJanitor(); err == nil || !strings.Contains(err.Error(), "OPERATOR_EMAIL") {
+		t.Fatalf("LoadJanitor error = %v, want missing OPERATOR_EMAIL", err)
 	}
 
 	setLiveJanitorEnv(t)
-	t.Setenv("OWNER_EMAIL", "not-an-email")
-	if _, err := LoadJanitor(); err == nil || !strings.Contains(err.Error(), "OWNER_EMAIL") {
-		t.Fatalf("LoadJanitor error = %v, want invalid OWNER_EMAIL", err)
+	t.Setenv("OPERATOR_EMAIL", "not-an-email")
+	if _, err := LoadJanitor(); err == nil || !strings.Contains(err.Error(), "OPERATOR_EMAIL") {
+		t.Fatalf("LoadJanitor error = %v, want invalid OPERATOR_EMAIL", err)
 	}
 
 }
 
 func TestLoadJanitorRunsDodoReconciliationWithoutOptionalMail(t *testing.T) {
 	setRequiredJanitorEnv(t)
-	for _, name := range []string{"OWNER_EMAIL", "SMTP_HOST", "SMTP_USERNAME", "SMTP_PASSWORD", "SMTP_FROM"} {
+	for _, name := range []string{"OPERATOR_EMAIL", "SMTP_HOST", "SMTP_USERNAME", "SMTP_PASSWORD", "SMTP_FROM"} {
 		t.Setenv(name, "")
 	}
 	t.Setenv("DODO_READ_ONLY_API_URL", "https://test.dodopayments.com")
@@ -309,14 +309,14 @@ func TestLoadJanitorRejectsSurroundingWhitespaceInConfiguration(t *testing.T) {
 
 func TestLoadJanitorParsesAndNormalizesDeliveryMailboxes(t *testing.T) {
 	setLiveJanitorEnv(t)
-	t.Setenv("OWNER_EMAIL", "Owner <owner@example.test>")
+	t.Setenv("OPERATOR_EMAIL", "Operator <operator@example.test>")
 	t.Setenv("SMTP_FROM", "TeleCrypt <noreply@example.test>")
 	cfg, err := LoadJanitor()
 	if err != nil {
 		t.Fatalf("LoadJanitor: %v", err)
 	}
-	if cfg.OwnerEmail != "owner@example.test" || cfg.SMTPFrom != "noreply@example.test" {
-		t.Fatalf("mailboxes = (%q, %q), want bare parsed addresses", cfg.OwnerEmail, cfg.SMTPFrom)
+	if cfg.OperatorEmail != "operator@example.test" || cfg.SMTPFrom != "noreply@example.test" {
+		t.Fatalf("mailboxes = (%q, %q), want bare parsed addresses", cfg.OperatorEmail, cfg.SMTPFrom)
 	}
 }
 
