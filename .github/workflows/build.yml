@@ -249,6 +249,11 @@ jobs:
           --env MAS_OIDC_CLIENT_ID=01J00000000000000000000000 \
           --env MAS_OIDC_CLIENT_SECRET=smoke-secret \
           --env PLAN_SESSION_KEY=ssssssssssssssssssssssssssssssss \
+          --env PLAN_BILLING_LINK_1=https://checkout.example.invalid/tier-1 \
+          --env PLAN_BILLING_LINK_2=https://checkout.example.invalid/tier-2 \
+          --env PLAN_BILLING_LINK_3=https://checkout.example.invalid/tier-3 \
+          --env PLAN_BILLING_LINK_4=https://checkout.example.invalid/tier-4 \
+          --env PLAN_BILLING_PORTAL_URL=https://portal.example.invalid/login \
           "$IMAGE_REF" /plan
           wait_for_status() {
             local url="$1" expected="$2" status
