@@ -35,7 +35,6 @@ func setRequiredJanitorEnv(t *testing.T) {
 		"MAS_ADMIN_CLIENT_ID":     testJanitorClientID,
 		"MAS_ADMIN_CLIENT_SECRET": "secret",
 		"SYNAPSE_ADMIN_TOKEN":     "synapse-admin-token",
-		"JANITOR_DB_URL":          "postgres://janitor:secret@db/database",
 		"SERVER_NAME":             "example.invalid",
 		"BILLING_ENVIRONMENT":     "test",
 		"SMTP_HOST":               "smtp.example.test",
@@ -53,7 +52,6 @@ func setLiveJanitorEnv(t *testing.T) {
 	setRequiredJanitorEnv(t)
 	t.Setenv("SERVER_NAME", "production.example.invalid")
 	t.Setenv("BILLING_ENVIRONMENT", "live")
-	t.Setenv("JANITOR_DB_URL", "postgres://janitor:secret@db/database")
 	t.Setenv("SMTP_HOST", "smtp.example.test")
 	t.Setenv("SMTP_USERNAME", "janitor@example.test")
 	t.Setenv("SMTP_PASSWORD", "smtp-secret")
@@ -219,8 +217,9 @@ func TestServerIdentityRejectsInvalidHostnames(t *testing.T) {
 	}
 }
 
-func TestLoadJanitorLoadsPrivateDatabaseURL(t *testing.T) {
+func TestLoadJanitorDoesNotRequireDatabaseCredentials(t *testing.T) {
 	setRequiredJanitorEnv(t)
+	t.Setenv("JANITOR_DB_URL", "")
 	cfg, err := LoadJanitor()
 	if err != nil {
 		t.Fatalf("LoadJanitor: %v", err)
@@ -230,9 +229,6 @@ func TestLoadJanitorLoadsPrivateDatabaseURL(t *testing.T) {
 	}
 	if got, want := cfg.SynapseAdminURL, "http://127.0.0.1:8008"; got != want {
 		t.Fatalf("SynapseAdminURL = %q, want %q", got, want)
-	}
-	if got, want := cfg.JanitorDBURL, "postgres://janitor:secret@db/database"; got != want {
-		t.Fatalf("JanitorDBURL = %q, want %q", got, want)
 	}
 }
 
@@ -341,11 +337,11 @@ func TestLoadJanitorRejectsInvalidProfileValues(t *testing.T) {
 	}
 }
 
-func TestLoadJanitorUsesProductionDatabaseIdentity(t *testing.T) {
+func TestLoadJanitorUsesProductionBillingProfileWithoutDatabase(t *testing.T) {
 	setLiveJanitorEnv(t)
 	t.Setenv("SERVER_NAME", "production.example.invalid")
 	t.Setenv("BILLING_ENVIRONMENT", "live")
-	t.Setenv("JANITOR_DB_URL", "postgres://janitor:secret@db/database")
+	t.Setenv("JANITOR_DB_URL", "")
 	if _, err := LoadJanitor(); err != nil {
 		t.Fatalf("LoadJanitor in production: %v", err)
 	}

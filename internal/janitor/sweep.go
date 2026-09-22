@@ -1,5 +1,5 @@
 // Package janitor implements one scheduled lifecycle-maintenance run. It has no HTTP server.
-// Cashier owns entitlement state; Janitor reads its ordinary tables and executes due lifecycle work.
+// Cashier owns entitlement and lifecycle state; Janitor performs the external maintenance work.
 package janitor
 
 import (
@@ -10,29 +10,18 @@ import (
 	"strings"
 	"time"
 
-	"github.com/TeleCrypt-io/controlplane/internal/db"
 	"github.com/TeleCrypt-io/controlplane/internal/httpdiag"
 	"github.com/TeleCrypt-io/controlplane/internal/masadmin"
 )
 
 type Config struct {
-	ServerName         string
-	BillingEnvironment string
-	OperatorEmail      string
+	ServerName    string
+	OperatorEmail string
 }
 
 type masAdminClient interface {
 	ListUsers(context.Context) ([]masadmin.User, error)
 	ListUserEmails(context.Context) ([]masadmin.UserEmail, error)
-}
-
-type synapseAdminClient interface {
-	SuspendUser(context.Context, string, bool) error
-}
-
-type synapsePolicyClient interface {
-	SetUserType(context.Context, string, string) error
-	ReadUserType(context.Context, string) (*string, error)
 }
 
 type masRemovalClient interface {
@@ -41,14 +30,6 @@ type masRemovalClient interface {
 
 type mediaRemovalClient interface {
 	DeleteAllMedia(context.Context, string) error
-}
-
-type lifecycleStore interface {
-	SyncLifecycleAccount(context.Context, string, time.Time) error
-	LifecycleActions(context.Context) ([]db.LifecycleAction, error)
-	ExecuteSuspension(context.Context, string, func(context.Context, string) error) (bool, error)
-	StartRemoval(context.Context, string) (bool, error)
-	FinishRemoval(context.Context, string) (bool, error)
 }
 
 // Discrepancy is intentionally provider-neutral. Janitor reports it to the operator and does not
@@ -66,41 +47,31 @@ type DodoReconciler interface {
 	Subscriptions(context.Context) ([]ProviderSubscription, error)
 }
 
-type cashierSubscriptionSnapshotReader interface {
-	ProviderSubscriptionSnapshot(context.Context) ([]db.SubscriptionSnapshot, error)
-}
-
-type store interface {
-	lifecycleStore
-	JanitorDigestCursor(context.Context) (db.DigestCursor, bool, error)
-	SetJanitorDigestCursor(context.Context, db.DigestCursor) error
-}
-
 type Mailer interface {
 	Send(context.Context, string, string, string) error
 }
 
 type Sweeper struct {
 	mas     masAdminClient
-	synapse synapseAdminClient
-	store   store
+	synapse any
+	cashier cashierAPI
 	mailer  Mailer
 	dodo    DodoReconciler
 	cfg     Config
 }
 
-func NewLifecycleSweeper(mas masAdminClient, synapse synapseAdminClient, store store, mailer Mailer, dodo DodoReconciler, cfg Config) *Sweeper {
-	return &Sweeper{mas: mas, synapse: synapse, store: store, mailer: mailer, dodo: dodo, cfg: cfg}
+func NewLifecycleSweeper(mas masAdminClient, synapse any, cashier cashierAPI, mailer Mailer, dodo DodoReconciler, cfg Config) *Sweeper {
+	return &Sweeper{mas: mas, synapse: synapse, cashier: cashier, mailer: mailer, dodo: dodo, cfg: cfg}
 }
 
 // Sweep performs exactly one complete nightly run. Dodo reconciliation and email are read-only
-// reporting paths; lifecycle changes use the direct Cashier tables through ordinary SQL.
+// reporting paths; Cashier owns lifecycle and subscription state through its private API.
 func (s *Sweeper) Sweep(ctx context.Context) error {
 	users, err := s.mas.ListUsers(ctx)
 	if err != nil {
 		return httpdiag.WrapCause("janitor: list users failed", err)
 	}
-	if err := s.sweepAuthoritativeLifecycle(ctx, users, s.store); err != nil {
+	if err := s.sweepAuthoritativeLifecycle(ctx, users); err != nil {
 		return err
 	}
 	if ctx.Err() != nil {
@@ -122,17 +93,17 @@ func (s *Sweeper) Sweep(ctx context.Context) error {
 	return nil
 }
 
-func (s *Sweeper) sweepAuthoritativeLifecycle(ctx context.Context, users []masadmin.User, lifecycle lifecycleStore) error {
+func (s *Sweeper) sweepAuthoritativeLifecycle(ctx context.Context, users []masadmin.User) error {
 	for _, snapshot := range users {
 		mxid := s.mxid(snapshot.Username)
 		if mxid == "" || snapshot.DeactivatedAt != nil {
 			continue
 		}
-		if err := lifecycle.SyncLifecycleAccount(ctx, mxid, snapshot.CreatedAt); err != nil {
+		if err := s.cashier.SyncLifecycleAccount(ctx, mxid, snapshot.CreatedAt); err != nil {
 			return httpdiag.WrapCause("janitor: synchronize lifecycle account", err)
 		}
 	}
-	actions, err := lifecycle.LifecycleActions(ctx)
+	actions, err := s.cashier.LifecycleActions(ctx)
 	if err != nil {
 		return httpdiag.WrapCause("janitor: read lifecycle actions", err)
 	}
@@ -146,30 +117,11 @@ func (s *Sweeper) sweepAuthoritativeLifecycle(ctx context.Context, users []masad
 		}
 		switch action.Action {
 		case "suspend":
-			if action.DesiredUserType == nil || *action.DesiredUserType != "wild" {
-				return fmt.Errorf("janitor: Cashier returned an unsupported lifecycle projection")
-			}
-			if _, err := lifecycle.ExecuteSuspension(ctx, action.MXID, func(callCtx context.Context, desired string) error {
-				policy, ok := s.synapse.(synapsePolicyClient)
-				if !ok {
-					return errors.New("synapse admin client does not support user_type projection")
-				}
-				if err := policy.SetUserType(callCtx, action.MXID, desired); err != nil {
-					return err
-				}
-				got, err := policy.ReadUserType(callCtx, action.MXID)
-				if err != nil || got == nil || *got != desired {
-					if err == nil {
-						err = fmt.Errorf("user_type projection readback mismatch")
-					}
-					return err
-				}
-				return s.synapse.SuspendUser(callCtx, action.MXID, true)
-			}); err != nil {
+			if _, err := s.cashier.ExecuteSuspension(ctx, action.MXID); err != nil {
 				return httpdiag.WrapCause("janitor: suspend lifecycle account", err)
 			}
 		case "start_removal":
-			started, err := lifecycle.StartRemoval(ctx, action.MXID)
+			started, err := s.cashier.StartRemoval(ctx, action.MXID)
 			if err != nil {
 				return httpdiag.WrapCause("janitor: start lifecycle removal", err)
 			}
@@ -177,7 +129,7 @@ func (s *Sweeper) sweepAuthoritativeLifecycle(ctx context.Context, users []masad
 				if err := s.finishExternalRemoval(ctx, action.MXID, usersByUsername); err != nil {
 					return err
 				}
-				if _, err := lifecycle.FinishRemoval(ctx, action.MXID); err != nil {
+				if _, err := s.cashier.FinishRemoval(ctx, action.MXID); err != nil {
 					return httpdiag.WrapCause("janitor: finish lifecycle removal", err)
 				}
 			}
@@ -185,7 +137,7 @@ func (s *Sweeper) sweepAuthoritativeLifecycle(ctx context.Context, users []masad
 			if err := s.finishExternalRemoval(ctx, action.MXID, usersByUsername); err != nil {
 				return err
 			}
-			if _, err := lifecycle.FinishRemoval(ctx, action.MXID); err != nil {
+			if _, err := s.cashier.FinishRemoval(ctx, action.MXID); err != nil {
 				return httpdiag.WrapCause("janitor: finish lifecycle removal", err)
 			}
 		}
@@ -235,11 +187,7 @@ func (s *Sweeper) sweepProvider(ctx context.Context) error {
 	if err != nil {
 		return httpdiag.WrapCause("provider reconciliation failed", err)
 	}
-	reader, ok := s.store.(cashierSubscriptionSnapshotReader)
-	if !ok {
-		return errors.New("Cashier subscription snapshot is unavailable")
-	}
-	local, err := reader.ProviderSubscriptionSnapshot(ctx)
+	local, err := s.cashier.ProviderSubscriptionSnapshot(ctx)
 	if err != nil {
 		return httpdiag.WrapCause("Cashier subscription snapshot failed", err)
 	}
@@ -259,14 +207,14 @@ func (s *Sweeper) sweepProvider(ctx context.Context) error {
 	return nil
 }
 
-func compareSubscriptionSnapshots(provider []ProviderSubscription, local []db.SubscriptionSnapshot) []Discrepancy {
+func compareSubscriptionSnapshots(provider []ProviderSubscription, local []SubscriptionSnapshot) []Discrepancy {
 	providerByID := make(map[string]ProviderSubscription, len(provider))
 	for _, item := range provider {
 		if item.SubscriptionID != "" {
 			providerByID[item.SubscriptionID] = item
 		}
 	}
-	localByID := make(map[string]db.SubscriptionSnapshot, len(local))
+	localByID := make(map[string]SubscriptionSnapshot, len(local))
 	for _, item := range local {
 		if item.SubscriptionID != "" {
 			localByID[item.SubscriptionID] = item
@@ -294,12 +242,12 @@ func (s *Sweeper) sweepDigest(ctx context.Context, users []masadmin.User, emails
 	if s.cfg.OperatorEmail == "" {
 		return nil
 	}
-	cursor, found, err := s.store.JanitorDigestCursor(ctx)
+	cursor, found, err := s.cashier.JanitorDigestCursor(ctx)
 	if err != nil {
 		return httpdiag.WrapCause("digest cursor read failed", err)
 	}
 	if !found {
-		cursor = db.DigestCursor{CreatedAt: time.Unix(0, 0).UTC()}
+		cursor = DigestCursor{CreatedAt: time.Unix(0, 0).UTC()}
 	} else if !cursor.Valid() {
 		return fmt.Errorf("digest cursor is invalid")
 	}
@@ -356,7 +304,7 @@ func (s *Sweeper) sweepDigest(ctx context.Context, users []masadmin.User, emails
 	}
 	if len(candidates) == 0 {
 		if high.ID != "" {
-			if err := s.store.SetJanitorDigestCursor(ctx, db.DigestCursor{CreatedAt: high.CreatedAt, EmailID: high.ID}); err != nil {
+			if err := s.cashier.SetJanitorDigestCursor(ctx, DigestCursor{CreatedAt: high.CreatedAt, EmailID: high.ID}); err != nil {
 				return httpdiag.WrapCause("digest cursor advance failed", err)
 			}
 		}
@@ -372,7 +320,7 @@ func (s *Sweeper) sweepDigest(ctx context.Context, users []masadmin.User, emails
 		return httpdiag.WrapCause("notification delivery failed", err)
 	}
 	if high.ID != "" {
-		if err := s.store.SetJanitorDigestCursor(ctx, db.DigestCursor{CreatedAt: high.CreatedAt, EmailID: high.ID}); err != nil {
+		if err := s.cashier.SetJanitorDigestCursor(ctx, DigestCursor{CreatedAt: high.CreatedAt, EmailID: high.ID}); err != nil {
 			return httpdiag.WrapCause("digest cursor advance failed", err)
 		}
 	}

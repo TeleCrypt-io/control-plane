@@ -7,8 +7,6 @@ import (
 	"net/url"
 	"os"
 	"strings"
-
-	"github.com/TeleCrypt-io/controlplane/internal/db"
 )
 
 // Config contains the public endpoints shared by the control-plane services.
@@ -58,16 +56,14 @@ func (c *Config) ValidateRegistration() error {
 	return nil
 }
 
-// JanitorConfig is Janitor configuration. Cashier alone writes payment state; Janitor reads
-// Cashier's ordinary lifecycle and provider tables using its dedicated database role.
+// JanitorConfig contains only the external-service credentials Janitor uses. Cashier owns all
+// billing and lifecycle database state.
 type JanitorConfig struct {
-	BillingEnvironment   string
 	MASAdminURL          string
 	MASAdminClientID     string
 	MASAdminClientSecret string
 	SynapseAdminURL      string
 	SynapseAdminToken    string
-	JanitorDBURL         string
 	DodoReadOnlyAPIURL   string
 	DodoReadOnlyAPIKey   string
 	ServerName           string
@@ -79,18 +75,16 @@ type JanitorConfig struct {
 }
 
 func LoadJanitor() (*JanitorConfig, error) {
-	serverName, billingEnvironment, _, err := loadBillingIdentity()
+	serverName, _, _, err := loadBillingIdentity()
 	if err != nil {
 		return nil, err
 	}
 	c := &JanitorConfig{
-		BillingEnvironment:   billingEnvironment,
 		MASAdminURL:          masAdminURL,
 		MASAdminClientID:     os.Getenv("MAS_ADMIN_CLIENT_ID"),
 		MASAdminClientSecret: os.Getenv("MAS_ADMIN_CLIENT_SECRET"),
 		SynapseAdminURL:      synapseAdminURL,
 		SynapseAdminToken:    os.Getenv("SYNAPSE_ADMIN_TOKEN"),
-		JanitorDBURL:         os.Getenv("JANITOR_DB_URL"),
 		DodoReadOnlyAPIURL:   os.Getenv("DODO_READ_ONLY_API_URL"),
 		DodoReadOnlyAPIKey:   os.Getenv("DODO_READ_ONLY_API_KEY"),
 		ServerName:           serverName,
@@ -103,7 +97,6 @@ func LoadJanitor() (*JanitorConfig, error) {
 	required := []envValue{
 		{"MAS_ADMIN_CLIENT_ID", c.MASAdminClientID},
 		{"MAS_ADMIN_CLIENT_SECRET", c.MASAdminClientSecret}, {"SYNAPSE_ADMIN_TOKEN", c.SynapseAdminToken},
-		{"JANITOR_DB_URL", c.JanitorDBURL},
 		{"SERVER_NAME", c.ServerName},
 	}
 	if err := requireEnvValues(required, "missing required env vars"); err != nil {
@@ -328,8 +321,8 @@ func loadBillingIdentity() (string, string, backendEndpoints, error) {
 	if err := requireNonEmptyNoSurroundingWhitespace("BILLING_ENVIRONMENT", billingEnvironment); err != nil {
 		return "", "", backendEndpoints{}, err
 	}
-	if err := db.ValidateDeploymentProfile(serverName, billingEnvironment); err != nil {
-		return "", "", backendEndpoints{}, err
+	if billingEnvironment != "test" && billingEnvironment != "live" {
+		return "", "", backendEndpoints{}, fmt.Errorf("invalid SERVER_NAME/BILLING_ENVIRONMENT profile")
 	}
 	if _, present := os.LookupEnv("BILLING_ENV"); present {
 		return "", "", backendEndpoints{}, fmt.Errorf("BILLING_ENV must be unset")
@@ -347,7 +340,7 @@ func loadBillingIdentity() (string, string, backendEndpoints, error) {
 }
 
 func deriveBackendEndpoints(serverName string) (backendEndpoints, error) {
-	if err := db.ValidateServerName(serverName); err != nil {
+	if err := validateServerName(serverName); err != nil {
 		return backendEndpoints{}, err
 	}
 	backendHost := "backend." + serverName
@@ -357,6 +350,24 @@ func deriveBackendEndpoints(serverName string) (backendEndpoints, error) {
 		mas:    origin,
 		plan:   origin + "/plan/overview",
 	}, nil
+}
+
+func validateServerName(serverName string) error {
+	if len(serverName) == 0 || len(serverName) > 253 || strings.TrimSpace(serverName) != serverName {
+		return fmt.Errorf("SERVER_NAME must be a valid hostname")
+	}
+	for _, label := range strings.Split(serverName, ".") {
+		if len(label) == 0 || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+			return fmt.Errorf("SERVER_NAME must be a valid hostname")
+		}
+		for i := 0; i < len(label); i++ {
+			c := label[i]
+			if (c < 'a' || c > 'z') && (c < 'A' || c > 'Z') && (c < '0' || c > '9') && c != '-' {
+				return fmt.Errorf("SERVER_NAME must be a valid hostname")
+			}
+		}
+	}
+	return nil
 }
 
 func requireNonEmptyNoSurroundingWhitespace(name, value string) error {

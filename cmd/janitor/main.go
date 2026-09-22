@@ -13,7 +13,6 @@ import (
 	"syscall"
 
 	"github.com/TeleCrypt-io/controlplane/internal/config"
-	"github.com/TeleCrypt-io/controlplane/internal/db"
 	"github.com/TeleCrypt-io/controlplane/internal/janitor"
 	"github.com/TeleCrypt-io/controlplane/internal/masadmin"
 	"github.com/TeleCrypt-io/controlplane/internal/synapseadmin"
@@ -37,19 +36,7 @@ func run() error {
 	defer stop()
 	ctx := signalCtx
 
-	pool, err := db.OpenJanitorPool(ctx, cfg.JanitorDBURL)
-	if err != nil {
-		slog.Error("db connect", "error", err.Error())
-		return err
-	}
-	defer pool.Close()
-	store := db.NewStore(pool)
-	if err := db.Migrate(ctx, pool); err != nil {
-		slog.Error("migrate", "error", err.Error())
-		return err
-	}
-
-	sweeper := build(cfg, store)
+	sweeper := build(cfg)
 
 	if err := sweeper.Sweep(ctx); err != nil {
 		slog.Error("sweep", "error", err.Error())
@@ -59,9 +46,10 @@ func run() error {
 	return nil
 }
 
-func build(cfg *config.JanitorConfig, store *db.Store) *janitor.Sweeper {
+func build(cfg *config.JanitorConfig) *janitor.Sweeper {
 	masClient := masadmin.NewClient(cfg.MASAdminURL, cfg.MASAdminClientID, cfg.MASAdminClientSecret)
 	synapseClient := synapseadmin.NewClient(cfg.SynapseAdminURL, cfg.SynapseAdminToken)
+	cashierClient := janitor.NewCashierClient()
 	var dodoReader janitor.DodoReconciler
 	if cfg.DodoReadOnlyAPIURL != "" {
 		dodoReader = janitor.NewDodoReader(cfg.DodoReadOnlyAPIURL, cfg.DodoReadOnlyAPIKey)
@@ -74,9 +62,8 @@ func build(cfg *config.JanitorConfig, store *db.Store) *janitor.Sweeper {
 		From:     cfg.SMTPFrom,
 	}
 
-	return janitor.NewLifecycleSweeper(masClient, synapseClient, store, mailer, dodoReader, janitor.Config{
-		ServerName: cfg.ServerName, BillingEnvironment: cfg.BillingEnvironment,
-		OperatorEmail: cfg.OperatorEmail,
+	return janitor.NewLifecycleSweeper(masClient, synapseClient, cashierClient, mailer, dodoReader, janitor.Config{
+		ServerName: cfg.ServerName, OperatorEmail: cfg.OperatorEmail,
 	})
 }
 
