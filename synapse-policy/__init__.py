@@ -2,20 +2,18 @@
 
 Entitlement state is published by Cashier into Synapse's local ``user_type`` column;
 the admission decisions here do not open a database connection or perform a remote
-policy lookup. Successful media spam checks send best-effort accounting notifications
-to the pod-local Cashier endpoint after capturing the request context.
+policy lookup. Successful local media mutations send best-effort accounting
+notifications to the pod-local Cashier endpoint.
 """
 
 from __future__ import annotations
 
 import json
 import logging
-import os
 from typing import Any
 
 from synapse.api.errors import Codes
-from synapse.logging.context import current_context
-from synapse.module_api import ModuleApi, NOT_SPAM, make_deferred_yieldable, run_in_background
+from synapse.module_api import ModuleApi, NOT_SPAM, make_deferred_yieldable
 from synapse.module_api.callbacks.ratelimit_callbacks import RatelimitOverride
 from twisted.web.client import readBody
 from twisted.web.http_headers import Headers
@@ -115,6 +113,7 @@ class TierController:
 
         api.register_media_repository_callbacks(
             is_user_allowed_to_upload_media_of_size=self.is_user_allowed_to_upload_media_of_size,
+            on_media_uploaded=self.on_media_uploaded,
             on_media_deleted=self.on_media_deleted,
         )
         api.register_ratelimit_callbacks(
@@ -123,7 +122,6 @@ class TierController:
         api.register_spam_checker_callbacks(
             user_may_create_room=self.user_may_create_room,
             check_event_for_spam=self.check_event_for_spam,
-            check_media_file_for_spam=self.check_media_file_for_spam,
         )
         api.register_third_party_rules_callbacks(
             on_create_room=self.on_create_room,
@@ -188,61 +186,15 @@ class TierController:
             return Codes.FORBIDDEN, {"error": _DENIAL_MESSAGE}
         return NOT_SPAM
 
-    @staticmethod
-    def _request_context_user_id() -> str | None:
-        """Capture the authenticated user from Synapse's upload request context.
-
-        ``check_media_file_for_spam`` has no user argument. The request context is
-        captured before detached accounting work starts, as required by Synapse's
-        logging-context propagation rules. Missing context only loses a notification;
-        it never rejects a media upload.
-        """
-        try:
-            request = getattr(current_context(), "request", None)
-            requester = getattr(request, "requester", None)
-            user = getattr(requester, "user", None)
-            to_string = getattr(user, "to_string", None)
-            user_id = to_string() if to_string is not None else None
-        except Exception:
-            logger.exception("tier_controller: could not capture media uploader")
-            return None
-        return str(user_id) if user_id else None
-
-    async def check_media_file_for_spam(self, file: Any, file_info: Any) -> Any:
-        """Queue upload accounting after local media spam admission.
-
-        This hook also sees remote media, thumbnails, and URL previews. Only a local
-        non-thumbnail file is an account upload. The hook runs before Synapse commits
-        its media row, so the notification is deliberately best effort and cannot
-        affect the upload result.
-        """
-        if (
-            getattr(file_info, "server_name", None) is not None
-            or getattr(file_info, "thumbnail", None) is not None
-            or bool(getattr(file_info, "url_cache", False))
-        ):
-            return NOT_SPAM
-        media_id = getattr(file_info, "file_id", None)
-        path = getattr(file, "path", None)
-        user_id = self._request_context_user_id()
-        if not isinstance(media_id, str) or not media_id or not user_id or not isinstance(path, str):
-            logger.warning("tier_controller: media upload notification lacks local identity")
-            return NOT_SPAM
-        try:
-            size_bytes = os.stat(path).st_size
-        except OSError:
-            logger.exception("tier_controller: could not determine uploaded media size for %s", media_id)
-            return NOT_SPAM
-        if size_bytes < 0:
-            return NOT_SPAM
-        run_in_background(self._notify_upload, user_id, media_id, size_bytes)
-        return NOT_SPAM
+    async def on_media_uploaded(self, user_id: str, media_id: str, size_bytes: int) -> None:
+        """Account for a local upload after Synapse commits its media metadata."""
+        await self._notify_upload(user_id, media_id, size_bytes)
 
     async def on_media_deleted(self, media_id: str) -> None:
-        """Queue deletion accounting using only the stable media ID."""
+        """Account for a completed deletion using only the stable media ID."""
         if not isinstance(media_id, str) or not media_id:
             return
-        run_in_background(self._notify_delete, media_id)
+        await self._notify_delete(media_id)
 
     async def _notify_upload(self, user_id: str, media_id: str, size_bytes: int) -> None:
         try:

@@ -80,8 +80,8 @@ async def test_local_user_type_controls_upload_without_sql_usage_lookup():
     assert await upload(module, "@paid:test", MAX_MEDIA_BYTES) is True
     assert await upload(module, "@blocked:test", 1) is False
     assert api.registered_media
+    assert "on_media_uploaded" in api.registered_media
     assert "on_media_deleted" in api.registered_media
-    assert "check_media_file_for_spam" in api.registered_spam
     assert not hasattr(api, "run_db_interaction")
 
 
@@ -99,8 +99,8 @@ async def test_media_notifications_use_upload_identity_and_media_only_for_delete
         calls.append((path, payload))
 
     module._post_cashier = post
-    await module._notify_upload("@owner:test", "media-1", 42)
-    await module._notify_delete("media-1")
+    await module.on_media_uploaded("@owner:test", "media-1", 42)
+    await module.on_media_deleted("media-1")
     assert calls == [
         ("/internal/cashier/file_upload_webhook", {"user_id": "@owner:test", "media_id": "media-1", "size_bytes": 42}),
         ("/internal/cashier/file_delete_webhook", {"media_id": "media-1"}),
