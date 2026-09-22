@@ -100,7 +100,7 @@ const paidMembershipSQL = `
 	EXISTS (
 		SELECT 1
 		FROM (
-			SELECT s.mxid, s.team_id, t.tier_id,
+			SELECT s.mxid, s.team_id, t.member_limit,
 				row_number() OVER (PARTITION BY s.team_id ORDER BY s.created_at ASC, s.mxid COLLATE "C" ASC) AS member_rank
 			FROM cashier.seats AS s
 			JOIN cashier.teams AS t ON t.id = s.team_id
@@ -108,13 +108,7 @@ const paidMembershipSQL = `
 			  AND t.tier_id BETWEEN 1 AND 4
 		) AS paid
 		WHERE paid.mxid = account.mxid
-		  AND paid.member_rank <= CASE paid.tier_id
-			WHEN 1 THEN 3
-			WHEN 2 THEN 10
-			WHEN 3 THEN 25
-			WHEN 4 THEN 100
-			ELSE 0
-		  END
+		  AND paid.member_rank <= paid.member_limit
 	)`
 
 // SyncLifecycleAccount records a MAS account if Cashier has not seen it yet and initializes the
