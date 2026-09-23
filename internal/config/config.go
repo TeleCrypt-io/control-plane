@@ -18,6 +18,9 @@ type Config struct {
 }
 
 func Load() (*Config, error) {
+	if err := rejectServiceTokens("Registration", "CASHIER_PLAN_TOKEN", "CASHIER_JANITOR_TOKEN", "CASHIER_SYNAPSE_TOKEN"); err != nil {
+		return nil, err
+	}
 	serverName, endpoints, err := loadServerIdentity()
 	if err != nil {
 		return nil, err
@@ -64,6 +67,7 @@ type JanitorConfig struct {
 	MASAdminClientSecret string
 	SynapseAdminURL      string
 	SynapseAdminToken    string
+	CashierToken         string
 	DodoReadOnlyAPIURL   string
 	DodoReadOnlyAPIKey   string
 	ServerName           string
@@ -75,7 +79,14 @@ type JanitorConfig struct {
 }
 
 func LoadJanitor() (*JanitorConfig, error) {
+	if err := rejectServiceTokens("Janitor", "CASHIER_PLAN_TOKEN", "CASHIER_SYNAPSE_TOKEN"); err != nil {
+		return nil, err
+	}
 	serverName, _, _, err := loadBillingIdentity()
+	if err != nil {
+		return nil, err
+	}
+	cashierToken, err := loadCashierServiceToken("CASHIER_JANITOR_TOKEN")
 	if err != nil {
 		return nil, err
 	}
@@ -85,6 +96,7 @@ func LoadJanitor() (*JanitorConfig, error) {
 		MASAdminClientSecret: os.Getenv("MAS_ADMIN_CLIENT_SECRET"),
 		SynapseAdminURL:      synapseAdminURL,
 		SynapseAdminToken:    os.Getenv("SYNAPSE_ADMIN_TOKEN"),
+		CashierToken:         cashierToken,
 		DodoReadOnlyAPIURL:   os.Getenv("DODO_READ_ONLY_API_URL"),
 		DodoReadOnlyAPIKey:   os.Getenv("DODO_READ_ONLY_API_KEY"),
 		ServerName:           serverName,
@@ -155,6 +167,7 @@ type PlanConfig struct {
 	MASInternalURL     string
 	PlanPublicURL      string
 	CashierInternalURL string // fixed pod-local endpoint
+	CashierToken       string
 	MASClientID        string
 	MASClientSecret    string
 	PlanSessionKey     string
@@ -166,7 +179,14 @@ type PlanConfig struct {
 }
 
 func LoadPlan() (*PlanConfig, error) {
+	if err := rejectServiceTokens("Plan", "CASHIER_JANITOR_TOKEN", "CASHIER_SYNAPSE_TOKEN"); err != nil {
+		return nil, err
+	}
 	serverName, billingEnvironment, endpoints, err := loadBillingIdentity()
+	if err != nil {
+		return nil, err
+	}
+	cashierToken, err := loadCashierServiceToken("CASHIER_PLAN_TOKEN")
 	if err != nil {
 		return nil, err
 	}
@@ -176,6 +196,7 @@ func LoadPlan() (*PlanConfig, error) {
 		BackendPublicURL:   endpoints.origin,
 		MASInternalURL:     masInternalURL,
 		CashierInternalURL: cashierInternalURL,
+		CashierToken:       cashierToken,
 		MASClientID:        os.Getenv("MAS_OIDC_CLIENT_ID"),
 		MASClientSecret:    os.Getenv("MAS_OIDC_CLIENT_SECRET"),
 		PlanSessionKey:     os.Getenv("PLAN_SESSION_KEY"),
@@ -225,6 +246,28 @@ func LoadPlan() (*PlanConfig, error) {
 		return nil, err
 	}
 	return c, nil
+}
+
+func loadCashierServiceToken(name string) (string, error) {
+	value := os.Getenv(name)
+	if len(value) != 64 {
+		return "", fmt.Errorf("%s must be 64 lowercase hexadecimal characters", name)
+	}
+	for _, char := range value {
+		if !((char >= '0' && char <= '9') || (char >= 'a' && char <= 'f')) {
+			return "", fmt.Errorf("%s must be 64 lowercase hexadecimal characters", name)
+		}
+	}
+	return value, nil
+}
+
+func rejectServiceTokens(service string, names ...string) error {
+	for _, name := range names {
+		if _, present := os.LookupEnv(name); present {
+			return fmt.Errorf("%s must be unset for %s", name, service)
+		}
+	}
+	return nil
 }
 
 const (

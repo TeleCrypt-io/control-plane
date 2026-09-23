@@ -43,7 +43,7 @@ func run() error {
 	}
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo})))
 
-	cashierClient, err := plan.NewHTTPCashierClient(cfg.CashierInternalURL, nil)
+	cashierClient, err := plan.NewHTTPCashierClient(cfg.CashierInternalURL, cfg.CashierToken, nil)
 	if err != nil {
 		slog.Error("cashier client", "error", err.Error())
 		return err

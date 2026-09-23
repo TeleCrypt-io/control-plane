@@ -2,10 +2,12 @@
 
 import asyncio
 import inspect
+import os
 import pathlib
 import site
 import sys
 from types import SimpleNamespace
+from unittest.mock import patch
 
 source_dir = pathlib.Path(__file__).resolve().parent
 sys.path[:] = [entry for entry in sys.path if pathlib.Path(entry or ".").resolve() != source_dir]
@@ -14,9 +16,11 @@ from synapse.api.errors import Codes
 from synapse.module_api import NOT_SPAM
 import tier_controller
 from tier_controller import (
+    CASHIER_INTERNAL_URL,
     MAX_MEDIA_BYTES,
     STORAGE_MARKER,
     TierController,
+    UPLOAD_WEBHOOK_PATH,
     _DENIAL_MESSAGE,
 )
 
@@ -24,6 +28,8 @@ module_path = pathlib.Path(tier_controller.__file__).resolve()
 site_packages = {pathlib.Path(path).resolve() for path in site.getsitepackages()}
 if not any(root in module_path.parents for root in site_packages):
     raise RuntimeError(f"tier_controller imported outside site-packages: {module_path}")
+
+CASHIER_SYNAPSE_TOKEN = "c" * 64
 
 
 class FakeModuleApi:
@@ -57,7 +63,60 @@ class FakeModuleApi:
 
 def make_module(user_types=None, lookup_error=False):
     api = FakeModuleApi(user_types, lookup_error)
-    return TierController({}, api), api
+    with patch.dict(os.environ, {"CASHIER_SYNAPSE_TOKEN": CASHIER_SYNAPSE_TOKEN}):
+        module = TierController({}, api)
+    return module, api
+
+
+def test_module_requires_valid_service_credential():
+    for value in (None, "short", "C" * 64, "g" * 64):
+        env = {} if value is None else {"CASHIER_SYNAPSE_TOKEN": value}
+        with patch.dict(os.environ, env, clear=True):
+            try:
+                TierController({}, FakeModuleApi())
+            except ValueError as error:
+                assert "CASHIER_SYNAPSE_TOKEN" in str(error)
+            else:
+                raise AssertionError("module accepted a missing or invalid Cashier credential")
+    with patch.dict(
+        os.environ,
+        {"CASHIER_SYNAPSE_TOKEN": CASHIER_SYNAPSE_TOKEN, "CASHIER_PLAN_TOKEN": "unexpected"},
+        clear=True,
+    ):
+        try:
+            TierController({}, FakeModuleApi())
+        except ValueError as error:
+            assert "CASHIER_PLAN_TOKEN" in str(error)
+        else:
+            raise AssertionError("Synapse accepted another service's Cashier credential")
+
+
+async def test_cashier_notifications_send_the_synapse_service_credential():
+    module, _ = make_module()
+    seen = []
+
+    class FakeHttpClient:
+        async def request(self, method, url, *, data, headers):
+            seen.append((method, url, data, headers))
+            return SimpleNamespace(code=204)
+
+    module._api.http_client = FakeHttpClient()
+
+    async def read_body(_response):
+        return b""
+
+    with patch("tier_controller.readBody", new=read_body), patch(
+        "tier_controller.make_deferred_yieldable", new=lambda awaitable: awaitable
+    ):
+        await module._post_cashier(UPLOAD_WEBHOOK_PATH, {"user_id": "@a:test"})
+
+    assert len(seen) == 1
+    method, url, _, headers = seen[0]
+    assert method == "POST"
+    assert url == CASHIER_INTERNAL_URL + UPLOAD_WEBHOOK_PATH
+    assert headers.getRawHeaders(b"Authorization") == [
+        b"Bearer " + CASHIER_SYNAPSE_TOKEN.encode("ascii")
+    ]
 
 
 async def upload(module, user_id, size):

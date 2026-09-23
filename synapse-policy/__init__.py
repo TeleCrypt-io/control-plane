@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from typing import Any
 
 from synapse.api.errors import Codes
@@ -37,6 +38,7 @@ STORAGE_ROOM_TYPE = "m.space"
 # module configuration field exists; this module never sends these notifications via
 # the public ingress.
 CASHIER_INTERNAL_URL = "http://127.0.0.1:9011"
+CASHIER_TOKEN_ENV = "CASHIER_SYNAPSE_TOKEN"
 UPLOAD_WEBHOOK_PATH = "/internal/cashier/file_upload_webhook"
 DELETE_WEBHOOK_PATH = "/internal/cashier/file_delete_webhook"
 
@@ -109,7 +111,14 @@ class TierController:
     """Apply the local user type to native Synapse policy callbacks."""
 
     def __init__(self, _config: dict[str, Any], api: ModuleApi) -> None:
+        for name in ("CASHIER_PLAN_TOKEN", "CASHIER_JANITOR_TOKEN"):
+            if name in os.environ:
+                raise ValueError(f"{name} must be unset for Synapse")
+        cashier_token = os.environ.get(CASHIER_TOKEN_ENV, "")
+        if len(cashier_token) != 64 or any(char not in "0123456789abcdef" for char in cashier_token):
+            raise ValueError(f"{CASHIER_TOKEN_ENV} must be 64 lowercase hexadecimal characters")
         self._api = api
+        self._cashier_token = cashier_token
 
         api.register_media_repository_callbacks(
             is_user_allowed_to_upload_media_of_size=self.is_user_allowed_to_upload_media_of_size,
@@ -203,13 +212,21 @@ class TierController:
                 {"user_id": user_id, "media_id": media_id, "size_bytes": size_bytes},
             )
         except Exception:
-            logger.exception("tier_controller: upload accounting notification failed for %s", media_id)
+            logger.exception(
+                "tier_controller: upload committed but Cashier accounting notification failed; "
+                "the upload was not rolled back: media_id=%s",
+                media_id,
+            )
 
     async def _notify_delete(self, media_id: str) -> None:
         try:
             await self._post_cashier(DELETE_WEBHOOK_PATH, {"media_id": media_id})
         except Exception:
-            logger.exception("tier_controller: deletion accounting notification failed for %s", media_id)
+            logger.exception(
+                "tier_controller: deletion committed but Cashier accounting notification failed; "
+                "the deletion was not rolled back: media_id=%s",
+                media_id,
+            )
 
     async def _post_cashier(self, path: str, payload: dict[str, Any]) -> None:
         body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
@@ -217,7 +234,10 @@ class TierController:
             "POST",
             CASHIER_INTERNAL_URL + path,
             data=body,
-            headers=Headers({b"Content-Type": [b"application/json"]}),
+            headers=Headers({
+                b"Content-Type": [b"application/json"],
+                b"Authorization": [b"Bearer " + self._cashier_token.encode("ascii")],
+            }),
         )
         response_body = await make_deferred_yieldable(readBody(response))
         if not 200 <= response.code < 300:

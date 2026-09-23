@@ -32,15 +32,19 @@ func acceptsCashierStatus(status int, expectedStatuses []int) bool {
 // HTTPCashierClient is the sole Plan-to-Cashier transport. It is deliberately limited to the
 // CashierClient interface, so public Plan code cannot gain Dodo, Synapse, or database access.
 type HTTPCashierClient struct {
-	baseURL    string
-	httpClient *http.Client
+	baseURL      string
+	serviceToken string
+	httpClient   *http.Client
 }
 
-func NewHTTPCashierClient(baseURL string, httpClient *http.Client) (*HTTPCashierClient, error) {
+func NewHTTPCashierClient(baseURL, serviceToken string, httpClient *http.Client) (*HTTPCashierClient, error) {
 	parsedURL, err := url.Parse(baseURL)
 	if err != nil || parsedURL.Scheme != "http" || parsedURL.Host == "" || parsedURL.User != nil ||
 		(parsedURL.Path != "" && parsedURL.Path != "/") || parsedURL.RawQuery != "" || parsedURL.Fragment != "" {
 		return nil, fmt.Errorf("Cashier URL must be an HTTP origin")
+	}
+	if serviceToken == "" {
+		return nil, fmt.Errorf("Cashier Plan service token is required")
 	}
 	if httpClient == nil {
 		httpClient = &http.Client{Timeout: 15 * time.Second, Transport: noProxyTransport()}
@@ -53,7 +57,11 @@ func NewHTTPCashierClient(baseURL string, httpClient *http.Client) (*HTTPCashier
 	}
 	clientCopy.CheckRedirect = rejectRedirects
 	clientCopy.Transport = noProxyRoundTripper(clientCopy.Transport)
-	return &HTTPCashierClient{baseURL: strings.TrimRight(baseURL, "/"), httpClient: &clientCopy}, nil
+	return &HTTPCashierClient{
+		baseURL:      strings.TrimRight(baseURL, "/"),
+		serviceToken: serviceToken,
+		httpClient:   &clientCopy,
+	}, nil
 }
 
 func (c *HTTPCashierClient) PlanState(ctx context.Context, principal Principal) (PlanState, error) {
@@ -94,6 +102,7 @@ func (c *HTTPCashierClient) do(ctx context.Context, principal Principal, method,
 		return fmt.Errorf("create cashier request: %w", err)
 	}
 	req.Header.Set(planMXIDHeader, principal.MXID)
+	req.Header.Set("Authorization", "Bearer "+c.serviceToken)
 	if len(body) > 0 {
 		req.Header.Set("Content-Type", "application/json")
 	}

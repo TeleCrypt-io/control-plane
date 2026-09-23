@@ -49,7 +49,7 @@ func run() error {
 func build(cfg *config.JanitorConfig) *janitor.Sweeper {
 	masClient := masadmin.NewClient(cfg.MASAdminURL, cfg.MASAdminClientID, cfg.MASAdminClientSecret)
 	synapseClient := synapseadmin.NewClient(cfg.SynapseAdminURL, cfg.SynapseAdminToken)
-	cashierClient := janitor.NewCashierClient()
+	cashierClient := janitor.NewCashierClient(cfg.CashierToken)
 	var dodoReader janitor.DodoReconciler
 	if cfg.DodoReadOnlyAPIURL != "" {
 		dodoReader = janitor.NewDodoReader(cfg.DodoReadOnlyAPIURL, cfg.DodoReadOnlyAPIKey)

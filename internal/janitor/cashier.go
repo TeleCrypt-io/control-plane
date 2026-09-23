@@ -60,13 +60,15 @@ type cashierAPI interface {
 }
 
 type CashierClient struct {
-	baseURL string
-	http    *http.Client
+	baseURL      string
+	serviceToken string
+	http         *http.Client
 }
 
-func NewCashierClient() *CashierClient {
+func NewCashierClient(serviceToken string) *CashierClient {
 	return &CashierClient{
-		baseURL: cashierJanitorAPI,
+		baseURL:      cashierJanitorAPI,
+		serviceToken: serviceToken,
 		http: &http.Client{
 			Timeout:   75 * time.Second,
 			Transport: noProxyTransport(),
@@ -165,6 +167,7 @@ func (c *CashierClient) do(ctx context.Context, method, path string, input, outp
 	if input != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
+	req.Header.Set("Authorization", "Bearer "+c.serviceToken)
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return httpdiag.WrapCause("Cashier Janitor request "+path, err)

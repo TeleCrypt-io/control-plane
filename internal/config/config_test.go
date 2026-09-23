@@ -9,6 +9,8 @@ import (
 const (
 	testPlanClientID    = "01J00000000000000000000000"
 	testJanitorClientID = "01J00000000000000000000001"
+	testPlanToken       = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	testJanitorToken    = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 )
 
 func setRequiredPlanEnv(t *testing.T) {
@@ -16,6 +18,7 @@ func setRequiredPlanEnv(t *testing.T) {
 	for key, value := range map[string]string{
 		"SERVER_NAME":             "example.invalid",
 		"BILLING_ENVIRONMENT":     "test",
+		"CASHIER_PLAN_TOKEN":      testPlanToken,
 		"MAS_OIDC_CLIENT_ID":      testPlanClientID,
 		"MAS_OIDC_CLIENT_SECRET":  "test-secret",
 		"PLAN_SESSION_KEY":        strings.Repeat("s", 32),
@@ -35,6 +38,7 @@ func setRequiredJanitorEnv(t *testing.T) {
 		"MAS_ADMIN_CLIENT_ID":     testJanitorClientID,
 		"MAS_ADMIN_CLIENT_SECRET": "secret",
 		"SYNAPSE_ADMIN_TOKEN":     "synapse-admin-token",
+		"CASHIER_JANITOR_TOKEN":   testJanitorToken,
 		"SERVER_NAME":             "example.invalid",
 		"BILLING_ENVIRONMENT":     "test",
 		"SMTP_HOST":               "smtp.example.test",
@@ -76,6 +80,9 @@ func TestLoadPlanDerivesPublicURLsFromServerName(t *testing.T) {
 	}
 	if got, want := cfg.CashierInternalURL, "http://127.0.0.1:9011"; got != want {
 		t.Fatalf("CashierInternalURL = %q, want %q", got, want)
+	}
+	if cfg.CashierToken != testPlanToken {
+		t.Fatal("Plan did not load its Cashier credential")
 	}
 	if cfg.BillingLink1 == "" || cfg.BillingLink2 == "" || cfg.BillingLink3 == "" || cfg.BillingLink4 == "" || cfg.BillingPortalURL == "" {
 		t.Fatalf("Plan billing links were not loaded: %#v", cfg)
@@ -166,6 +173,30 @@ func TestLoadPlanRejectsShortPlanSessionKey(t *testing.T) {
 	}
 }
 
+func TestLoadPlanRequiresItsOwnCashierToken(t *testing.T) {
+	for _, value := range []string{"", "short", strings.Repeat("A", 64), strings.Repeat("g", 64)} {
+		t.Run(value, func(t *testing.T) {
+			setRequiredPlanEnv(t)
+			t.Setenv("CASHIER_PLAN_TOKEN", value)
+			if _, err := LoadPlan(); err == nil || !strings.Contains(err.Error(), "CASHIER_PLAN_TOKEN") {
+				t.Fatalf("LoadPlan accepted invalid token %q", value)
+			}
+		})
+	}
+}
+
+func TestLoadPlanRejectsOtherServicesCashierTokens(t *testing.T) {
+	for _, name := range []string{"CASHIER_JANITOR_TOKEN", "CASHIER_SYNAPSE_TOKEN"} {
+		t.Run(name, func(t *testing.T) {
+			setRequiredPlanEnv(t)
+			t.Setenv(name, testJanitorToken)
+			if _, err := LoadPlan(); err == nil || !strings.Contains(err.Error(), name) {
+				t.Fatalf("LoadPlan accepted another service credential %s", name)
+			}
+		})
+	}
+}
+
 func TestLoadPlanRejectsSurroundingWhitespaceInSecrets(t *testing.T) {
 	for _, name := range []string{"MAS_OIDC_CLIENT_ID", "MAS_OIDC_CLIENT_SECRET", "PLAN_SESSION_KEY"} {
 		t.Run(name, func(t *testing.T) {
@@ -229,6 +260,33 @@ func TestLoadJanitorDoesNotRequireDatabaseCredentials(t *testing.T) {
 	}
 	if got, want := cfg.SynapseAdminURL, "http://127.0.0.1:8008"; got != want {
 		t.Fatalf("SynapseAdminURL = %q, want %q", got, want)
+	}
+	if cfg.CashierToken != testJanitorToken {
+		t.Fatal("Janitor did not load its Cashier credential")
+	}
+}
+
+func TestLoadJanitorRequiresItsOwnCashierToken(t *testing.T) {
+	for _, value := range []string{"", "short", strings.Repeat("A", 64), strings.Repeat("g", 64)} {
+		t.Run(value, func(t *testing.T) {
+			setRequiredJanitorEnv(t)
+			t.Setenv("CASHIER_JANITOR_TOKEN", value)
+			if _, err := LoadJanitor(); err == nil || !strings.Contains(err.Error(), "CASHIER_JANITOR_TOKEN") {
+				t.Fatalf("LoadJanitor accepted invalid token %q", value)
+			}
+		})
+	}
+}
+
+func TestLoadJanitorRejectsOtherServicesCashierTokens(t *testing.T) {
+	for _, name := range []string{"CASHIER_PLAN_TOKEN", "CASHIER_SYNAPSE_TOKEN"} {
+		t.Run(name, func(t *testing.T) {
+			setRequiredJanitorEnv(t)
+			t.Setenv(name, testPlanToken)
+			if _, err := LoadJanitor(); err == nil || !strings.Contains(err.Error(), name) {
+				t.Fatalf("LoadJanitor accepted another service credential %s", name)
+			}
+		})
 	}
 }
 
@@ -375,6 +433,18 @@ func TestRegistrationLoadRejectsInvalidHostname(t *testing.T) {
 	t.Setenv("SERVER_NAME", "bad host")
 	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "SERVER_NAME") {
 		t.Fatalf("Load accepted an invalid hostname: %v", err)
+	}
+}
+
+func TestRegistrationRejectsCashierServiceCredentials(t *testing.T) {
+	for _, name := range []string{"CASHIER_PLAN_TOKEN", "CASHIER_JANITOR_TOKEN", "CASHIER_SYNAPSE_TOKEN"} {
+		t.Run(name, func(t *testing.T) {
+			t.Setenv("SERVER_NAME", "example.invalid")
+			t.Setenv(name, testPlanToken)
+			if _, err := Load(); err == nil || !strings.Contains(err.Error(), name) {
+				t.Fatalf("Registration accepted Cashier service credential %s", name)
+			}
+		})
 	}
 }
 

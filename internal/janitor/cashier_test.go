@@ -11,11 +11,17 @@ import (
 	"time"
 )
 
+const testCashierJanitorToken = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+
 func TestCashierClientCallsPrivateLifecycleAndReportingOperations(t *testing.T) {
 	createdAt := time.Date(2026, 9, 20, 3, 0, 0, 0, time.UTC)
 	cursor := DigestCursor{CreatedAt: createdAt, EmailID: "01J00000000000000000000001"}
 	var seen []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got, want := r.Header.Get("Authorization"), "Bearer "+testCashierJanitorToken; got != want {
+			http.Error(w, "missing Janitor service credential", http.StatusUnauthorized)
+			return
+		}
 		seen = append(seen, r.Method+" "+r.URL.Path)
 		switch r.Method + " " + r.URL.Path {
 		case "POST /internal/cashier/janitor/account-sync":
@@ -51,7 +57,11 @@ func TestCashierClientCallsPrivateLifecycleAndReportingOperations(t *testing.T) 
 		}
 	}))
 	defer server.Close()
-	client := &CashierClient{baseURL: server.URL + "/internal/cashier/janitor", http: server.Client()}
+	client := &CashierClient{
+		baseURL:      server.URL + "/internal/cashier/janitor",
+		serviceToken: testCashierJanitorToken,
+		http:         server.Client(),
+	}
 	ctx := context.Background()
 
 	if err := client.SyncLifecycleAccount(ctx, "@alice:example.test", createdAt); err != nil {
@@ -103,7 +113,11 @@ func TestCashierClientRetainsCompleteErrorResponse(t *testing.T) {
 		_, _ = w.Write([]byte(response))
 	}))
 	defer server.Close()
-	client := &CashierClient{baseURL: server.URL + "/internal/cashier/janitor", http: server.Client()}
+	client := &CashierClient{
+		baseURL:      server.URL + "/internal/cashier/janitor",
+		serviceToken: testCashierJanitorToken,
+		http:         server.Client(),
+	}
 	_, err := client.LifecycleActions(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "full diagnostic text") || !strings.Contains(err.Error(), "SQLSTATE 42P08") {
 		t.Fatalf("error = %v, want complete response body %q", err, response)

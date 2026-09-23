@@ -11,6 +11,8 @@ import (
 	"testing"
 )
 
+const testCashierPlanToken = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
 type cashierResponseBody struct {
 	reader   io.Reader
 	closeErr error
@@ -32,15 +34,15 @@ func TestHTTPCashierClientUsesPrivateMXIDHeader(t *testing.T) {
 		if got, want := r.Header.Get(planMXIDHeader), "@alice:telecrypt.io"; got != want {
 			t.Errorf("Cashier MXID header = %q, want %q", got, want)
 		}
-		if got := r.Header.Get("Authorization"); got != "" {
-			t.Errorf("Cashier Authorization header = %q, want empty", got)
+		if got, want := r.Header.Get("Authorization"), "Bearer "+testCashierPlanToken; got != want {
+			t.Errorf("Cashier Authorization header = %q, want bearer credential", got)
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"plan":{"subscription_status":"active","member_limit":2},"members":[{"mxid":"@alice:telecrypt.io"}]}`))
 	}))
 	defer server.Close()
 
-	client, err := NewHTTPCashierClient(server.URL, server.Client())
+	client, err := NewHTTPCashierClient(server.URL, testCashierPlanToken, server.Client())
 	if err != nil {
 		t.Fatalf("new HTTP Cashier client: %v", err)
 	}
@@ -68,7 +70,7 @@ func TestHTTPCashierClientCanonicalizesEscapedMemberRemovalPath(t *testing.T) {
 			http.Error(w, "wrong escaped route", http.StatusBadRequest)
 			return
 		}
-		if r.Header.Get(planMXIDHeader) != "@admin:telecrypt.io" {
+		if r.Header.Get(planMXIDHeader) != "@admin:telecrypt.io" || r.Header.Get("Authorization") != "Bearer "+testCashierPlanToken {
 			http.Error(w, "wrong principal", http.StatusUnauthorized)
 			return
 		}
@@ -76,7 +78,7 @@ func TestHTTPCashierClientCanonicalizesEscapedMemberRemovalPath(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client, err := NewHTTPCashierClient(server.URL, server.Client())
+	client, err := NewHTTPCashierClient(server.URL, testCashierPlanToken, server.Client())
 	if err != nil {
 		t.Fatalf("new HTTP Cashier client: %v", err)
 	}
@@ -98,7 +100,7 @@ func TestHTTPCashierClientReturnsBusinessStatus(t *testing.T) {
 		http.Error(w, "provider detail access_token="+secret+" tail", http.StatusConflict)
 	}))
 	defer server.Close()
-	client, err := NewHTTPCashierClient(server.URL, server.Client())
+	client, err := NewHTTPCashierClient(server.URL, testCashierPlanToken, server.Client())
 	if err != nil {
 		t.Fatalf("new HTTP Cashier client: %v", err)
 	}
@@ -118,7 +120,7 @@ func TestHTTPCashierClientReadsMembershipChangedMarker(t *testing.T) {
 		http.Error(w, "member changed but projection failed", http.StatusInternalServerError)
 	}))
 	defer server.Close()
-	client, err := NewHTTPCashierClient(server.URL, server.Client())
+	client, err := NewHTTPCashierClient(server.URL, testCashierPlanToken, server.Client())
 	if err != nil {
 		t.Fatalf("new HTTP Cashier client: %v", err)
 	}
@@ -134,7 +136,7 @@ func TestHTTPCashierClientReadsMembershipChangedMarker(t *testing.T) {
 
 func TestHTTPCashierClientPreservesResponseCloseFailure(t *testing.T) {
 	closeErr := errors.New("Cashier response close failed")
-	client, err := NewHTTPCashierClient("http://cashier.example", &http.Client{})
+	client, err := NewHTTPCashierClient("http://cashier.example", testCashierPlanToken, &http.Client{})
 	if err != nil {
 		t.Fatalf("new HTTP Cashier client: %v", err)
 	}
@@ -152,7 +154,7 @@ func TestHTTPCashierClientPreservesResponseCloseFailure(t *testing.T) {
 }
 
 func TestHTTPCashierClientDoesNotUseAmbientProxy(t *testing.T) {
-	client, err := NewHTTPCashierClient("http://cashier.example", nil)
+	client, err := NewHTTPCashierClient("http://cashier.example", testCashierPlanToken, nil)
 	if err != nil {
 		t.Fatalf("NewHTTPCashierClient: %v", err)
 	}
@@ -176,7 +178,7 @@ func TestHTTPCashierClientRejectsRedirects(t *testing.T) {
 			Request:    r,
 		}, nil
 	})}
-	client, err := NewHTTPCashierClient("http://cashier.example", httpClient)
+	client, err := NewHTTPCashierClient("http://cashier.example", testCashierPlanToken, httpClient)
 	if err != nil {
 		t.Fatalf("new HTTP Cashier client: %v", err)
 	}
