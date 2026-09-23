@@ -249,6 +249,7 @@ jobs:
           --env MAS_OIDC_CLIENT_ID=01J00000000000000000000000 \
           --env MAS_OIDC_CLIENT_SECRET=smoke-secret \
           --env PLAN_SESSION_KEY=ssssssssssssssssssssssssssssssss \
+          --env CASHIER_PLAN_TOKEN=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
           --env PLAN_BILLING_LINK_1=https://checkout.example.invalid/tier-1 \
           --env PLAN_BILLING_LINK_2=https://checkout.example.invalid/tier-2 \
           --env PLAN_BILLING_LINK_3=https://checkout.example.invalid/tier-3 \
