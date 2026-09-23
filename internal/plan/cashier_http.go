@@ -16,7 +16,8 @@ import (
 )
 
 const (
-	planMXIDHeader = "X-TeleCrypt-MXID"
+	planMXIDHeader          = "X-TeleCrypt-MXID"
+	membershipChangedHeader = "X-TeleCrypt-Membership-Changed"
 )
 
 func acceptsCashierStatus(status int, expectedStatuses []int) bool {
@@ -103,7 +104,11 @@ func (c *HTTPCashierClient) do(ctx context.Context, principal Principal, method,
 	}
 	if !acceptsCashierStatus(response.StatusCode, expectedStatuses) {
 		body, readErr, closeErr := httpdiag.ReadAndClose(response.Body)
-		statusErr := &CashierError{StatusCode: response.StatusCode, Message: body}
+		statusErr := &CashierError{
+			StatusCode:        response.StatusCode,
+			Message:           body,
+			MembershipChanged: response.Header.Get(membershipChangedHeader) == "true",
+		}
 		return errors.Join(statusErr, httpdiag.NewResponseError("Cashier error response", response.StatusCode, body, readErr, closeErr))
 	}
 	if result == nil {
@@ -128,8 +133,9 @@ func (c *HTTPCashierClient) do(ctx context.Context, principal Principal, method,
 }
 
 type CashierError struct {
-	StatusCode int
-	Message    string
+	StatusCode        int
+	Message           string
+	MembershipChanged bool
 }
 
 func (e *CashierError) Error() string { return fmt.Sprintf("cashier returned %d", e.StatusCode) }

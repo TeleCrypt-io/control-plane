@@ -112,6 +112,26 @@ func TestHTTPCashierClientReturnsBusinessStatus(t *testing.T) {
 	}
 }
 
+func TestHTTPCashierClientReadsMembershipChangedMarker(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set(membershipChangedHeader, "true")
+		http.Error(w, "member changed but projection failed", http.StatusInternalServerError)
+	}))
+	defer server.Close()
+	client, err := NewHTTPCashierClient(server.URL, server.Client())
+	if err != nil {
+		t.Fatalf("new HTTP Cashier client: %v", err)
+	}
+	err = client.AttachMember(t.Context(), Principal{MXID: "@alice:telecrypt.io"}, "@bot:telecrypt.io")
+	var cashierError *CashierError
+	if !errors.As(err, &cashierError) {
+		t.Fatalf("AttachMember error = %v, want CashierError", err)
+	}
+	if cashierError.StatusCode != http.StatusInternalServerError || !cashierError.MembershipChanged {
+		t.Fatalf("Cashier error = %#v, want 500 with membership changed marker", cashierError)
+	}
+}
+
 func TestHTTPCashierClientPreservesResponseCloseFailure(t *testing.T) {
 	closeErr := errors.New("Cashier response close failed")
 	client, err := NewHTTPCashierClient("http://cashier.example", &http.Client{})

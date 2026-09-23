@@ -131,8 +131,7 @@ func (s *Server) handlePlan(w http.ResponseWriter, r *http.Request) {
 		}
 		state, err := client.PlanState(r.Context(), Principal{MXID: mxid})
 		if err != nil {
-			logPlanFailure("load Cashier plan state", err)
-			http.Error(w, "Plan is temporarily unavailable", http.StatusServiceUnavailable)
+			writeCashierPlanStateError(w, err)
 			return
 		}
 		data.Plan, data.Members = state.Plan, state.Members
@@ -355,7 +354,7 @@ func (s *Server) handleAddMember(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := client.AttachMember(r.Context(), p, req.MXID); err != nil {
-		writeCashierActionError(w, err, "could not attach member")
+		writeCashierActionError(w, err, cashierActionAttach)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -372,7 +371,7 @@ func (s *Server) handleRemoveMember(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := client.RemoveMember(r.Context(), p, mxid); err != nil {
-		writeCashierActionError(w, err, "could not remove member")
+		writeCashierActionError(w, err, cashierActionRemove)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -387,7 +386,7 @@ func (s *Server) handleLeaveTeam(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := client.LeaveMember(r.Context(), p); err != nil {
-		writeCashierActionError(w, err, "could not leave team")
+		writeCashierActionError(w, err, cashierActionLeave)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -409,10 +408,96 @@ func decodePlanJSON(w http.ResponseWriter, r *http.Request, dst any) error {
 	return nil
 }
 
-// writeCashierActionError keeps private Cashier response bodies at the Plan boundary.
-func writeCashierActionError(w http.ResponseWriter, err error, fallback string) {
+type cashierAction string
+
+const (
+	cashierActionAttach cashierAction = "attach"
+	cashierActionRemove cashierAction = "remove"
+	cashierActionLeave  cashierAction = "leave"
+)
+
+func (action cashierAction) failureMessage() string {
+	switch action {
+	case cashierActionAttach:
+		return "could not attach member"
+	case cashierActionRemove:
+		return "could not remove member"
+	case cashierActionLeave:
+		return "could not leave team"
+	default:
+		return "Plan is temporarily unavailable"
+	}
+}
+
+// writeCashierActionError keeps private Cashier response bodies at the Plan boundary while
+// preserving known business outcomes and genuine server failures.
+func writeCashierActionError(w http.ResponseWriter, err error, action cashierAction) {
 	logPlanFailure("Cashier action", err)
-	http.Error(w, fallback, http.StatusBadGateway)
+	fallback := action.failureMessage()
+	var cashierErr *CashierError
+	if errors.As(err, &cashierErr) {
+		if cashierErr.MembershipChanged && cashierErr.StatusCode == http.StatusInternalServerError {
+			w.Header().Set(membershipChangedHeader, "true")
+			http.Error(w, "Membership changed, but the access update failed. The team view will refresh; check it before retrying.", http.StatusInternalServerError)
+			return
+		}
+		switch cashierErr.StatusCode {
+		case http.StatusForbidden:
+			http.Error(w, "An active paid plan is required for this action.", http.StatusForbidden)
+		case http.StatusNotFound:
+			message := "The team or account was not found."
+			if action != cashierActionAttach {
+				message = "The team or membership was not found."
+			}
+			http.Error(w, message, http.StatusNotFound)
+		case http.StatusConflict:
+			message := "This membership change conflicts with the current team state."
+			if action == cashierActionAttach {
+				message = "The team is full or the account is already attached."
+			} else if action == cashierActionRemove {
+				message = "The billing owner cannot be removed from the team."
+			} else if action == cashierActionLeave {
+				message = "The billing owner cannot leave the team."
+			}
+			http.Error(w, message, http.StatusConflict)
+		case http.StatusGone:
+			http.Error(w, "This account is no longer available.", http.StatusGone)
+		default:
+			if cashierErr.StatusCode >= 500 && cashierErr.StatusCode <= 599 {
+				http.Error(w, fallback, cashierErr.StatusCode)
+				return
+			}
+			http.Error(w, fallback, http.StatusBadGateway)
+		}
+		return
+	}
+	status := http.StatusBadGateway
+	if errors.Is(err, context.DeadlineExceeded) {
+		status = http.StatusGatewayTimeout
+	}
+	http.Error(w, fallback, status)
+}
+
+// writeCashierPlanStateError maps the only expected non-success Plan-state result, a removed
+// account, to its public status. Other Cashier 4xx responses indicate a broken private call.
+func writeCashierPlanStateError(w http.ResponseWriter, err error) {
+	logPlanFailure("load Cashier plan state", err)
+	var cashierErr *CashierError
+	if errors.As(err, &cashierErr) {
+		if cashierErr.StatusCode == http.StatusGone {
+			http.Error(w, "This account is no longer available.", http.StatusGone)
+			return
+		}
+		if cashierErr.StatusCode >= 500 && cashierErr.StatusCode <= 599 {
+			http.Error(w, "Plan is temporarily unavailable", cashierErr.StatusCode)
+			return
+		}
+	}
+	status := http.StatusBadGateway
+	if errors.Is(err, context.DeadlineExceeded) {
+		status = http.StatusGatewayTimeout
+	}
+	http.Error(w, "Plan is temporarily unavailable", status)
 }
 func logPlanFailure(operation string, err error) {
 	if err == nil {

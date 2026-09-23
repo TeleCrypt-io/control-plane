@@ -114,7 +114,7 @@ func TestServerRendersPersistentSandboxBanner(t *testing.T) {
 	}
 }
 
-func TestPlanLogsRawCashierFailureAndKeepsResponseGeneric(t *testing.T) {
+func TestPlanLogsRawCashierFailureAndReturnsGatewayError(t *testing.T) {
 	const privateDetail = "token=fixture-plan-secret"
 	previous := slog.Default()
 	var logs bytes.Buffer
@@ -128,7 +128,7 @@ func TestPlanLogsRawCashierFailureAndKeepsResponseGeneric(t *testing.T) {
 
 	srv.ServeHTTP(rec, req)
 
-	if got, want := rec.Code, http.StatusServiceUnavailable; got != want {
+	if got, want := rec.Code, http.StatusBadGateway; got != want {
 		t.Fatalf("GET /plan/overview failure status = %d, want %d", got, want)
 	}
 	if strings.Contains(rec.Body.String(), privateDetail) {
@@ -638,47 +638,160 @@ func TestDeleteSeatRejectsNonLocalMXID(t *testing.T) {
 	}
 }
 
-// errorCashier returns a CashierError carrying a provider response. Plan must rewrite only its
-// narrowly defined local capacity message and keep every other body private.
+// errorCashier returns a private Cashier response; Plan maps known outcomes without forwarding its
+// arbitrary body.
 type errorCashier struct {
-	status  int
-	message string
+	status            int
+	message           string
+	membershipChanged bool
 }
 
 func (c *errorCashier) PlanState(_ context.Context, _ Principal) (PlanState, error) {
 	return PlanState{}, &CashierError{StatusCode: c.status, Message: c.message}
 }
 func (c *errorCashier) AttachMember(_ context.Context, _ Principal, _ string) error {
-	return &CashierError{StatusCode: c.status, Message: c.message}
+	return &CashierError{StatusCode: c.status, Message: c.message, MembershipChanged: c.membershipChanged}
 }
 func (c *errorCashier) RemoveMember(_ context.Context, _ Principal, _ string) error {
-	return &CashierError{StatusCode: c.status, Message: c.message}
+	return &CashierError{StatusCode: c.status, Message: c.message, MembershipChanged: c.membershipChanged}
 }
 func (c *errorCashier) LeaveMember(_ context.Context, _ Principal) error {
-	return &CashierError{StatusCode: c.status, Message: c.message}
+	return &CashierError{StatusCode: c.status, Message: c.message, MembershipChanged: c.membershipChanged}
 }
 
-func TestCashierArbitraryErrorBodyIsNeverForwarded(t *testing.T) {
+func TestCashierBusinessStatusesArePreservedWithoutForwardingPrivateBody(t *testing.T) {
 	const secret = "database password=super-secret"
 	for _, tt := range []struct {
 		name, method, path, body string
+		status                   int
+		message                  string
 	}{
-		{"attach", http.MethodPost, "/plan/members/add", `{"mxid":"@bot:stage.telecrypt.io"}`},
-		{"remove", http.MethodPost, "/plan/members/@bot:stage.telecrypt.io/remove", ""},
+		{"attach requires paid plan", http.MethodPost, "/plan/members/add", `{"mxid":"@bot:stage.telecrypt.io"}`, http.StatusForbidden, "active paid plan is required"},
+		{"attach target missing", http.MethodPost, "/plan/members/add", `{"mxid":"@bot:stage.telecrypt.io"}`, http.StatusNotFound, "team or account was not found"},
+		{"attach", http.MethodPost, "/plan/members/add", `{"mxid":"@bot:stage.telecrypt.io"}`, http.StatusConflict, "team is full or the account is already attached"},
+		{"remove", http.MethodPost, "/plan/members/@bot:stage.telecrypt.io/remove", "", http.StatusConflict, "billing owner cannot be removed"},
+		{"leave", http.MethodPost, "/plan/members/leave", "", http.StatusConflict, "billing owner cannot leave"},
+		{"removed account", http.MethodPost, "/plan/members/add", `{"mxid":"@bot:stage.telecrypt.io"}`, http.StatusGone, "account is no longer available"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			srv := testServer()
-			srv.cashier = &errorCashier{status: http.StatusConflict, message: secret}
+			srv.cashier = &errorCashier{status: tt.status, message: secret}
 			req := authenticatedPlanRequest(t, srv, tt.method, tt.path, tt.body)
 			rec := httptest.NewRecorder()
 			srv.ServeHTTP(rec, req)
-			if got, want := rec.Code, http.StatusBadGateway; got != want {
+			if got, want := rec.Code, tt.status; got != want {
 				t.Fatalf("%s status = %d, want %d", tt.name, got, want)
 			}
 			if strings.Contains(rec.Body.String(), secret) {
 				t.Fatalf("%s forwarded private Cashier body: %q", tt.name, rec.Body.String())
 			}
+			if !strings.Contains(strings.ToLower(rec.Body.String()), tt.message) {
+				t.Fatalf("%s response = %q, want safe message containing %q", tt.name, rec.Body.String(), tt.message)
+			}
 		})
+	}
+}
+
+func TestCashierServerFailuresKeepServerStatus(t *testing.T) {
+	for _, status := range []int{http.StatusInternalServerError, http.StatusBadGateway, http.StatusServiceUnavailable} {
+		t.Run(strconv.Itoa(status), func(t *testing.T) {
+			srv := testServer()
+			srv.cashier = &errorCashier{status: status, message: "private detail"}
+			req := authenticatedPlanRequest(t, srv, http.MethodPost, "/plan/members/add", `{"mxid":"@bot:stage.telecrypt.io"}`)
+			rec := httptest.NewRecorder()
+			srv.ServeHTTP(rec, req)
+			if rec.Code != status {
+				t.Fatalf("status = %d, want Cashier %d", rec.Code, status)
+			}
+			if strings.Contains(rec.Body.String(), "private detail") {
+				t.Fatalf("response exposed private detail: %q", rec.Body.String())
+			}
+		})
+	}
+}
+
+func TestCashierUnexpectedClientStatusBecomesServerError(t *testing.T) {
+	for _, status := range []int{http.StatusBadRequest, http.StatusUnauthorized, http.StatusTeapot} {
+		t.Run(strconv.Itoa(status), func(t *testing.T) {
+			srv := testServer()
+			srv.cashier = &errorCashier{status: status, message: "private detail"}
+			req := authenticatedPlanRequest(t, srv, http.MethodPost, "/plan/members/add", `{"mxid":"@bot:stage.telecrypt.io"}`)
+			rec := httptest.NewRecorder()
+			srv.ServeHTTP(rec, req)
+			if rec.Code != http.StatusBadGateway {
+				t.Fatalf("status = %d, want 502 for unexpected private status %d", rec.Code, status)
+			}
+		})
+	}
+}
+
+func TestCashierCommittedMembershipProjectionFailureIsExplicit(t *testing.T) {
+	const secret = "private projection detail"
+	for _, tt := range []struct {
+		name, method, path, body string
+	}{
+		{"attach", http.MethodPost, "/plan/members/add", `{"mxid":"@bot:stage.telecrypt.io"}`},
+		{"remove", http.MethodPost, "/plan/members/@bot:stage.telecrypt.io/remove", ""},
+		{"leave", http.MethodPost, "/plan/members/leave", ""},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := testServer()
+			srv.cashier = &errorCashier{status: http.StatusInternalServerError, message: secret, membershipChanged: true}
+			req := authenticatedPlanRequest(t, srv, tt.method, tt.path, tt.body)
+			rec := httptest.NewRecorder()
+			srv.ServeHTTP(rec, req)
+			if rec.Code != http.StatusInternalServerError {
+				t.Fatalf("status = %d, want 500", rec.Code)
+			}
+			if got := rec.Header().Get(membershipChangedHeader); got != "true" {
+				t.Fatalf("membership change marker = %q, want true", got)
+			}
+			if !strings.Contains(rec.Body.String(), "Membership changed") || !strings.Contains(rec.Body.String(), "access update failed") {
+				t.Fatalf("response does not explain partial change: %q", rec.Body.String())
+			}
+			if strings.Contains(rec.Body.String(), secret) {
+				t.Fatalf("response exposed private Cashier body: %q", rec.Body.String())
+			}
+		})
+	}
+}
+
+func TestRemovedAccountPlanStateReturnsGone(t *testing.T) {
+	srv := testServer()
+	srv.cashier = &errorCashier{status: http.StatusGone, message: "private detail"}
+	req := authenticatedPlanRequest(t, srv, http.MethodGet, "/plan/overview", "")
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusGone {
+		t.Fatalf("GET /plan/overview status = %d, want 410", rec.Code)
+	}
+	if strings.Contains(rec.Body.String(), "private detail") {
+		t.Fatalf("GET /plan/overview exposed private Cashier detail: %q", rec.Body.String())
+	}
+}
+
+func TestCashierPlanStateServiceFailureKeepsServerStatus(t *testing.T) {
+	srv := testServer()
+	srv.cashier = &errorCashier{status: http.StatusServiceUnavailable, message: "private database detail"}
+	req := authenticatedPlanRequest(t, srv, http.MethodGet, "/plan/overview", "")
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("GET /plan/overview status = %d, want 503", rec.Code)
+	}
+	if strings.Contains(rec.Body.String(), "private database detail") {
+		t.Fatalf("GET /plan/overview exposed private Cashier detail: %q", rec.Body.String())
+	}
+}
+
+func TestCashierDeadlineReturnsGatewayTimeout(t *testing.T) {
+	srv := testServer()
+	srv.cashier = &fakeCashier{planErr: context.DeadlineExceeded}
+	req := authenticatedPlanRequest(t, srv, http.MethodGet, "/plan/overview", "")
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusGatewayTimeout {
+		t.Fatalf("GET /plan/overview status = %d, want 504", rec.Code)
 	}
 }
 
