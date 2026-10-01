@@ -45,3 +45,34 @@ The policy sends media accounting to Cashier with its own bearer credential at t
 `/internal/cashier/file_upload_webhook` and `/internal/cashier/file_delete_webhook` routes.
 Notifications happen after the media operation commits: failures are logged, do not reject or
 roll back that operation, and may leave usage accounting temporarily behind.
+
+## Manual checks and releases
+
+Releases are prepared by an operator from a clean checkout of a published,
+annotated numeric `X.Y.Z` tag. Pushing a tag does not run a build or publish anything.
+Run these commands on a build workstation, never on a deployment VM. Use one
+operator at a time for a release tag.
+
+Install Go 1.26.4, Git, Bash, jq, GitHub CLI, and Docker with Buildx. Authenticate
+`gh` with access to this repository's releases and GHCR packages; `GH_TOKEN`
+may provide the token instead. Release publication logs Docker into GHCR with
+that token. Supply `TEST_DATABASE_URL` for a disposable PostgreSQL 17 database
+owned by the test user (the former CI used PostgreSQL 17.11).
+Python 3.12.14, venv/pip, curl, and GNU coreutils are also required. The check
+builds the policy wheel using the hash-pinned test requirements and runs its tests
+inside the pinned Synapse image. pip uses its ordinary download cache. Generated
+wheel output stays in `dist/tier-controller`; temporary venvs are removed.
+
+```sh
+export TEST_DATABASE_URL='postgres://test_user:test_password@127.0.0.1:5432/telecrypt_test?sslmode=disable'
+scripts/check.sh
+# After creating/pushing the annotated release tag and checking it out:
+scripts/release.sh X.Y.Z
+```
+
+`release.sh` reruns checks before publication. It preserves the image runtime
+checks and the source commit, annotated tag, and image digest in the release
+asset. Images remain pinned by digest in the server repository; a component
+release does not deploy or promote an environment. Temporary publication files
+are removed on exit; Docker's standard image/build cache remains available for
+reuse and ordinary operator cleanup.
