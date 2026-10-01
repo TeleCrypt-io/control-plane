@@ -23,7 +23,7 @@ func main() {
 			fmt.Fprintln(os.Stderr, "usage: plan [healthcheck]")
 			os.Exit(2)
 		}
-		if err := healthcheck.Check("http://" + planListenAddr + "/health"); err != nil {
+		if err := healthcheck.Check("http://" + planHealthAddr + "/health"); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
@@ -118,4 +118,5 @@ func shutdownHTTPServer(ctx context.Context, server *http.Server) error {
 	return nil
 }
 
-const planListenAddr = "127.0.0.1:9012"
+const planListenAddr = "0.0.0.0:9012"
+const planHealthAddr = "127.0.0.1:9012"

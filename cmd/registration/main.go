@@ -27,7 +27,7 @@ func main() {
 			fmt.Fprintln(os.Stderr, "usage: registration [healthcheck]")
 			os.Exit(2)
 		}
-		if err := healthcheck.Check("http://" + registrationListenAddr + "/health"); err != nil {
+		if err := healthcheck.Check("http://" + registrationHealthAddr + "/health"); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
@@ -124,4 +124,5 @@ func build(cfg *config.Config) (http.Handler, error) {
 	return registrationhttp.New(provisioner, cfg.PlanPublicURL), nil
 }
 
-const registrationListenAddr = "127.0.0.1:9009"
+const registrationListenAddr = "0.0.0.0:9009"
+const registrationHealthAddr = "127.0.0.1:9009"

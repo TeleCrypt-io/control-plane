@@ -12,6 +12,7 @@ import json
 import logging
 import os
 from typing import Any
+from urllib.parse import urlsplit
 
 from synapse.api.errors import Codes
 from synapse.module_api import ModuleApi, NOT_SPAM, make_deferred_yieldable
@@ -34,10 +35,7 @@ MAX_MEDIA_BYTES = 128 * BYTES_PER_MIB
 STORAGE_MARKER = "org.matrix.msc3089.branch"
 STORAGE_ROOM_TYPE = "m.space"
 
-# Cashier is a private same-pod endpoint. Keep this fixed until a native Synapse
-# module configuration field exists; this module never sends these notifications via
-# the public ingress.
-CASHIER_INTERNAL_URL = "http://127.0.0.1:9011"
+# The module config points directly at Cashier's private endpoint, never public ingress.
 CASHIER_TOKEN_ENV = "CASHIER_SYNAPSE_TOKEN"
 UPLOAD_WEBHOOK_PATH = "/internal/cashier/file_upload_webhook"
 DELETE_WEBHOOK_PATH = "/internal/cashier/file_delete_webhook"
@@ -110,15 +108,26 @@ def _state_event(state_events: Any, event_type: str, state_key: str = "") -> Any
 class TierController:
     """Apply the local user type to native Synapse policy callbacks."""
 
-    def __init__(self, _config: dict[str, Any], api: ModuleApi) -> None:
+    def __init__(self, config: dict[str, Any], api: ModuleApi) -> None:
         for name in ("CASHIER_PLAN_TOKEN", "CASHIER_JANITOR_TOKEN"):
             if name in os.environ:
                 raise ValueError(f"{name} must be unset for Synapse")
         cashier_token = os.environ.get(CASHIER_TOKEN_ENV, "")
         if len(cashier_token) != 64 or any(char not in "0123456789abcdef" for char in cashier_token):
             raise ValueError(f"{CASHIER_TOKEN_ENV} must be 64 lowercase hexadecimal characters")
+        cashier_internal_url = config.get("cashier_internal_url")
+        if not isinstance(cashier_internal_url, str):
+            raise ValueError("cashier_internal_url must be an absolute HTTP or HTTPS URL")
+        try:
+            cashier_endpoint = urlsplit(cashier_internal_url)
+            cashier_host = cashier_endpoint.hostname
+        except ValueError as error:
+            raise ValueError("cashier_internal_url must be an absolute HTTP or HTTPS URL") from error
+        if cashier_endpoint.scheme not in ("http", "https") or not cashier_endpoint.netloc or not cashier_host:
+            raise ValueError("cashier_internal_url must be an absolute HTTP or HTTPS URL")
         self._api = api
         self._cashier_token = cashier_token
+        self._cashier_internal_url = cashier_internal_url.rstrip("/")
 
         api.register_media_repository_callbacks(
             is_user_allowed_to_upload_media_of_size=self.is_user_allowed_to_upload_media_of_size,
@@ -232,7 +241,7 @@ class TierController:
         body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
         response = await self._api.http_client.request(
             "POST",
-            CASHIER_INTERNAL_URL + path,
+            self._cashier_internal_url + path,
             data=body,
             headers=Headers({
                 b"Content-Type": [b"application/json"],

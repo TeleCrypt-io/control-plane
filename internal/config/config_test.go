@@ -19,6 +19,7 @@ func setRequiredPlanEnv(t *testing.T) {
 		"SERVER_NAME":             "example.invalid",
 		"BILLING_ENVIRONMENT":     "test",
 		"CASHIER_PLAN_TOKEN":      testPlanToken,
+		"MAS_INTERNAL_URL":        "http://mas.matrix:8082",
 		"MAS_OIDC_CLIENT_ID":      testPlanClientID,
 		"MAS_OIDC_CLIENT_SECRET":  "test-secret",
 		"PLAN_SESSION_KEY":        strings.Repeat("s", 32),
@@ -37,6 +38,8 @@ func setRequiredJanitorEnv(t *testing.T) {
 	for key, value := range map[string]string{
 		"MAS_ADMIN_CLIENT_ID":     testJanitorClientID,
 		"MAS_ADMIN_CLIENT_SECRET": "secret",
+		"MAS_ADMIN_URL":           "http://mas.matrix:8081",
+		"SYNAPSE_ADMIN_URL":       "http://synapse.matrix:8008",
 		"SYNAPSE_ADMIN_TOKEN":     "synapse-admin-token",
 		"CASHIER_JANITOR_TOKEN":   testJanitorToken,
 		"SERVER_NAME":             "example.invalid",
@@ -75,7 +78,7 @@ func TestLoadPlanDerivesPublicURLsFromServerName(t *testing.T) {
 	if got, want := cfg.PlanPublicURL, "https://backend.example.invalid/plan/overview"; got != want {
 		t.Fatalf("PlanPublicURL = %q, want %q", got, want)
 	}
-	if got, want := cfg.MASInternalURL, "http://127.0.0.1:8082"; got != want {
+	if got, want := cfg.MASInternalURL, "http://mas.matrix:8082"; got != want {
 		t.Fatalf("MASInternalURL = %q, want %q", got, want)
 	}
 	if got, want := cfg.CashierInternalURL, "http://127.0.0.1:9011"; got != want {
@@ -121,6 +124,18 @@ func TestLoadPlanRequiresValidHostnameAndBillingEnvironment(t *testing.T) {
 			t.Setenv(name, "ambient-value")
 			if _, err := LoadPlan(); err == nil || !strings.Contains(err.Error(), name) {
 				t.Fatalf("LoadPlan accepted ambient Dodo setting %s", name)
+			}
+		})
+	}
+}
+
+func TestLoadPlanRequiresValidMASInternalURL(t *testing.T) {
+	for _, value := range []string{"", "mas.matrix:8082", "ftp://mas.matrix:8082", "http:///missing-host", "http://:80"} {
+		t.Run(value, func(t *testing.T) {
+			setRequiredPlanEnv(t)
+			t.Setenv("MAS_INTERNAL_URL", value)
+			if _, err := LoadPlan(); err == nil || !strings.Contains(err.Error(), "MAS_INTERNAL_URL") {
+				t.Fatalf("LoadPlan error = %v, want invalid MAS_INTERNAL_URL rejection", err)
 			}
 		})
 	}
@@ -255,14 +270,28 @@ func TestLoadJanitorDoesNotRequireDatabaseCredentials(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadJanitor: %v", err)
 	}
-	if got, want := cfg.MASAdminURL, "http://127.0.0.1:8081"; got != want {
+	if got, want := cfg.MASAdminURL, "http://mas.matrix:8081"; got != want {
 		t.Fatalf("MASAdminURL = %q, want %q", got, want)
 	}
-	if got, want := cfg.SynapseAdminURL, "http://127.0.0.1:8008"; got != want {
+	if got, want := cfg.SynapseAdminURL, "http://synapse.matrix:8008"; got != want {
 		t.Fatalf("SynapseAdminURL = %q, want %q", got, want)
 	}
 	if cfg.CashierToken != testJanitorToken {
 		t.Fatal("Janitor did not load its Cashier credential")
+	}
+}
+
+func TestLoadJanitorRequiresValidCrossHostURLs(t *testing.T) {
+	for _, name := range []string{"MAS_ADMIN_URL", "SYNAPSE_ADMIN_URL"} {
+		for _, value := range []string{"", "service.matrix:8008", "ftp://service.matrix:8008", "http:///missing-host", "http://:80"} {
+			t.Run(name+"/"+value, func(t *testing.T) {
+				setRequiredJanitorEnv(t)
+				t.Setenv(name, value)
+				if _, err := LoadJanitor(); err == nil || !strings.Contains(err.Error(), name) {
+					t.Fatalf("LoadJanitor error = %v, want invalid %s rejection", err, name)
+				}
+			})
+		}
 	}
 }
 

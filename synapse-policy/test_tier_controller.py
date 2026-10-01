@@ -16,7 +16,6 @@ from synapse.api.errors import Codes
 from synapse.module_api import NOT_SPAM
 import tier_controller
 from tier_controller import (
-    CASHIER_INTERNAL_URL,
     MAX_MEDIA_BYTES,
     STORAGE_MARKER,
     TierController,
@@ -30,6 +29,7 @@ if not any(root in module_path.parents for root in site_packages):
     raise RuntimeError(f"tier_controller imported outside site-packages: {module_path}")
 
 CASHIER_SYNAPSE_TOKEN = "c" * 64
+TEST_CASHIER_INTERNAL_URL = "http://cashier.apps:9011"
 
 
 class FakeModuleApi:
@@ -64,7 +64,7 @@ class FakeModuleApi:
 def make_module(user_types=None, lookup_error=False):
     api = FakeModuleApi(user_types, lookup_error)
     with patch.dict(os.environ, {"CASHIER_SYNAPSE_TOKEN": CASHIER_SYNAPSE_TOKEN}):
-        module = TierController({}, api)
+        module = TierController({"cashier_internal_url": TEST_CASHIER_INTERNAL_URL}, api)
     return module, api
 
 
@@ -73,7 +73,7 @@ def test_module_requires_valid_service_credential():
         env = {} if value is None else {"CASHIER_SYNAPSE_TOKEN": value}
         with patch.dict(os.environ, env, clear=True):
             try:
-                TierController({}, FakeModuleApi())
+                TierController({"cashier_internal_url": TEST_CASHIER_INTERNAL_URL}, FakeModuleApi())
             except ValueError as error:
                 assert "CASHIER_SYNAPSE_TOKEN" in str(error)
             else:
@@ -84,11 +84,23 @@ def test_module_requires_valid_service_credential():
         clear=True,
     ):
         try:
-            TierController({}, FakeModuleApi())
+            TierController({"cashier_internal_url": TEST_CASHIER_INTERNAL_URL}, FakeModuleApi())
         except ValueError as error:
             assert "CASHIER_PLAN_TOKEN" in str(error)
         else:
             raise AssertionError("Synapse accepted another service's Cashier credential")
+
+
+def test_module_requires_valid_cashier_endpoint():
+    for value in (None, "", "cashier.apps:9011", "ftp://cashier.apps:9011", "http:///missing-host"):
+        config = {} if value is None else {"cashier_internal_url": value}
+        with patch.dict(os.environ, {"CASHIER_SYNAPSE_TOKEN": CASHIER_SYNAPSE_TOKEN}, clear=True):
+            try:
+                TierController(config, FakeModuleApi())
+            except ValueError as error:
+                assert "cashier_internal_url" in str(error)
+            else:
+                raise AssertionError(f"module accepted invalid Cashier endpoint {value!r}")
 
 
 async def test_cashier_notifications_send_the_synapse_service_credential():
@@ -113,7 +125,7 @@ async def test_cashier_notifications_send_the_synapse_service_credential():
     assert len(seen) == 1
     method, url, _, headers = seen[0]
     assert method == "POST"
-    assert url == CASHIER_INTERNAL_URL + UPLOAD_WEBHOOK_PATH
+    assert url == TEST_CASHIER_INTERNAL_URL + UPLOAD_WEBHOOK_PATH
     assert headers.getRawHeaders(b"Authorization") == [
         b"Bearer " + CASHIER_SYNAPSE_TOKEN.encode("ascii")
     ]

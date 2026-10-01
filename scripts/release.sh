@@ -95,6 +95,7 @@ docker run --detach --network host --name "$registration_name" \
   --env SERVER_NAME=example.invalid "$IMAGE_REF" /registration
 docker run --detach --network host --name "$plan_name" \
 --env SERVER_NAME=example.invalid --env BILLING_ENVIRONMENT=test \
+--env MAS_INTERNAL_URL=http://127.0.0.1:8082 \
 --env MAS_OIDC_CLIENT_ID=01J00000000000000000000000 \
 --env MAS_OIDC_CLIENT_SECRET=smoke-secret \
 --env PLAN_SESSION_KEY=ssssssssssssssssssssssssssssssss \

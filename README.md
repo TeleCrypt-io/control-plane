@@ -46,6 +46,16 @@ The policy sends media accounting to Cashier with its own bearer credential at t
 Notifications happen after the media operation commits: failures are logged, do not reject or
 roll back that operation, and may leave usage accounting temporarily behind.
 
+## Private service endpoints
+
+Janitor requires `MAS_ADMIN_URL` and `SYNAPSE_ADMIN_URL`. Plan requires
+`MAS_INTERNAL_URL` for its ordinary OIDC calls and receives no administrative
+credentials. Configure these URLs to the Matrix host's private ingress. The Synapse
+module requires `cashier_internal_url` in its module configuration, pointing to
+Cashier's private ingress. Per-service bearer credentials remain distinct.
+Plan and Registration listen on all container interfaces; Salt publishes their
+ports only on host loopback behind the private application ingress.
+
 ## Manual checks and releases
 
 Releases are prepared by an operator from a clean checkout of a published,

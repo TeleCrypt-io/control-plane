@@ -90,6 +90,14 @@ func LoadJanitor() (*JanitorConfig, error) {
 	if err != nil {
 		return nil, err
 	}
+	masAdminURL, err := loadHTTPServiceURL("MAS_ADMIN_URL")
+	if err != nil {
+		return nil, err
+	}
+	synapseAdminURL, err := loadHTTPServiceURL("SYNAPSE_ADMIN_URL")
+	if err != nil {
+		return nil, err
+	}
 	c := &JanitorConfig{
 		MASAdminURL:          masAdminURL,
 		MASAdminClientID:     os.Getenv("MAS_ADMIN_CLIENT_ID"),
@@ -190,6 +198,10 @@ func LoadPlan() (*PlanConfig, error) {
 	if err != nil {
 		return nil, err
 	}
+	masInternalURL, err := loadHTTPServiceURL("MAS_INTERNAL_URL")
+	if err != nil {
+		return nil, err
+	}
 	c := &PlanConfig{
 		BillingEnvironment: billingEnvironment,
 		ServerName:         serverName,
@@ -271,9 +283,6 @@ func rejectServiceTokens(service string, names ...string) error {
 }
 
 const (
-	masAdminURL        = "http://127.0.0.1:8081"
-	masInternalURL     = "http://127.0.0.1:8082"
-	synapseAdminURL    = "http://127.0.0.1:8008"
 	cashierInternalURL = "http://127.0.0.1:9011"
 )
 
@@ -434,6 +443,18 @@ func validatePublicHTTPSURL(raw, name string) error {
 		return fmt.Errorf("%s must be a public HTTPS URL", name)
 	}
 	return nil
+}
+
+func loadHTTPServiceURL(name string) (string, error) {
+	raw := os.Getenv(name)
+	if raw == "" {
+		return "", fmt.Errorf("missing required env var: %s", name)
+	}
+	u, err := url.Parse(raw)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" {
+		return "", fmt.Errorf("%s must be an absolute HTTP or HTTPS URL", name)
+	}
+	return raw, nil
 }
 
 func validatePublicHTTPSLink(raw, name string) error {
