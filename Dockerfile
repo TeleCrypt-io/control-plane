@@ -17,7 +17,7 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/plan ./cmd/plan
 # Registration reaches MAS through its browser-visible HTTPS URL and Janitor's SMTP digest also uses
 # verified TLS, so the shared runtime bundle must contain the CA trust store.
 #
-# The tier controller is intentionally absent from this image. The manual release publishes it only as a
+# The tier controller is intentionally absent from this image. GitHub Actions publishes it only as a
 # wheel; the standalone Synapse server container builder downloads that exact release asset and verifies
 # its checksum after that repository updates its pinned manifest.
 #

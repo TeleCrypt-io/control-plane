@@ -56,33 +56,21 @@ Cashier's private ingress. Per-service bearer credentials remain distinct.
 Plan and Registration listen on all container interfaces; Salt publishes their
 ports only on host loopback behind the private application ingress.
 
-## Manual checks and releases
+## Checks and releases
 
-Releases are prepared by an operator from a clean checkout of a published,
-annotated numeric `X.Y.Z` tag. Pushing a tag does not run a build or publish anything.
-Run these commands on a build workstation, never on a deployment VM. Use one
-operator at a time for a release tag.
+GitHub Actions runs the Go and policy checks on pull requests and pushes to
+`main`. Pushing an annotated numeric `X.Y.Z` tag runs those checks, builds and
+publishes the control-plane image to GHCR, smoke-tests the published image,
+then creates a GitHub release containing the tested policy wheel and an image
+digest binding. The workflow verifies the wheel checksum, tag object, and
+source commit and serializes publication for each tag.
 
-Install Go 1.26.4, Git, Bash, jq, GitHub CLI, and Docker with Buildx. Authenticate
-`gh` with access to this repository's releases and GHCR packages; `GH_TOKEN`
-may provide the token instead. Release publication logs Docker into GHCR with
-that token. Supply `TEST_DATABASE_URL` for a disposable PostgreSQL 17 database
-owned by the test user (the former CI used PostgreSQL 17.11).
-Python 3.12.14, venv/pip, curl, and GNU coreutils are also required. The check
-builds the policy wheel using the hash-pinned test requirements and runs its tests
-inside the pinned Synapse image. pip uses its ordinary download cache. Generated
-wheel output stays in `dist/tier-controller`; temporary venvs are removed.
+The checks can also run locally with `scripts/check.sh`. Install Go 1.26.4,
+Python 3.12.14, and Docker; set `TEST_DATABASE_URL` to a disposable PostgreSQL
+17 database. The script runs Go tests and vet, builds the policy wheel using
+hash-pinned test requirements, then pulls the pinned Synapse image and tests
+the wheel inside it. Generated wheel output stays in `dist/tier-controller`.
 
-```sh
-export TEST_DATABASE_URL='postgres://test_user:test_password@127.0.0.1:5432/telecrypt_test?sslmode=disable'
-scripts/check.sh
-# After creating/pushing the annotated release tag and checking it out:
-scripts/release.sh X.Y.Z
-```
-
-`release.sh` reruns checks before publication. It preserves the image runtime
-checks and the source commit, annotated tag, and image digest in the release
-asset. Images remain pinned by digest in the server repository; a component
-release does not deploy or promote an environment. Temporary publication files
-are removed on exit; Docker's standard image/build cache remains available for
-reuse and ordinary operator cleanup.
+Publishing a component release does not deploy or promote an environment.
+Salt Pillar selects the published image for deployment, and Salt SSH pulls it
+on the target host; image builds run in GitHub Actions.
