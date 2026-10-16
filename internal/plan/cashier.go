@@ -20,14 +20,15 @@ type Principal struct {
 type Plan struct {
 	// TierID is the stable billing identifier. DisplayName is presentation only;
 	// Plan must never use it as an authorization or provider key.
-	TierID             int16  `json:"tier_id"`
-	DisplayName        string `json:"display_name"`
-	MonthlyCents       int64  `json:"monthly_cents"`
-	StorageBytes       int64  `json:"storage_bytes"`
-	MemberLimit        int    `json:"member_limit"`
-	UsageBytes         int64  `json:"usage_bytes"`
-	SubscriptionStatus string `json:"subscription_status"`
-	HasBillingAccount  bool   `json:"has_billing_account"`
+	TierID            int16  `json:"tier_id"`
+	DisplayName       string `json:"display_name"`
+	MonthlyCents      int64  `json:"monthly_cents"`
+	StorageBytes      int64  `json:"storage_bytes"`
+	MemberLimit       int    `json:"member_limit"`
+	UsageBytes        int64  `json:"usage_bytes"`
+	AccessStatus      string `json:"access_status"`
+	BillingOwnerMXID  string `json:"billing_owner_mxid"`
+	HasBillingAccount bool   `json:"has_billing_account"`
 }
 
 func (p Plan) MonthlyPrice() string {

@@ -146,7 +146,7 @@ def event(event_type, sender="@alice:test", content=None, state_key="", is_state
 
 
 async def test_local_user_type_controls_upload_without_sql_usage_lookup():
-    module, api = make_module({"@free:test": "wild", "@paid:test": "verified", "@blocked:test": "uploads_blocked"})
+    module, api = make_module({"@free:test": "free", "@paid:test": "paid", "@blocked:test": "paid_over_quota"})
     assert await upload(module, "@free:test", 1) is False
     assert await upload(module, "@paid:test", MAX_MEDIA_BYTES) is True
     assert await upload(module, "@blocked:test", 1) is False
@@ -179,25 +179,25 @@ async def test_media_notifications_use_upload_identity_and_media_only_for_delete
 
 
 async def test_paid_user_types_allow_encryption_and_message_rates_are_native():
-    module, _ = make_module({"@verified:test": "verified", "@blocked:test": "uploads_blocked"})
-    assert await module.check_event_for_spam(event("m.room.encryption", "@verified:test")) is NOT_SPAM
+    module, _ = make_module({"@paid:test": "paid", "@blocked:test": "paid_over_quota"})
+    assert await module.check_event_for_spam(event("m.room.encryption", "@paid:test")) is NOT_SPAM
     assert await module.check_event_for_spam(event("m.room.encryption", "@blocked:test")) is NOT_SPAM
-    free_module, _ = make_module({"@free:test": "wild"})
+    free_module, _ = make_module({"@free:test": "free"})
     free_rate = await free_module.get_ratelimit_override_for_user("@free:test", "room_message")
-    paid_rate = await module.get_ratelimit_override_for_user("@verified:test", "room_message")
+    paid_rate = await module.get_ratelimit_override_for_user("@paid:test", "room_message")
     assert (free_rate.per_second, free_rate.burst_count) == (0.5, 10)
     assert (paid_rate.per_second, paid_rate.burst_count) == (1.0, 20)
-    assert await module.get_ratelimit_override_for_user("@verified:test", "registration") is None
+    assert await module.get_ratelimit_override_for_user("@paid:test", "registration") is None
 
 
 async def test_free_encrypted_room_is_allowed_before_creation():
-    module, _ = make_module({"@free:test": "wild"})
+    module, _ = make_module({"@free:test": "free"})
     config = {"initial_state": [{"type": "m.room.encryption", "state_key": "", "content": {}}]}
     assert await module.user_may_create_room("@free:test", config) is NOT_SPAM
 
 
 async def test_plain_message_is_rejected_for_every_account():
-    module, _ = make_module({"@free:test": "wild", "@paid:test": "verified"})
+    module, _ = make_module({"@free:test": "free", "@paid:test": "paid"})
     for user_id in ("@free:test", "@paid:test"):
         assert await module.check_event_for_spam(event("m.room.message", user_id, is_state=False)) == (
             Codes.FORBIDDEN,
@@ -206,7 +206,7 @@ async def test_plain_message_is_rejected_for_every_account():
 
 
 async def test_plain_room_is_rejected_before_creation():
-    module, _ = make_module({"@free:test": "wild"})
+    module, _ = make_module({"@free:test": "free"})
     assert await module.user_may_create_room("@free:test", {"initial_state": []}) == (
         Codes.FORBIDDEN,
         {"error": _DENIAL_MESSAGE},
@@ -214,7 +214,7 @@ async def test_plain_room_is_rejected_before_creation():
 
 
 async def test_storage_creation_gets_fixed_owner_readers_permissions_and_marker():
-    module, _ = make_module({"@owner:test": "verified"})
+    module, _ = make_module({"@owner:test": "paid"})
     config = {
         "initial_state": [
             {"type": "m.room.create", "state_key": "", "content": {"type": "m.space"}},
@@ -241,7 +241,7 @@ async def test_storage_creation_gets_fixed_owner_readers_permissions_and_marker(
 
 
 async def test_storage_power_levels_cannot_be_changed_even_by_owner():
-    module, _ = make_module({"@owner:test": "verified"})
+    module, _ = make_module({"@owner:test": "paid"})
     fixed = module._fixed_power_levels("@owner:test")
     current = event("m.room.power_levels", content=fixed)
     changed = dict(fixed)
@@ -255,7 +255,7 @@ async def test_storage_power_levels_cannot_be_changed_even_by_owner():
 
 
 async def test_storage_sdk_creation_uses_effective_creation_content_and_override():
-    module, _ = make_module({"@owner:test": "verified"})
+    module, _ = make_module({"@owner:test": "paid"})
     config = {
         "creation_content": {"type": "m.space"},
         "power_level_content_override": {"events": {STORAGE_MARKER: 100}},
@@ -268,7 +268,7 @@ async def test_storage_sdk_creation_uses_effective_creation_content_and_override
 
 
 async def test_unmarked_power_levels_remain_native():
-    module, _ = make_module({"@owner:test": "verified"})
+    module, _ = make_module({"@owner:test": "paid"})
     allowed, error = await module.check_event_allowed(
         event("m.room.power_levels", content={"users": {"@owner:test": 100}}),
         {("m.room.power_levels", ""): event("m.room.power_levels", content={"users": {"@owner:test": 100}})},

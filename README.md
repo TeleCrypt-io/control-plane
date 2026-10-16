@@ -33,11 +33,11 @@ to Janitor. The approved lifecycle rule is suspension after 48 hours for never-p
 suspension, with removal eligibility after 90 days continuously suspended for every unpaid
 account. The updated policy is being implemented in Cashier; Janitor executes Cashier's
 authoritative due actions and does not invent a second clock. Paid entitlement restoration is
-projected by Cashier's verified provider webhook. Operator MAS locks remain separate and are
+projected by Cashier's signed provider webhook. Operator MAS locks remain separate and are
 never cleared by this run.
 
-The Synapse policy reads the native local `user_type` (`wild`, `verified`, or
-`uploads_blocked`) for upload and messaging decisions. Storage rooms are identified by the
+The Synapse policy reads the native local `user_type` (`free`, `paid`, or
+`paid_over_quota`) for upload and messaging decisions. Storage rooms are identified by the
 fixed `m.room.power_levels` marker
 `org.matrix.msc3089.branch = 100`; creation establishes one owner at level 100 and leaves
 members as readers through the native power-level defaults.

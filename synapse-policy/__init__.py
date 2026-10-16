@@ -22,10 +22,10 @@ from twisted.web.http_headers import Headers
 
 logger = logging.getLogger(__name__)
 
-WILD = "wild"
-VERIFIED = "verified"
-UPLOADS_BLOCKED = "uploads_blocked"
-PAID_USER_TYPES = frozenset((VERIFIED, UPLOADS_BLOCKED))
+FREE = "free"
+PAID = "paid"
+PAID_OVER_QUOTA = "paid_over_quota"
+PAID_USER_TYPES = frozenset((PAID, PAID_OVER_QUOTA))
 
 BYTES_PER_MIB = 1024**2
 MAX_MEDIA_BYTES = 128 * BYTES_PER_MIB
@@ -169,7 +169,7 @@ class TierController:
         """
         if type(size) is not int or size < 0 or size > MAX_MEDIA_BYTES:
             return False
-        return await self._get_user_type(user_id) == VERIFIED
+        return await self._get_user_type(user_id) == PAID
 
     async def get_ratelimit_override_for_user(
         self, user_id: str, limiter_name: str
@@ -184,7 +184,7 @@ class TierController:
 
     async def user_may_create_room(self, user_id: str, room_config: dict[str, Any]) -> Any:
         if self._is_storage_creation(room_config):
-            if await self._get_user_type(user_id) != VERIFIED:
+            if await self._get_user_type(user_id) != PAID:
                 return Codes.FORBIDDEN, {"error": _STORAGE_DENIAL_MESSAGE}
             return NOT_SPAM
 

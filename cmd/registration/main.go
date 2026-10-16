@@ -1,4 +1,4 @@
-// Command registration runs TeleCrypt.io's stateless agent-registration shim: POST /redpill drives
+// Command registration runs TeleCrypt.io's stateless agent-registration shim: POST /register drives
 // MAS's public registration and OAuth device flow (no admin credentials, database, or password
 // login — see internal/agent and internal/masreg).
 package main

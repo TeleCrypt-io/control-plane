@@ -115,12 +115,10 @@ func (s *Server) handlePlan(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	mxid, err := s.session.MXID(r)
 	data := pageData{
-		LoggedIn:         err == nil,
-		TestMode:         s.cfg.BillingEnvironment == "test",
-		MXID:             mxid,
-		RegisterURL:      strings.TrimRight(s.cfg.BackendPublicURL, "/") + "/register",
-		BillingLinks:     billingLinksForPrincipal(s.cfg.BillingLinks, mxid),
-		BillingPortalURL: s.cfg.BillingPortalURL,
+		LoggedIn:    err == nil,
+		TestMode:    s.cfg.BillingEnvironment == "test",
+		MXID:        mxid,
+		RegisterURL: strings.TrimRight(s.cfg.BackendPublicURL, "/") + "/register",
 	}
 	if data.LoggedIn {
 		client, err := s.client()
@@ -135,6 +133,15 @@ func (s *Server) handlePlan(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		data.Plan, data.Members = state.Plan, state.Members
+		if state.Plan != nil && state.Plan.BillingOwnerMXID == mxid {
+			data.IsBillingOwner = true
+			data.MemberExcess = len(state.Members) - state.Plan.MemberLimit
+			if state.Plan.HasBillingAccount {
+				data.BillingPortalURL = s.cfg.BillingPortalURL
+			} else {
+				data.BillingLinks = billingLinksForPrincipal(s.cfg.BillingLinks, mxid)
+			}
+		}
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := planTmpl.Execute(w, data); err != nil {
@@ -513,6 +520,8 @@ type pageData struct {
 	Members            []Member
 	BillingLinks       []BillingLink
 	BillingPortalURL   string
+	IsBillingOwner     bool
+	MemberExcess       int
 }
 
 // billingLinksForPrincipal keeps checkout links static while carrying the

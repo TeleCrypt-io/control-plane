@@ -54,7 +54,7 @@
                 <p class="eyebrow">SUBSCRIPTION</p>
                 <h2 id="subscription-title">Plan status</h2>
               </div>
-              <span class="status-pill">{{.Plan.SubscriptionStatus}}</span>
+              <span class="status-pill">{{.Plan.AccessStatus}}</span>
             </div>
             <dl class="metrics">
               {{if .Plan.DisplayName}}<div><dt>Plan</dt><dd>{{.Plan.DisplayName}}</dd></div>{{end}}
@@ -64,10 +64,17 @@
               {{if .Plan.StorageBytes}}<div><dt>Storage used</dt><dd>{{.Plan.StorageUsage}} of {{.Plan.StorageAllowance}}</dd></div>{{end}}
               <div><dt>Members</dt><dd>{{len .Members}}{{if gt .Plan.MemberLimit 0}} of {{.Plan.MemberLimit}}{{end}}</dd></div>
             </dl>
+            {{if and .IsBillingOwner (gt .MemberExcess 0)}}
+            <p role="status">Your team has {{.MemberExcess}} more member{{if ne .MemberExcess 1}}s{{end}} than this plan allows. Existing members keep their paid access. New joins are blocked until there is room; choose whom to remove below.</p>
+            {{end}}
             <div class="card-actions billing-links">
+              {{if .BillingLinks}}
               <p>Choose a fixed plan:</p>
               {{range .BillingLinks}}<a class="btn btn-primary" href="{{.URL}}" target="_blank" rel="noopener noreferrer">{{.DisplayName}}</a>{{end}}
-              {{if .BillingPortalURL}}<a class="btn" href="{{.BillingPortalURL}}" target="_blank" rel="noopener noreferrer">Open billing portal</a>{{end}}
+              {{else if .BillingPortalURL}}
+              <p>Manage your subscription in the hosted billing portal.</p>
+              <a class="btn" href="{{.BillingPortalURL}}" target="_blank" rel="noopener noreferrer">Open billing portal</a>
+              {{end}}
             </div>
           </section>
 
@@ -84,20 +91,20 @@
               <li>
                 <span>{{.MXID}}</span>
                 <div class="actions">
-                {{if eq .MXID $.MXID}}<button class="btn btn-danger btn-sm" type="button" data-leave-team>Leave team</button>{{else}}<button class="btn btn-danger btn-sm" type="button" data-remove-member data-mxid="{{.MXID}}">Remove</button>{{end}}
+                {{if and (eq .MXID $.MXID) (not $.IsBillingOwner)}}<button class="btn btn-danger btn-sm" type="button" data-leave-team>Leave team</button>{{else if and (ne .MXID $.MXID) $.IsBillingOwner}}<button class="btn btn-danger btn-sm" type="button" data-remove-member data-mxid="{{.MXID}}">Remove</button>{{end}}
                 </div>
               </li>
               {{else}}
               <li class="empty-state">No members attached yet.</li>
               {{end}}
             </ul>
-            <form id="add-member" class="add-member">
+            {{if .IsBillingOwner}}<form id="add-member" class="add-member">
               <label for="member-mxid">Add a Matrix ID</label>
               <div>
                 <input class="tc-field" id="member-mxid" name="mxid" placeholder="@name:server" required>
                 <button class="btn" type="submit">Attach member</button>
               </div>
-            </form>
+            </form>{{end}}
           </section>
         </div>
         {{else}}
@@ -106,8 +113,9 @@
             <h2 id="plan-setup-title">Choose your plan</h2>
             <p>Select a fixed plan, then attach the Matrix accounts you want covered.</p>
             <div class="actions billing-links">
+              {{if .IsBillingOwner}}
               {{range .BillingLinks}}<a class="btn btn-primary" href="{{.URL}}" target="_blank" rel="noopener noreferrer">{{.DisplayName}}</a>{{end}}
-              {{if .BillingPortalURL}}<a class="btn" href="{{.BillingPortalURL}}" target="_blank" rel="noopener noreferrer">Open billing portal</a>{{end}}
+              {{end}}
             </div>
         </section>
         {{end}}

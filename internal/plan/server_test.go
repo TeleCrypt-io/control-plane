@@ -471,7 +471,7 @@ func TestPlanSharedAssetsAreHostedByWebsite(t *testing.T) {
 	}
 }
 
-func TestServerRendersPlanControlsForEachSubscriptionState(t *testing.T) {
+func TestServerRoutesNewAndExistingSubscriptionsThroughExpectedBillingFlow(t *testing.T) {
 	tests := []struct {
 		name    string
 		plan    *Plan
@@ -480,23 +480,44 @@ func TestServerRendersPlanControlsForEachSubscriptionState(t *testing.T) {
 		notWant []string
 	}{
 		{
-			name:    "fixed plan",
-			plan:    &Plan{SubscriptionStatus: "active", DisplayName: "Team", MonthlyCents: 1500, MemberLimit: 3},
-			members: []Member{{MXID: "@member:stage.telecrypt.io"}},
+			name: "existing subscriber",
+			plan: &Plan{
+				AccessStatus: "paid", BillingOwnerMXID: "@alice:stage.telecrypt.io", HasBillingAccount: true,
+				DisplayName: "Team", MonthlyCents: 2500, MemberLimit: 3,
+			},
+			members: []Member{{MXID: "@alice:stage.telecrypt.io"}, {MXID: "@member:stage.telecrypt.io"}},
+			want: []string{
+				`href="https://billing.example/portal" target="_blank" rel="noopener noreferrer">Open billing portal</a>`,
+				"paid", "id=\"add-member\"", "data-mxid=\"@member:stage.telecrypt.io\"",
+			},
+			notWant: []string{"checkout.example", "Choose a fixed plan"},
+		},
+		{
+			name: "new subscriber",
+			plan: &Plan{AccessStatus: "free", BillingOwnerMXID: "@alice:stage.telecrypt.io", MemberLimit: 1},
 			want: []string{
 				`href="https://checkout.example/team?metadata_owner_mxid=%40alice%3Astage.telecrypt.io" target="_blank" rel="noopener noreferrer">Team</a>`,
 				`href="https://checkout.example/business?metadata_owner_mxid=%40alice%3Astage.telecrypt.io" target="_blank" rel="noopener noreferrer">Business</a>`,
-				`href="https://checkout.example/business-plus?metadata_owner_mxid=%40alice%3Astage.telecrypt.io" target="_blank" rel="noopener noreferrer">Business&#43;</a>`,
-				`href="https://checkout.example/max?metadata_owner_mxid=%40alice%3Astage.telecrypt.io" target="_blank" rel="noopener noreferrer">Max</a>`,
-				"Open billing portal",
-				"id=\"add-member\"", "data-mxid=\"@member:stage.telecrypt.io\"",
 			},
-			notWant: []string{"id=\"checkout\"", "id=\"seat-count\"", "Set up plan", "quantity"},
+			notWant: []string{"billing.example/portal"},
 		},
 		{
-			name:    "no plan",
-			want:    []string{"Choose your plan", "Team", "Business", "Open billing portal"},
-			notWant: []string{"Set up plan", "id=\"checkout\"", "quantity", "<h1 id=\"plan-title\">Your Plan</h1>"},
+			name:    "team member",
+			plan:    &Plan{AccessStatus: "paid", BillingOwnerMXID: "@owner:stage.telecrypt.io", HasBillingAccount: true, MemberLimit: 3},
+			members: []Member{{MXID: "@alice:stage.telecrypt.io"}, {MXID: "@owner:stage.telecrypt.io"}},
+			want:    []string{"data-leave-team"},
+			notWant: []string{"checkout.example", "billing.example/portal", "id=\"add-member\"", "data-remove-member"},
+		},
+		{
+			name:    "owner sees member overage",
+			plan:    &Plan{AccessStatus: "paid", BillingOwnerMXID: "@alice:stage.telecrypt.io", HasBillingAccount: true, MemberLimit: 3},
+			members: []Member{{MXID: "@alice:stage.telecrypt.io"}, {MXID: "@one:stage.telecrypt.io"}, {MXID: "@two:stage.telecrypt.io"}, {MXID: "@three:stage.telecrypt.io"}},
+			want:    []string{"1 more member", "Existing members keep their paid access", "New joins are blocked", "data-remove-member"},
+		},
+		{
+			name:    "missing plan state",
+			want:    []string{"Choose your plan"},
+			notWant: []string{"checkout.example", "billing.example/portal", "<h1 id=\"plan-title\">Your Plan</h1>"},
 		},
 	}
 
@@ -520,6 +541,7 @@ func TestServerRendersPlanControlsForEachSubscriptionState(t *testing.T) {
 func TestServerRendersStablePlanStateAndLimits(t *testing.T) {
 	body := renderAuthenticatedPlan(t, PlanState{Plan: &Plan{
 		DisplayName:  "Team",
+		AccessStatus: "paid_over_quota",
 		MonthlyCents: 2500,
 		StorageBytes: 5_000_000_000,
 		UsageBytes:   1_000_000_000,

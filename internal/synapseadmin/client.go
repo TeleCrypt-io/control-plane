@@ -62,7 +62,7 @@ func (c *Client) SuspendUser(ctx context.Context, userID string, suspended bool)
 // SetUserType is deliberately narrower than Synapse's general admin update API:
 // Janitor may only publish the Free/suspended projection, never an entitlement.
 func (c *Client) SetUserType(ctx context.Context, userID, userType string) error {
-	if userType != "wild" {
+	if userType != "free" {
 		return fmt.Errorf("synapseadmin: unsupported lifecycle user_type %q", userType)
 	}
 	body, err := json.Marshal(map[string]string{"user_type": userType})
