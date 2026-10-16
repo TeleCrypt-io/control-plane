@@ -38,7 +38,7 @@ func TestHTTPCashierClientUsesPrivateMXIDHeader(t *testing.T) {
 			t.Errorf("Cashier Authorization header = %q, want bearer credential", got)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"plan":{"access_status":"paid","billing_owner_mxid":"@alice:telecrypt.io","has_billing_account":true,"member_limit":2},"members":[{"mxid":"@alice:telecrypt.io"}]}`))
+		_, _ = w.Write([]byte(`{"plan":{"access_status":"paid","billing_owner_mxid":"@alice:telecrypt.io","has_billing_account":true,"has_manageable_subscription":true,"member_limit":2},"members":[{"mxid":"@alice:telecrypt.io"}]}`))
 	}))
 	defer server.Close()
 
@@ -50,7 +50,7 @@ func TestHTTPCashierClientUsesPrivateMXIDHeader(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PlanState: %v", err)
 	}
-	if state.Plan == nil || state.Plan.MemberLimit != 2 || state.Plan.AccessStatus != "paid" || state.Plan.BillingOwnerMXID != "@alice:telecrypt.io" || !state.Plan.HasBillingAccount || len(state.Members) != 1 {
+	if state.Plan == nil || state.Plan.MemberLimit != 2 || state.Plan.AccessStatus != "paid" || state.Plan.BillingOwnerMXID != "@alice:telecrypt.io" || !state.Plan.HasBillingAccount || !state.Plan.HasManageableSubscription || len(state.Members) != 1 {
 		t.Fatalf("PlanState = %#v, want one private plan member", state)
 	}
 }

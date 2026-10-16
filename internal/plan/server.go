@@ -136,7 +136,7 @@ func (s *Server) handlePlan(w http.ResponseWriter, r *http.Request) {
 		if state.Plan != nil && state.Plan.BillingOwnerMXID == mxid {
 			data.IsBillingOwner = true
 			data.MemberExcess = len(state.Members) - state.Plan.MemberLimit
-			if state.Plan.HasBillingAccount {
+			if state.Plan.HasManageableSubscription {
 				data.BillingPortalURL = s.cfg.BillingPortalURL
 			} else {
 				data.BillingLinks = billingLinksForPrincipal(s.cfg.BillingLinks, mxid)

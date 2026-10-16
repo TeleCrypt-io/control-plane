@@ -482,7 +482,7 @@ func TestServerRoutesNewAndExistingSubscriptionsThroughExpectedBillingFlow(t *te
 		{
 			name: "existing subscriber",
 			plan: &Plan{
-				AccessStatus: "paid", BillingOwnerMXID: "@alice:stage.telecrypt.io", HasBillingAccount: true,
+				AccessStatus: "paid", BillingOwnerMXID: "@alice:stage.telecrypt.io", HasBillingAccount: true, HasManageableSubscription: true,
 				DisplayName: "Team", MonthlyCents: 2500, MemberLimit: 3,
 			},
 			members: []Member{{MXID: "@alice:stage.telecrypt.io"}, {MXID: "@member:stage.telecrypt.io"}},
@@ -500,6 +500,34 @@ func TestServerRoutesNewAndExistingSubscriptionsThroughExpectedBillingFlow(t *te
 				`href="https://checkout.example/business?metadata_owner_mxid=%40alice%3Astage.telecrypt.io" target="_blank" rel="noopener noreferrer">Business</a>`,
 			},
 			notWant: []string{"billing.example/portal"},
+		},
+		{
+			name: "cancelled former subscriber can purchase again",
+			plan: &Plan{AccessStatus: "free", BillingOwnerMXID: "@alice:stage.telecrypt.io", HasBillingAccount: true, MemberLimit: 1},
+			want: []string{
+				`href="https://checkout.example/team?metadata_owner_mxid=%40alice%3Astage.telecrypt.io" target="_blank" rel="noopener noreferrer">Team</a>`,
+			},
+			notWant: []string{"billing.example/portal"},
+		},
+		{
+			name: "refunded former subscriber can purchase again",
+			plan: &Plan{AccessStatus: "free", BillingOwnerMXID: "@alice:stage.telecrypt.io", HasBillingAccount: true, MemberLimit: 1},
+			want: []string{
+				`href="https://checkout.example/team?metadata_owner_mxid=%40alice%3Astage.telecrypt.io" target="_blank" rel="noopener noreferrer">Team</a>`,
+			},
+			notWant: []string{"billing.example/portal"},
+		},
+		{
+			name:    "past due subscriber can recover in portal",
+			plan:    &Plan{AccessStatus: "paid", BillingOwnerMXID: "@alice:stage.telecrypt.io", HasBillingAccount: true, HasManageableSubscription: true, MemberLimit: 1},
+			want:    []string{`href="https://billing.example/portal" target="_blank" rel="noopener noreferrer">Open billing portal</a>`},
+			notWant: []string{"checkout.example"},
+		},
+		{
+			name:    "on hold subscriber can recover in portal",
+			plan:    &Plan{AccessStatus: "free", BillingOwnerMXID: "@alice:stage.telecrypt.io", HasBillingAccount: true, HasManageableSubscription: true, MemberLimit: 1},
+			want:    []string{`href="https://billing.example/portal" target="_blank" rel="noopener noreferrer">Open billing portal</a>`},
+			notWant: []string{"checkout.example"},
 		},
 		{
 			name:    "team member",
