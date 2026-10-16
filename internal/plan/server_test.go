@@ -505,17 +505,17 @@ func TestServerRoutesNewAndExistingSubscriptionsThroughExpectedBillingFlow(t *te
 			name: "cancelled former subscriber can purchase again",
 			plan: &Plan{AccessStatus: "free", BillingOwnerMXID: "@alice:stage.telecrypt.io", HasBillingAccount: true, MemberLimit: 1},
 			want: []string{
+				`href="https://billing.example/portal" target="_blank" rel="noopener noreferrer">Open billing portal</a>`,
 				`href="https://checkout.example/team?metadata_owner_mxid=%40alice%3Astage.telecrypt.io" target="_blank" rel="noopener noreferrer">Team</a>`,
 			},
-			notWant: []string{"billing.example/portal"},
 		},
 		{
 			name: "refunded former subscriber can purchase again",
 			plan: &Plan{AccessStatus: "free", BillingOwnerMXID: "@alice:stage.telecrypt.io", HasBillingAccount: true, MemberLimit: 1},
 			want: []string{
+				`href="https://billing.example/portal" target="_blank" rel="noopener noreferrer">Open billing portal</a>`,
 				`href="https://checkout.example/team?metadata_owner_mxid=%40alice%3Astage.telecrypt.io" target="_blank" rel="noopener noreferrer">Team</a>`,
 			},
-			notWant: []string{"billing.example/portal"},
 		},
 		{
 			name:    "past due subscriber can recover in portal",
