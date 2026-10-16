@@ -74,7 +74,6 @@ type PlanState struct {
 // BillingLink is a configured public static checkout link for one fixed tier.
 // Plan never creates provider sessions or sends provider API requests.
 type BillingLink struct {
-	TierID      int
 	DisplayName string
 	URL         string
 }

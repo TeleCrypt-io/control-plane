@@ -14,8 +14,9 @@ billing links only. Plan, Janitor, and Synapse receive distinct Cashier credenti
 must receive only its own credential.
 Sponsor account lock and unlock actions are not part of Plan.
 The four fixed checkout links and permanent billing portal URL are supplied through
-`PLAN_BILLING_LINK_1` through `PLAN_BILLING_LINK_4` and `PLAN_BILLING_PORTAL_URL`; Plan renders them as ordinary HTTPS
-links and never creates provider sessions.
+`PLAN_BILLING_LINK_TEAM`, `PLAN_BILLING_LINK_BUSINESS`, `PLAN_BILLING_LINK_BUSINESS_PLUS`,
+`PLAN_BILLING_LINK_MAX`, and `PLAN_BILLING_PORTAL_URL`; Plan renders them as ordinary HTTPS links and
+never creates provider sessions.
 Attached members have a self-service `/plan/members/leave` action. Plan verifies the caller is
 present in Cashier's membership view and reuses the member-removal command;
 Cashier is responsible for allowing only the caller's own membership and for enforcing that the

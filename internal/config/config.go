@@ -169,21 +169,21 @@ func LoadJanitor() (*JanitorConfig, error) {
 // PlanConfig contains the browser-facing service configuration. Plan has no MAS-admin,
 // Synapse-admin, or database credentials.
 type PlanConfig struct {
-	BillingEnvironment string
-	ServerName         string
-	BackendPublicURL   string
-	MASInternalURL     string
-	PlanPublicURL      string
-	CashierInternalURL string // fixed pod-local endpoint
-	CashierToken       string
-	MASClientID        string
-	MASClientSecret    string
-	PlanSessionKey     string
-	BillingLink1       string
-	BillingLink2       string
-	BillingLink3       string
-	BillingLink4       string
-	BillingPortalURL   string
+	BillingEnvironment      string
+	ServerName              string
+	BackendPublicURL        string
+	MASInternalURL          string
+	PlanPublicURL           string
+	CashierInternalURL      string // fixed pod-local endpoint
+	CashierToken            string
+	MASClientID             string
+	MASClientSecret         string
+	PlanSessionKey          string
+	BillingLinkTeam         string
+	BillingLinkBusiness     string
+	BillingLinkBusinessPlus string
+	BillingLinkMax          string
+	BillingPortalURL        string
 }
 
 func LoadPlan() (*PlanConfig, error) {
@@ -203,20 +203,20 @@ func LoadPlan() (*PlanConfig, error) {
 		return nil, err
 	}
 	c := &PlanConfig{
-		BillingEnvironment: billingEnvironment,
-		ServerName:         serverName,
-		BackendPublicURL:   endpoints.origin,
-		MASInternalURL:     masInternalURL,
-		CashierInternalURL: cashierInternalURL,
-		CashierToken:       cashierToken,
-		MASClientID:        os.Getenv("MAS_OIDC_CLIENT_ID"),
-		MASClientSecret:    os.Getenv("MAS_OIDC_CLIENT_SECRET"),
-		PlanSessionKey:     os.Getenv("PLAN_SESSION_KEY"),
-		BillingLink1:       os.Getenv("PLAN_BILLING_LINK_1"),
-		BillingLink2:       os.Getenv("PLAN_BILLING_LINK_2"),
-		BillingLink3:       os.Getenv("PLAN_BILLING_LINK_3"),
-		BillingLink4:       os.Getenv("PLAN_BILLING_LINK_4"),
-		BillingPortalURL:   os.Getenv("PLAN_BILLING_PORTAL_URL"),
+		BillingEnvironment:      billingEnvironment,
+		ServerName:              serverName,
+		BackendPublicURL:        endpoints.origin,
+		MASInternalURL:          masInternalURL,
+		CashierInternalURL:      cashierInternalURL,
+		CashierToken:            cashierToken,
+		MASClientID:             os.Getenv("MAS_OIDC_CLIENT_ID"),
+		MASClientSecret:         os.Getenv("MAS_OIDC_CLIENT_SECRET"),
+		PlanSessionKey:          os.Getenv("PLAN_SESSION_KEY"),
+		BillingLinkTeam:         os.Getenv("PLAN_BILLING_LINK_TEAM"),
+		BillingLinkBusiness:     os.Getenv("PLAN_BILLING_LINK_BUSINESS"),
+		BillingLinkBusinessPlus: os.Getenv("PLAN_BILLING_LINK_BUSINESS_PLUS"),
+		BillingLinkMax:          os.Getenv("PLAN_BILLING_LINK_MAX"),
+		BillingPortalURL:        os.Getenv("PLAN_BILLING_PORTAL_URL"),
 	}
 	if _, present := os.LookupEnv("SESSION_KEY"); present {
 		return nil, fmt.Errorf("SESSION_KEY must be unset; use PLAN_SESSION_KEY")
@@ -240,10 +240,10 @@ func LoadPlan() (*PlanConfig, error) {
 		return nil, fmt.Errorf("PLAN_SESSION_KEY must contain at least 32 bytes")
 	}
 	for _, link := range []envValue{
-		{"PLAN_BILLING_LINK_1", c.BillingLink1},
-		{"PLAN_BILLING_LINK_2", c.BillingLink2},
-		{"PLAN_BILLING_LINK_3", c.BillingLink3},
-		{"PLAN_BILLING_LINK_4", c.BillingLink4},
+		{"PLAN_BILLING_LINK_TEAM", c.BillingLinkTeam},
+		{"PLAN_BILLING_LINK_BUSINESS", c.BillingLinkBusiness},
+		{"PLAN_BILLING_LINK_BUSINESS_PLUS", c.BillingLinkBusinessPlus},
+		{"PLAN_BILLING_LINK_MAX", c.BillingLinkMax},
 		{"PLAN_BILLING_PORTAL_URL", c.BillingPortalURL},
 	} {
 		if err := requireEnvValues([]envValue{link}, "missing required Plan billing link env var"); err != nil {

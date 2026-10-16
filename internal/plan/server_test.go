@@ -52,8 +52,10 @@ func testServer() *Server {
 		MASClientSecret:    "test-secret",
 		PlanSessionKey:     "test-session-key",
 		BillingLinks: []BillingLink{
-			{TierID: 1, DisplayName: "Team", URL: "https://checkout.example/team"},
-			{TierID: 2, DisplayName: "Business", URL: "https://checkout.example/business"},
+			{DisplayName: "Team", URL: "https://checkout.example/team"},
+			{DisplayName: "Business", URL: "https://checkout.example/business"},
+			{DisplayName: "Business+", URL: "https://checkout.example/business-plus"},
+			{DisplayName: "Max", URL: "https://checkout.example/max"},
 		},
 		BillingPortalURL: "https://billing.example/portal",
 	}, nil)
@@ -482,7 +484,11 @@ func TestServerRendersPlanControlsForEachSubscriptionState(t *testing.T) {
 			plan:    &Plan{SubscriptionStatus: "active", DisplayName: "Team", MonthlyCents: 1500, MemberLimit: 3},
 			members: []Member{{MXID: "@member:stage.telecrypt.io"}},
 			want: []string{
-				"Team", "Business", "Open billing portal",
+				`href="https://checkout.example/team?metadata_owner_mxid=%40alice%3Astage.telecrypt.io" target="_blank" rel="noopener noreferrer">Team</a>`,
+				`href="https://checkout.example/business?metadata_owner_mxid=%40alice%3Astage.telecrypt.io" target="_blank" rel="noopener noreferrer">Business</a>`,
+				`href="https://checkout.example/business-plus?metadata_owner_mxid=%40alice%3Astage.telecrypt.io" target="_blank" rel="noopener noreferrer">Business&#43;</a>`,
+				`href="https://checkout.example/max?metadata_owner_mxid=%40alice%3Astage.telecrypt.io" target="_blank" rel="noopener noreferrer">Max</a>`,
+				"Open billing portal",
 				"id=\"add-member\"", "data-mxid=\"@member:stage.telecrypt.io\"",
 			},
 			notWant: []string{"id=\"checkout\"", "id=\"seat-count\"", "Set up plan", "quantity"},

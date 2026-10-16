@@ -16,18 +16,18 @@ const (
 func setRequiredPlanEnv(t *testing.T) {
 	t.Helper()
 	for key, value := range map[string]string{
-		"SERVER_NAME":             "example.invalid",
-		"BILLING_ENVIRONMENT":     "test",
-		"CASHIER_PLAN_TOKEN":      testPlanToken,
-		"MAS_INTERNAL_URL":        "http://mas.matrix:8082",
-		"MAS_OIDC_CLIENT_ID":      testPlanClientID,
-		"MAS_OIDC_CLIENT_SECRET":  "test-secret",
-		"PLAN_SESSION_KEY":        strings.Repeat("s", 32),
-		"PLAN_BILLING_LINK_1":     "https://checkout.example.invalid/tier-1",
-		"PLAN_BILLING_LINK_2":     "https://checkout.example.invalid/tier-2",
-		"PLAN_BILLING_LINK_3":     "https://checkout.example.invalid/tier-3",
-		"PLAN_BILLING_LINK_4":     "https://checkout.example.invalid/tier-4",
-		"PLAN_BILLING_PORTAL_URL": "https://portal.example.invalid/login",
+		"SERVER_NAME":                     "example.invalid",
+		"BILLING_ENVIRONMENT":             "test",
+		"CASHIER_PLAN_TOKEN":              testPlanToken,
+		"MAS_INTERNAL_URL":                "http://mas.matrix:8082",
+		"MAS_OIDC_CLIENT_ID":              testPlanClientID,
+		"MAS_OIDC_CLIENT_SECRET":          "test-secret",
+		"PLAN_SESSION_KEY":                strings.Repeat("s", 32),
+		"PLAN_BILLING_LINK_TEAM":          "https://checkout.example.invalid/team",
+		"PLAN_BILLING_LINK_BUSINESS":      "https://checkout.example.invalid/business",
+		"PLAN_BILLING_LINK_BUSINESS_PLUS": "https://checkout.example.invalid/business-plus",
+		"PLAN_BILLING_LINK_MAX":           "https://checkout.example.invalid/max",
+		"PLAN_BILLING_PORTAL_URL":         "https://portal.example.invalid/login",
 	} {
 		t.Setenv(key, value)
 	}
@@ -87,8 +87,17 @@ func TestLoadPlanDerivesPublicURLsFromServerName(t *testing.T) {
 	if cfg.CashierToken != testPlanToken {
 		t.Fatal("Plan did not load its Cashier credential")
 	}
-	if cfg.BillingLink1 == "" || cfg.BillingLink2 == "" || cfg.BillingLink3 == "" || cfg.BillingLink4 == "" || cfg.BillingPortalURL == "" {
-		t.Fatalf("Plan billing links were not loaded: %#v", cfg)
+	for field, values := range map[string][2]string{
+		"Team":             {cfg.BillingLinkTeam, "https://checkout.example.invalid/team"},
+		"Business":         {cfg.BillingLinkBusiness, "https://checkout.example.invalid/business"},
+		"BusinessPlus":     {cfg.BillingLinkBusinessPlus, "https://checkout.example.invalid/business-plus"},
+		"Max":              {cfg.BillingLinkMax, "https://checkout.example.invalid/max"},
+		"BillingPortalURL": {cfg.BillingPortalURL, "https://portal.example.invalid/login"},
+	} {
+		got, want := values[0], values[1]
+		if got != want {
+			t.Errorf("%s = %q, want %q", field, got, want)
+		}
 	}
 }
 
@@ -152,8 +161,8 @@ func TestLoadPlanRequiresHTTPSBillingLinks(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			setRequiredPlanEnv(t)
-			t.Setenv("PLAN_BILLING_LINK_1", tc.value)
-			if _, err := LoadPlan(); err == nil || !strings.Contains(err.Error(), "PLAN_BILLING_LINK_1") {
+			t.Setenv("PLAN_BILLING_LINK_TEAM", tc.value)
+			if _, err := LoadPlan(); err == nil || !strings.Contains(err.Error(), "PLAN_BILLING_LINK_TEAM") {
 				t.Fatalf("LoadPlan error = %v, want unsafe link rejection", err)
 			}
 		})
