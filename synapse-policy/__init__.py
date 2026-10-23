@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+from collections.abc import Mapping
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -67,13 +68,13 @@ def _event_state_key(event: Any) -> str:
     return str(getattr(event, "state_key", ""))
 
 
-def _event_content(event: Any) -> dict[str, Any]:
+def _event_content(event: Any) -> Mapping[str, Any]:
     if isinstance(event, dict):
         content = event.get("content", {})
     else:
-        getter = getattr(event, "get_content", None)
-        content = getter() if getter is not None else getattr(event, "content", {})
-    return content if isinstance(content, dict) else {}
+        content = getattr(event, "content", {})
+    # Synapse's native events expose JsonObject, including nested objects.
+    return content if isinstance(content, Mapping) else {}
 
 
 def _event_sender(event: Any) -> str:
@@ -293,7 +294,7 @@ class TierController:
             "invite": 100,
             "kick": 100,
             "redact": 100,
-            "state_default": 0,
+            "state_default": 100,
             "users": {owner: 100},
             "users_default": 0,
         }
@@ -336,10 +337,10 @@ class TierController:
         current = _state_event(state_events, "m.room.power_levels", "")
         current_content = _event_content(current)
         marker_events = current_content.get("events", {})
-        if not isinstance(marker_events, dict) or marker_events.get(STORAGE_MARKER) != 100:
+        if not isinstance(marker_events, Mapping) or marker_events.get(STORAGE_MARKER) != 100:
             return True, None
         users = current_content.get("users")
-        if not isinstance(users, dict) or len(users) != 1:
+        if not isinstance(users, Mapping) or len(users) != 1:
             return False, {"error": "Storage room permissions are invalid."}
         owner, owner_level = next(iter(users.items()))
         if owner_level != 100 or _event_content(event) != self._fixed_power_levels(str(owner)):
