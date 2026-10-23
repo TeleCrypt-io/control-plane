@@ -291,6 +291,7 @@ class TierController:
                 STORAGE_MARKER: 100,
             },
             "events_default": 0,
+            "historical": 100,
             "invite": 100,
             "kick": 100,
             "redact": 100,
