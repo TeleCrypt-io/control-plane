@@ -13,6 +13,8 @@ source_dir = pathlib.Path(__file__).resolve().parent
 sys.path[:] = [entry for entry in sys.path if pathlib.Path(entry or ".").resolve() != source_dir]
 
 from synapse.api.errors import Codes
+from synapse.api.room_versions import RoomVersions
+from synapse.events import make_event_from_dict
 from synapse.module_api import NOT_SPAM
 import tier_controller
 from tier_controller import (
@@ -136,13 +138,15 @@ async def upload(module, user_id, size):
 
 
 def event(event_type, sender="@alice:test", content=None, state_key="", is_state=True):
-    return SimpleNamespace(
-        type=event_type,
-        sender=sender,
-        state_key=state_key,
-        get_content=lambda: content or {},
-        is_state=lambda: is_state,
-    )
+    value = {
+        "type": event_type, "sender": sender, "content": content or {},
+        "room_id": "!storage:test", "auth_events": [], "prev_events": [],
+        "depth": 1, "origin_server_ts": 1, "hashes": {"sha256": "test"},
+        "signatures": {},
+    }
+    if is_state:
+        value["state_key"] = state_key
+    return make_event_from_dict(value, RoomVersions.V11)
 
 
 async def test_local_user_type_controls_upload_without_sql_usage_lookup():
@@ -229,7 +233,7 @@ async def test_storage_creation_gets_fixed_owner_readers_permissions_and_marker(
     assert power["content"]["users_default"] == 0
     assert power["content"]["ban"] == 100
     assert power["content"]["invite"] == 100
-    assert power["content"]["state_default"] == 0
+    assert power["content"]["state_default"] == 100
     assert power["content"]["events_default"] == 0
     assert power["content"]["events"]["m.room.name"] == 100
     assert power["content"]["events"]["m.room.message"] == 0
@@ -252,6 +256,22 @@ async def test_storage_power_levels_cannot_be_changed_even_by_owner():
     )
     assert allowed is False
     assert error == {"error": "Storage room permissions are fixed."}
+
+
+async def test_storage_permissions_accept_canonical_state_and_legacy_owner_repair():
+    module, _ = make_module()
+    fixed = module._fixed_power_levels("@owner:test")
+    for current in (fixed, {**fixed, "state_default": 0}):
+        assert await module.check_event_allowed(
+            event("m.room.power_levels", sender="@owner:test", content=fixed),
+            {("m.room.power_levels", ""): event("m.room.power_levels", content=current)},
+        ) == (True, None)
+    weakened = {**fixed, "state_default": 0}
+    allowed, _ = await module.check_event_allowed(
+        event("m.room.power_levels", sender="@owner:test", content=weakened),
+        {("m.room.power_levels", ""): event("m.room.power_levels", content=fixed)},
+    )
+    assert allowed is False
 
 
 async def test_storage_sdk_creation_uses_effective_creation_content_and_override():
