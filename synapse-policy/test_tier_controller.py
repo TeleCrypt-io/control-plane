@@ -287,6 +287,23 @@ async def test_storage_sdk_creation_uses_effective_creation_content_and_override
     assert config["power_level_content_override"]["events"][STORAGE_MARKER] == 100
 
 
+async def test_native_storage_power_levels_allow_resend_and_keep_historical_owner_only():
+    module, _ = make_module()
+    # Synapse merges this native default into power_level_content_override.
+    # This is the content read back from a room created through the real SDK.
+    content = {**module._fixed_power_levels("@owner:test"), "historical": 100}
+    current = event("m.room.power_levels", content=content)
+    assert await module.check_event_allowed(
+        event("m.room.power_levels", sender="@owner:test", content=content),
+        {("m.room.power_levels", ""): current},
+    ) == (True, None)
+    allowed, _ = await module.check_event_allowed(
+        event("m.room.power_levels", sender="@owner:test", content={**content, "historical": 0}),
+        {("m.room.power_levels", ""): current},
+    )
+    assert allowed is False
+
+
 async def test_unmarked_power_levels_remain_native():
     module, _ = make_module({"@owner:test": "paid"})
     allowed, error = await module.check_event_allowed(
