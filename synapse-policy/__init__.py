@@ -77,35 +77,6 @@ def _event_content(event: Any) -> Mapping[str, Any]:
     return content if isinstance(content, Mapping) else {}
 
 
-def _event_sender(event: Any) -> str:
-    if isinstance(event, dict):
-        return str(event.get("sender", ""))
-    return str(getattr(event, "sender", ""))
-
-
-def _requester_user_id(requester: Any) -> str:
-    user = getattr(requester, "user", requester)
-    to_string = getattr(user, "to_string", None)
-    if to_string is not None:
-        return str(to_string())
-    return str(user)
-
-
-def _state_event(state_events: Any, event_type: str, state_key: str = "") -> Any:
-    if not state_events:
-        return None
-    if isinstance(state_events, dict):
-        value = state_events.get((event_type, state_key))
-        if value is not None:
-            return value
-        value = state_events.get(event_type)
-        if isinstance(value, dict):
-            return value.get(state_key)
-        if value is not None and state_key == "":
-            return value
-    return None
-
-
 class TierController:
     """Apply the local user type to native Synapse policy callbacks."""
 
@@ -141,10 +112,6 @@ class TierController:
         api.register_spam_checker_callbacks(
             user_may_create_room=self.user_may_create_room,
             check_event_for_spam=self.check_event_for_spam,
-        )
-        api.register_third_party_rules_callbacks(
-            on_create_room=self.on_create_room,
-            check_event_allowed=self.check_event_allowed,
         )
 
     async def _get_user_type(self, user_id: str) -> str | None:
@@ -263,87 +230,28 @@ class TierController:
             initial_state = []
         power_levels = None
         room_create = room_config.get("creation_content")
+        storage_purpose = False
+        encrypted = False
         for event in initial_state:
             event_type = _event_type(event)
             if event_type == "m.room.create" and _event_state_key(event) == "":
                 room_create = _event_content(event)
             elif event_type == "m.room.power_levels" and _event_state_key(event) == "":
                 power_levels = _event_content(event)
+            elif (
+                event_type == "org.matrix.msc3088.room.purpose"
+                and _event_state_key(event) == "org.matrix.msc3089.tree"
+                and _event_content(event).get("org.matrix.msc3088.enabled") is True
+            ):
+                storage_purpose = True
+            elif event_type == "m.room.encryption" and _event_state_key(event) == "":
+                encrypted = True
         if not isinstance(room_create, dict) or room_create.get("type") != STORAGE_ROOM_TYPE:
+            return False
+        if not storage_purpose or not encrypted:
             return False
         if power_levels is None:
             power_levels = room_config.get("power_level_content_override")
         marker_events = power_levels.get("events", {}) if isinstance(power_levels, dict) else {}
-        return marker_events.get(STORAGE_MARKER) == 100
-
-    @staticmethod
-    def _fixed_power_levels(owner: str) -> dict[str, Any]:
-        return {
-            "ban": 100,
-            "events": {
-                "m.room.name": 100,
-                "m.room.message": 0,
-                "m.room.message.encrypted": 0,
-                "m.sticker": 0,
-                "m.space.child": 100,
-                "m.space.parent": 100,
-                "m.room.power_levels": 100,
-                STORAGE_MARKER: 100,
-            },
-            "events_default": 0,
-            "historical": 100,
-            "invite": 100,
-            "kick": 100,
-            "redact": 100,
-            "state_default": 100,
-            "users": {owner: 100},
-            "users_default": 0,
-        }
-
-    async def on_create_room(
-        self, requester: Any, room_config: dict[str, Any], is_requester_admin: bool
-    ) -> None:
-        """Canonicalize storage permissions before Synapse persists the room."""
-        if not self._is_storage_creation(room_config):
-            return
-        owner = _requester_user_id(requester)
-        fixed = self._fixed_power_levels(owner)
-        room_config["power_level_content_override"] = fixed
-        initial_state = room_config.get("initial_state")
-        if not isinstance(initial_state, list):
-            initial_state = []
-        if any(
-            _event_type(event) == "m.room.power_levels" and _event_state_key(event) == ""
-            for event in initial_state
-        ):
-            room_config["initial_state"] = [
-                (
-                    {
-                        "type": "m.room.power_levels",
-                        "state_key": "",
-                        "content": fixed,
-                    }
-                    if _event_type(event) == "m.room.power_levels" and _event_state_key(event) == ""
-                    else event
-                )
-                for event in initial_state
-            ]
-
-    async def check_event_allowed(
-        self, event: Any, state_events: Any
-    ) -> tuple[bool, dict[str, Any] | None]:
-        """Keep storage power levels immutable, including for the creator."""
-        if _event_type(event) != "m.room.power_levels" or _event_state_key(event) != "":
-            return True, None
-        current = _state_event(state_events, "m.room.power_levels", "")
-        current_content = _event_content(current)
-        marker_events = current_content.get("events", {})
-        if not isinstance(marker_events, Mapping) or marker_events.get(STORAGE_MARKER) != 100:
-            return True, None
-        users = current_content.get("users")
-        if not isinstance(users, Mapping) or len(users) != 1:
-            return False, {"error": "Storage room permissions are invalid."}
-        owner, owner_level = next(iter(users.items()))
-        if owner_level != 100 or _event_content(event) != self._fixed_power_levels(str(owner)):
-            return False, {"error": "Storage room permissions are fixed."}
-        return True, None
+        marker_level = marker_events.get(STORAGE_MARKER) if isinstance(marker_events, dict) else None
+        return type(marker_level) in (int, float) and 0 <= marker_level <= 100

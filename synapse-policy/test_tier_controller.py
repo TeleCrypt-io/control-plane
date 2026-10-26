@@ -217,100 +217,29 @@ async def test_plain_room_is_rejected_before_creation():
     )
 
 
-async def test_storage_creation_gets_fixed_owner_readers_permissions_and_marker():
-    module, _ = make_module({"@owner:test": "paid"})
-    config = {
-        "initial_state": [
-            {"type": "m.room.create", "state_key": "", "content": {"type": "m.space"}},
-            {"type": "org.matrix.msc3088.room.purpose", "state_key": "org.matrix.msc3089.tree", "content": {"org.matrix.msc3088.enabled": True}},
-            {"type": "m.room.power_levels", "state_key": "", "content": {"users": {"@attacker:test": 100}, "events": {STORAGE_MARKER: 100}}},
-        ]
-    }
-    requester = SimpleNamespace(user=SimpleNamespace(to_string=lambda: "@owner:test"))
-    await module.on_create_room(requester, config, False)
-    power = [item for item in config["initial_state"] if item["type"] == "m.room.power_levels"][0]
-    assert power["content"]["users"] == {"@owner:test": 100}
-    assert power["content"]["users_default"] == 0
-    assert power["content"]["ban"] == 100
-    assert power["content"]["invite"] == 100
-    assert power["content"]["state_default"] == 100
-    assert power["content"]["events_default"] == 0
-    assert power["content"]["events"]["m.room.name"] == 100
-    assert power["content"]["events"]["m.room.message"] == 0
-    assert power["content"]["events"]["m.room.message.encrypted"] == 0
-    assert power["content"]["events"]["m.sticker"] == 0
-    assert power["content"]["events"]["m.space.child"] == 100
-    assert power["content"]["events"]["m.space.parent"] == 100
-    assert power["content"]["events"][STORAGE_MARKER] == 100
-
-
-async def test_storage_power_levels_cannot_be_changed_even_by_owner():
-    module, _ = make_module({"@owner:test": "paid"})
-    fixed = module._fixed_power_levels("@owner:test")
-    current = event("m.room.power_levels", content=fixed)
-    changed = dict(fixed)
-    changed["users"] = {"@owner:test": 100, "@reader:test": 100}
-    allowed, error = await module.check_event_allowed(
-        event("m.room.power_levels", sender="@owner:test", content=changed),
-        {("m.room.power_levels", ""): current},
-    )
-    assert allowed is False
-    assert error == {"error": "Storage room permissions are fixed."}
-
-
-async def test_storage_permissions_accept_canonical_state_and_legacy_owner_repair():
-    module, _ = make_module()
-    fixed = module._fixed_power_levels("@owner:test")
-    for current in (fixed, {**fixed, "state_default": 0}):
-        assert await module.check_event_allowed(
-            event("m.room.power_levels", sender="@owner:test", content=fixed),
-            {("m.room.power_levels", ""): event("m.room.power_levels", content=current)},
-        ) == (True, None)
-    weakened = {**fixed, "state_default": 0}
-    allowed, _ = await module.check_event_allowed(
-        event("m.room.power_levels", sender="@owner:test", content=weakened),
-        {("m.room.power_levels", ""): event("m.room.power_levels", content=fixed)},
-    )
-    assert allowed is False
-
-
-async def test_storage_sdk_creation_uses_effective_creation_content_and_override():
-    module, _ = make_module({"@owner:test": "paid"})
+async def test_storage_creation_with_editor_marker_uses_native_permissions():
+    module, api = make_module({"@owner:test": "paid", "@free:test": "free"})
     config = {
         "creation_content": {"type": "m.space"},
-        "power_level_content_override": {"events": {STORAGE_MARKER: 100}},
-        "initial_state": [],
+        "power_level_content_override": {
+            "users_default": 0,
+            "events_default": 50,
+            "state_default": 50,
+            "events": {STORAGE_MARKER: 50},
+        },
+        "initial_state": [
+            {"type": "m.room.encryption", "state_key": "", "content": {"algorithm": "m.megolm.v1.aes-sha2"}},
+            {"type": "org.matrix.msc3088.room.purpose", "state_key": "org.matrix.msc3089.tree", "content": {"org.matrix.msc3088.enabled": True}},
+        ],
     }
-    requester = SimpleNamespace(user=SimpleNamespace(to_string=lambda: "@owner:test"))
-    await module.on_create_room(requester, config, False)
-    assert config["power_level_content_override"]["users"] == {"@owner:test": 100}
-    assert config["power_level_content_override"]["events"][STORAGE_MARKER] == 100
-
-
-async def test_native_storage_power_levels_allow_resend_and_keep_historical_owner_only():
-    module, _ = make_module()
-    # Synapse merges this native default into power_level_content_override.
-    # This is the content read back from a room created through the real SDK.
-    content = {**module._fixed_power_levels("@owner:test"), "historical": 100}
-    current = event("m.room.power_levels", content=content)
-    assert await module.check_event_allowed(
-        event("m.room.power_levels", sender="@owner:test", content=content),
-        {("m.room.power_levels", ""): current},
-    ) == (True, None)
-    allowed, _ = await module.check_event_allowed(
-        event("m.room.power_levels", sender="@owner:test", content={**content, "historical": 0}),
-        {("m.room.power_levels", ""): current},
+    assert module._is_storage_creation(config)
+    assert await module.user_may_create_room("@owner:test", config) is NOT_SPAM
+    assert await module.user_may_create_room("@free:test", config) == (
+        Codes.FORBIDDEN,
+        {"error": "Storage rooms require an active paid capability with uploads enabled. Open Plan to restore uploads."},
     )
-    assert allowed is False
-
-
-async def test_unmarked_power_levels_remain_native():
-    module, _ = make_module({"@owner:test": "paid"})
-    allowed, error = await module.check_event_allowed(
-        event("m.room.power_levels", content={"users": {"@owner:test": 100}}),
-        {("m.room.power_levels", ""): event("m.room.power_levels", content={"users": {"@owner:test": 100}})},
-    )
-    assert (allowed, error) == (True, None)
+    # This module leaves power-level authorization and room state changes to Synapse.
+    assert api.registered_rules == {}
 
 
 if __name__ == "__main__":
