@@ -49,6 +49,8 @@ func (c DigestCursor) Valid() bool {
 }
 
 type cashierAPI interface {
+	StorageAccounts(context.Context) ([]string, error)
+	ReconcileStorage(context.Context, string) (StorageReconciliation, error)
 	SyncLifecycleAccount(context.Context, string, time.Time) error
 	LifecycleActions(context.Context) ([]LifecycleAction, error)
 	ExecuteSuspension(context.Context, string) (bool, error)
@@ -202,3 +204,20 @@ func noProxyTransport() http.RoundTripper {
 }
 
 var _ cashierAPI = (*CashierClient)(nil)
+
+type StorageReconciliation struct {
+	BeforeBytes      int64 `json:"before_bytes"`
+	AfterBytes       int64 `json:"after_bytes"`
+	CorrectedRecords int64 `json:"corrected_records"`
+}
+
+func (c *CashierClient) StorageAccounts(ctx context.Context) ([]string, error) {
+	var accounts []string
+	err := c.do(ctx, http.MethodGet, "/storage-accounts", nil, &accounts)
+	return accounts, err
+}
+func (c *CashierClient) ReconcileStorage(ctx context.Context, mxid string) (StorageReconciliation, error) {
+	var result StorageReconciliation
+	err := c.do(ctx, http.MethodPost, "/reconcile-storage", accountRequest{MXID: mxid}, &result)
+	return result, err
+}

@@ -22,26 +22,25 @@ const (
 
 var errUnauthorized = errors.New("unauthorized")
 
-// Session holds Plan's browser-session signing key and the exact homeserver identity it serves.
+// Session signs a MAS refresh token with a seven-day maximum browser lifetime.
 // It is deliberately Plan-owned rather than shared with Cashier: Cashier receives only the
 // authenticated Matrix identity over the fixed private pod-local connection.
 type Session struct {
-	key        []byte
-	serverName string
+	key []byte
 }
 
-func NewSession(key, serverName string) *Session {
-	return &Session{key: []byte(key), serverName: serverName}
+func NewSession(key string) *Session {
+	return &Session{key: []byte(key)}
 }
 
-func (s *Session) Set(w http.ResponseWriter, mxid string) {
+func (s *Session) Set(w http.ResponseWriter, refreshToken string) {
 	exp := time.Now().Add(7 * 24 * time.Hour)
-	payload := fmt.Sprintf("%s|%d", mxid, exp.Unix())
+	payload := fmt.Sprintf("v2|%s|%d", refreshToken, exp.Unix())
 	value := base64.RawURLEncoding.EncodeToString([]byte(payload + "|" + s.sign(payload)))
 	http.SetCookie(w, &http.Cookie{Name: sessionCookieName, Value: value, Path: "/", HttpOnly: true, Secure: true, SameSite: http.SameSiteLaxMode, MaxAge: int((7 * 24 * time.Hour).Seconds())})
 }
 
-func (s *Session) MXID(r *http.Request) (string, error) {
+func (s *Session) Token(r *http.Request) (string, error) {
 	c, err := r.Cookie(sessionCookieName)
 	if err != nil {
 		return "", errUnauthorized
@@ -51,17 +50,17 @@ func (s *Session) MXID(r *http.Request) (string, error) {
 		return "", errUnauthorized
 	}
 	parts := strings.Split(string(raw), "|")
-	if len(parts) != 3 || !hmac.Equal([]byte(parts[2]), []byte(s.sign(parts[0]+"|"+parts[1]))) {
+	if len(parts) != 4 || parts[0] != "v2" || !hmac.Equal([]byte(parts[3]), []byte(s.sign(strings.Join(parts[:3], "|")))) {
 		return "", errUnauthorized
 	}
-	if !validSessionMXID(parts[0], s.serverName) {
+	if !validOIDCField(parts[1], maxOIDCFieldBytes) {
 		return "", errUnauthorized
 	}
-	var exp int64
-	if _, err := fmt.Sscan(parts[1], &exp); err != nil || exp <= 0 || time.Now().Unix() > exp {
+	exp, err := strconv.ParseInt(parts[2], 10, 64)
+	if err != nil || time.Now().Unix() >= exp {
 		return "", errUnauthorized
 	}
-	return parts[0], nil
+	return parts[1], nil
 }
 
 func validSessionMXID(mxid, expectedServerName string) bool {
@@ -120,4 +119,8 @@ func clearOAuthCookies(w http.ResponseWriter) {
 	for _, name := range []string{oauthStateCookie, oauthPKCECookie, oauthIntentCookie} {
 		http.SetCookie(w, &http.Cookie{Name: name, Value: "", Path: "/plan", MaxAge: -1, HttpOnly: true, Secure: true, SameSite: http.SameSiteLaxMode})
 	}
+}
+
+func (s *Session) Clear(w http.ResponseWriter) {
+	http.SetCookie(w, &http.Cookie{Name: sessionCookieName, Path: "/", MaxAge: -1, HttpOnly: true, Secure: true, SameSite: http.SameSiteLaxMode})
 }

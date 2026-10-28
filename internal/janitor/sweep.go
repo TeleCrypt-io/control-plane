@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sort"
 	"strings"
 	"time"
@@ -67,45 +68,39 @@ func NewLifecycleSweeper(mas masAdminClient, synapse any, cashier cashierAPI, ma
 // Sweep performs exactly one complete nightly run. Dodo reconciliation and email are read-only
 // reporting paths; Cashier owns lifecycle and subscription state through its private API.
 func (s *Sweeper) Sweep(ctx context.Context) error {
+	var failures error
 	users, err := s.mas.ListUsers(ctx)
 	if err != nil {
-		return httpdiag.WrapCause("janitor: list users failed", err)
+		failures = errors.Join(failures, httpdiag.WrapCause("janitor: list users failed", err))
+	} else {
+		failures = errors.Join(failures, s.sweepAuthoritativeLifecycle(ctx, users))
 	}
-	if err := s.sweepAuthoritativeLifecycle(ctx, users); err != nil {
-		return err
-	}
-	if ctx.Err() != nil {
-		return httpdiag.WrapCause("janitor: sweep canceled", ctx.Err())
-	}
-	if err := s.sweepProvider(ctx); err != nil {
-		return err
-	}
-	var emails []masadmin.UserEmail
-	if s.cfg.OperatorEmail != "" {
-		emails, err = s.mas.ListUserEmails(ctx)
-		if err != nil {
-			return httpdiag.WrapCause("janitor: list user emails failed", err)
+	failures = errors.Join(failures, s.sweepStorage(ctx), s.sweepProvider(ctx))
+	if err == nil && s.cfg.OperatorEmail != "" {
+		emails, emailErr := s.mas.ListUserEmails(ctx)
+		if emailErr != nil {
+			failures = errors.Join(failures, httpdiag.WrapCause("janitor: list user emails failed", emailErr))
+		} else {
+			failures = errors.Join(failures, s.sweepDigest(ctx, users, emails))
 		}
 	}
-	if err := s.sweepDigest(ctx, users, emails); err != nil {
-		return httpdiag.WrapCause("janitor: digest failed", err)
-	}
-	return nil
+	return failures
 }
 
 func (s *Sweeper) sweepAuthoritativeLifecycle(ctx context.Context, users []masadmin.User) error {
+	var failures error
 	for _, snapshot := range users {
 		mxid := s.mxid(snapshot.Username)
 		if mxid == "" || snapshot.DeactivatedAt != nil {
 			continue
 		}
 		if err := s.cashier.SyncLifecycleAccount(ctx, mxid, snapshot.CreatedAt); err != nil {
-			return httpdiag.WrapCause("janitor: synchronize lifecycle account", err)
+			failures = errors.Join(failures, fmt.Errorf("janitor: synchronize %s: %w", mxid, err))
 		}
 	}
 	actions, err := s.cashier.LifecycleActions(ctx)
 	if err != nil {
-		return httpdiag.WrapCause("janitor: read lifecycle actions", err)
+		return errors.Join(failures, httpdiag.WrapCause("janitor: read lifecycle actions", err))
 	}
 	usersByUsername := make(map[string]masadmin.User, len(users))
 	for _, user := range users {
@@ -113,43 +108,72 @@ func (s *Sweeper) sweepAuthoritativeLifecycle(ctx context.Context, users []masad
 	}
 	for _, action := range actions {
 		if ctx.Err() != nil {
-			return httpdiag.WrapCause("janitor: lifecycle sweep canceled", ctx.Err())
+			return errors.Join(failures, ctx.Err())
 		}
-		switch action.Action {
-		case "suspend":
-			if _, err := s.cashier.ExecuteSuspension(ctx, action.MXID); err != nil {
-				return httpdiag.WrapCause("janitor: suspend lifecycle account", err)
-			}
-		case "start_removal":
-			started, err := s.cashier.StartRemoval(ctx, action.MXID)
-			if err != nil {
-				return httpdiag.WrapCause("janitor: start lifecycle removal", err)
-			}
-			if started {
-				if err := s.finishExternalRemoval(ctx, action.MXID, usersByUsername); err != nil {
-					return err
-				}
-				if _, err := s.cashier.FinishRemoval(ctx, action.MXID); err != nil {
-					return httpdiag.WrapCause("janitor: finish lifecycle removal", err)
-				}
-			}
-		case "finish_removal":
-			if err := s.finishExternalRemoval(ctx, action.MXID, usersByUsername); err != nil {
-				return err
-			}
-			if _, err := s.cashier.FinishRemoval(ctx, action.MXID); err != nil {
-				return httpdiag.WrapCause("janitor: finish lifecycle removal", err)
-			}
+		if err := s.executeLifecycleAction(ctx, action, usersByUsername); err != nil {
+			failures = errors.Join(failures, fmt.Errorf("janitor: %s %s: %w", action.Action, action.MXID, err))
 		}
 	}
-	return nil
+	return failures
+}
+
+func (s *Sweeper) executeLifecycleAction(ctx context.Context, action LifecycleAction, users map[string]masadmin.User) error {
+	switch action.Action {
+	case "suspend":
+		_, err := s.cashier.ExecuteSuspension(ctx, action.MXID)
+		return err
+	case "start_removal":
+		started, err := s.cashier.StartRemoval(ctx, action.MXID)
+		if err != nil || !started {
+			return err
+		}
+	case "finish_removal":
+	default:
+		return fmt.Errorf("unknown lifecycle action %q", action.Action)
+	}
+	if err := s.finishExternalRemoval(ctx, action.MXID, users); err != nil {
+		return err
+	}
+	_, err := s.cashier.FinishRemoval(ctx, action.MXID)
+	return err
+}
+
+func (s *Sweeper) sweepStorage(ctx context.Context) error {
+	accounts, err := s.cashier.StorageAccounts(ctx)
+	if err != nil {
+		return httpdiag.WrapCause("janitor: list storage accounts", err)
+	}
+	var failures error
+	var rows []string
+	for _, mxid := range accounts {
+		if ctx.Err() != nil {
+			return errors.Join(failures, ctx.Err())
+		}
+		result, err := s.cashier.ReconcileStorage(ctx, mxid)
+		if err != nil {
+			failures = errors.Join(failures, fmt.Errorf("janitor: reconcile storage %s: %w", mxid, err))
+			rows = append(rows, fmt.Sprintf("%s: FAILED: %v", mxid, err))
+			slog.Error("storage reconciliation failed", "mxid", mxid, "detail", err.Error())
+			continue
+		}
+		if result.CorrectedRecords > 0 {
+			rows = append(rows, fmt.Sprintf("%s: %d -> %d bytes (%+d bytes); %d records corrected", mxid, result.BeforeBytes, result.AfterBytes, result.AfterBytes-result.BeforeBytes, result.CorrectedRecords))
+			slog.Info("storage accounting corrected", "mxid", mxid, "before_bytes", result.BeforeBytes, "after_bytes", result.AfterBytes, "corrected_records", result.CorrectedRecords)
+		}
+	}
+	if len(rows) > 0 && s.cfg.OperatorEmail != "" {
+		failures = errors.Join(failures, s.mailer.Send(ctx, s.cfg.OperatorEmail, "TeleCrypt.io: storage reconciliation", strings.Join(rows, "\r\n")+"\r\n"))
+	}
+	return failures
 }
 
 func (s *Sweeper) finishExternalRemoval(ctx context.Context, mxid string, users map[string]masadmin.User) error {
-	if media, ok := s.synapse.(mediaRemovalClient); ok {
-		if err := media.DeleteAllMedia(ctx, mxid); err != nil {
-			return httpdiag.WrapCause("janitor: delete account media", err)
-		}
+	media, ok := s.synapse.(mediaRemovalClient)
+	if !ok {
+		return errors.New("Synapse client does not support media removal")
+	}
+	if err := media.DeleteAllMedia(ctx, mxid); err != nil {
+		return httpdiag.WrapCause("janitor: delete account media", err)
 	}
 	remover, ok := s.mas.(masRemovalClient)
 	if !ok {

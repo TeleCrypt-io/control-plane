@@ -114,7 +114,7 @@ func (c *Client) ReadUserType(ctx context.Context, userID string) (*string, erro
 }
 
 // DeleteAllMedia removes local media in batches. The endpoint returns the
-// remaining total; restarting at offset zero avoids skipping rows as each batch
+// number deleted; restarting at offset zero avoids skipping rows as each batch
 // is deleted.
 func (c *Client) DeleteAllMedia(ctx context.Context, userID string) error {
 	if userID == "" || !strings.HasPrefix(userID, "@") {
@@ -138,8 +138,8 @@ func (c *Client) DeleteAllMedia(ctx context.Context, userID string) error {
 			return fmt.Errorf("synapseadmin: delete media: status %d: %s", resp.StatusCode, strings.TrimSpace(string(detail)))
 		}
 		var result struct {
-			Deleted int `json:"deleted_media"`
-			Total   int `json:"total"`
+			Deleted []string `json:"deleted_media"`
+			Total   *int     `json:"total"`
 		}
 		err = json.NewDecoder(resp.Body).Decode(&result)
 		closeErr := resp.Body.Close()
@@ -149,11 +149,11 @@ func (c *Client) DeleteAllMedia(ctx context.Context, userID string) error {
 		if closeErr != nil {
 			return fmt.Errorf("synapseadmin: close media deletion response: %w", closeErr)
 		}
-		if result.Total <= 0 {
-			return nil
+		if result.Total == nil || result.Deleted == nil || *result.Total != len(result.Deleted) {
+			return fmt.Errorf("synapseadmin: media deletion count does not match deleted IDs")
 		}
-		if result.Deleted <= 0 {
-			return fmt.Errorf("synapseadmin: media deletion made no progress with %d remaining", result.Total)
+		if *result.Total == 0 {
+			return nil
 		}
 	}
 }

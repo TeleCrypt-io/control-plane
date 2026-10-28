@@ -46,12 +46,13 @@ type Server struct {
 }
 
 func NewServer(cfg Config, cashier CashierClient) *Server {
-	s := &Server{cfg: cfg, cashier: cashier, session: NewSession(cfg.PlanSessionKey, cfg.ServerName), mux: http.NewServeMux()}
+	s := &Server{cfg: cfg, cashier: cashier, session: NewSession(cfg.PlanSessionKey), mux: http.NewServeMux()}
 	s.oidc = NewOIDCClient(cfg.BackendPublicURL, cfg.MASInternalURL, cfg.MASClientID, cfg.MASClientSecret, strings.TrimRight(cfg.BackendPublicURL, "/")+"/plan/callback")
 	s.mux.HandleFunc("GET /plan/overview", s.handlePlan)
 	s.mux.HandleFunc("GET /plan/assets/plan.css", s.handlePlanCSS)
 	s.mux.HandleFunc("GET /plan/assets/plan.js", s.handlePlanJS)
 	s.mux.HandleFunc("GET /plan/login", s.handleLogin)
+	s.mux.HandleFunc("POST /plan/logout", s.handleLogout)
 	s.mux.HandleFunc("GET /plan/callback", s.handleCallback)
 	s.mux.Handle("POST /plan/members/add", s.requireBrowserSession(http.HandlerFunc(s.handleAddMember)))
 	s.mux.Handle("POST /plan/members/leave", s.requireBrowserSession(http.HandlerFunc(s.handleLeaveTeam)))
@@ -69,9 +70,9 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) requireBrowserSession(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		mxid, err := s.session.MXID(r)
+		mxid, err := s.sessionMXID(r)
 		if err != nil {
-			http.Error(w, "login required", http.StatusUnauthorized)
+			s.writeSessionError(w, err)
 			return
 		}
 		if !s.isPlanOrigin(r.Header.Get("Origin")) {
@@ -113,7 +114,11 @@ func (s *Server) client() (CashierClient, error) {
 
 func (s *Server) handlePlan(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
-	mxid, err := s.session.MXID(r)
+	mxid, err := s.sessionMXID(r)
+	if err != nil && !errors.Is(err, errUnauthorized) {
+		s.writeSessionError(w, err)
+		return
+	}
 	data := pageData{
 		LoggedIn:    err == nil,
 		TestMode:    s.cfg.BillingEnvironment == "test",
@@ -227,7 +232,7 @@ func (s *Server) handleCallback(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "login failed", http.StatusBadGateway)
 		return
 	}
-	s.session.Set(w, fmt.Sprintf("@%s:%s", username, s.cfg.ServerName))
+	s.session.Set(w, token)
 	http.Redirect(w, r, s.cfg.PlanPublicURL, http.StatusFound)
 }
 
@@ -544,4 +549,54 @@ func billingLinksForPrincipal(links []BillingLink, mxid string) []BillingLink {
 		result[i].URL = parsed.String()
 	}
 	return result
+}
+
+func (s *Server) sessionMXID(r *http.Request) (string, error) {
+	token, err := s.session.Token(r)
+	if err != nil {
+		return "", err
+	}
+	username, err := s.oidc.Username(r.Context(), token)
+	if err != nil {
+		return "", err
+	}
+	mxid := fmt.Sprintf("@%s:%s", username, s.cfg.ServerName)
+	if !validSessionMXID(mxid, s.cfg.ServerName) {
+		return "", errUnauthorized
+	}
+	return mxid, nil
+}
+
+func (s *Server) writeSessionError(w http.ResponseWriter, err error) {
+	if errors.Is(err, errUnauthorized) {
+		http.Error(w, "login required", http.StatusUnauthorized)
+		return
+	}
+	logPlanFailure("validate MAS session", err)
+	http.Error(w, "Account service is temporarily unavailable", http.StatusServiceUnavailable)
+}
+
+func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	if !s.isPlanOrigin(r.Header.Get("Origin")) {
+		http.Error(w, "invalid request origin", http.StatusForbidden)
+		return
+	}
+	token, err := s.session.Token(r)
+	if err != nil {
+		s.writeSessionError(w, err)
+		return
+	}
+	// Introspect before every action. An already revoked token may still be
+	// submitted for idempotent revocation so interrupted sign-out can finish.
+	if _, err := s.oidc.Username(r.Context(), token); err != nil && !errors.Is(err, errUnauthorized) {
+		s.writeSessionError(w, err)
+		return
+	}
+	if err := s.oidc.Revoke(r.Context(), token); err != nil {
+		s.writeSessionError(w, err)
+		return
+	}
+	s.session.Clear(w)
+	http.Redirect(w, r, s.cfg.PlanPublicURL, http.StatusSeeOther)
 }

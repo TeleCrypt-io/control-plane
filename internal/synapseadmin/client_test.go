@@ -3,6 +3,7 @@ package synapseadmin
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -37,5 +38,50 @@ func TestSuspendUserRejectsRedirects(t *testing.T) {
 	defer redirect.Close()
 	if err := NewClient(redirect.URL, "token").SuspendUser(context.Background(), "@alice:example.test", true); err == nil || !strings.Contains(err.Error(), "redirect") {
 		t.Fatalf("SuspendUser error = %v, want redirect error", err)
+	}
+}
+
+func TestDeleteAllMediaBatchesAndInterruptedRetry(t *testing.T) {
+	for _, count := range []int{0, 205} {
+		t.Run(fmt.Sprint(count), func(t *testing.T) {
+			remaining, calls, failed := count, 0, false
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls++
+				if r.Method != http.MethodDelete || r.URL.Query().Get("from") != "0" || r.URL.Query().Get("limit") != "100" {
+					t.Error("incorrect deletion request")
+				}
+				if count > 0 && calls == 2 && !failed {
+					failed = true
+					http.Error(w, "interrupted", 503)
+					return
+				}
+				n := min(100, remaining)
+				ids := make([]string, n)
+				for i := range ids {
+					ids[i] = fmt.Sprintf("media-%d", remaining-i)
+				}
+				remaining -= n
+				json.NewEncoder(w).Encode(map[string]any{"deleted_media": ids, "total": n})
+			}))
+			defer server.Close()
+			client := NewClient(server.URL, "token")
+			err := client.DeleteAllMedia(context.Background(), "@user:test")
+			if count > 0 {
+				if err == nil || remaining != 105 {
+					t.Fatalf("interruption: remaining=%d err=%v", remaining, err)
+				}
+				err = client.DeleteAllMedia(context.Background(), "@user:test")
+			}
+			if err != nil || remaining != 0 {
+				t.Fatalf("remaining=%d err=%v", remaining, err)
+			}
+			want := 1
+			if count > 0 {
+				want = 5
+			}
+			if calls != want {
+				t.Fatalf("calls=%d want=%d", calls, want)
+			}
+		})
 	}
 }

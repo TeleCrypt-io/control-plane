@@ -165,3 +165,8 @@ func TestCompareSubscriptionSnapshotsReportsOnlyMismatches(t *testing.T) {
 		}
 	}
 }
+
+func (f *fakeCashier) StorageAccounts(context.Context) ([]string, error) { return nil, nil }
+func (f *fakeCashier) ReconcileStorage(context.Context, string) (StorageReconciliation, error) {
+	return StorageReconciliation{}, nil
+}

@@ -23,15 +23,15 @@ const (
 )
 
 // OIDCClient is Plan's MAS authorization-code + PKCE client. Browser authorization uses the
-// public homeserver URL; token and userinfo calls use MAS's pod-local address.
+// public homeserver URL; token, introspection and revocation calls use MAS's pod-local address.
 type OIDCClient struct {
-	authorizeURL, tokenURL, userinfoURL, clientID, clientSecret, redirectURI string
-	httpClient                                                               *http.Client
+	authorizeURL, tokenURL, introspectionURL, revokeURL, clientID, clientSecret, redirectURI string
+	httpClient                                                                               *http.Client
 }
 
 func NewOIDCClient(backendPublicURL, masInternalURL, clientID, clientSecret, redirectURI string) *OIDCClient {
 	backendPublicURL, masInternalURL = strings.TrimRight(backendPublicURL, "/"), strings.TrimRight(masInternalURL, "/")
-	return &OIDCClient{authorizeURL: backendPublicURL + "/authorize", tokenURL: masInternalURL + "/oauth2/token", userinfoURL: masInternalURL + "/oauth2/userinfo", clientID: clientID, clientSecret: clientSecret, redirectURI: redirectURI, httpClient: &http.Client{Timeout: 10 * time.Second, Transport: noProxyTransport(), CheckRedirect: rejectRedirects}}
+	return &OIDCClient{authorizeURL: backendPublicURL + "/authorize", tokenURL: masInternalURL + "/oauth2/token", introspectionURL: masInternalURL + "/oauth2/introspect", revokeURL: masInternalURL + "/oauth2/revoke", clientID: clientID, clientSecret: clientSecret, redirectURI: redirectURI, httpClient: &http.Client{Timeout: 10 * time.Second, Transport: noProxyTransport(), CheckRedirect: rejectRedirects}}
 }
 
 func NewPKCEPair() (string, string, error) {
@@ -49,7 +49,7 @@ func (c *OIDCClient) AuthorizeURL(state, challenge string) string {
 	return c.authorizeURL + "?" + v.Encode()
 }
 
-func (c *OIDCClient) ExchangeCode(ctx context.Context, code, verifier string) (accessToken string, resultErr error) {
+func (c *OIDCClient) ExchangeCode(ctx context.Context, code, verifier string) (refreshToken string, resultErr error) {
 	if !validOIDCField(code, maxOIDCFieldBytes) || !validOIDCField(verifier, maxOIDCFieldBytes) {
 		return "", fmt.Errorf("token exchange: invalid code or verifier")
 	}
@@ -74,44 +74,49 @@ func (c *OIDCClient) ExchangeCode(ctx context.Context, code, verifier string) (a
 		}
 	}()
 	var out struct {
-		AccessToken string `json:"access_token"`
+		RefreshToken string `json:"refresh_token"`
 	}
 	if err := jsonbody.Decode(resp.Body, &out); err != nil {
 		return "", fmt.Errorf("token exchange response: %w", err)
 	}
-	if !validOIDCField(out.AccessToken, maxOIDCFieldBytes) {
-		return "", fmt.Errorf("token exchange: empty access_token")
+	if !validOIDCField(out.RefreshToken, maxOIDCFieldBytes) {
+		return "", fmt.Errorf("token exchange: empty refresh_token")
 	}
-	return out.AccessToken, nil
+	return out.RefreshToken, nil
 }
 
 func (c *OIDCClient) Username(ctx context.Context, token string) (username string, resultErr error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.userinfoURL, nil)
+	req, err := c.tokenRequest(ctx, c.introspectionURL, token)
 	if err != nil {
 		return "", err
 	}
-	req.Header.Set("Authorization", "Bearer "+token)
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return "", httpdiag.WrapCause("userinfo", err)
+		return "", httpdiag.WrapCause("token introspection", err)
 	}
 	if resp.StatusCode != http.StatusOK {
 		body, readErr, closeErr := httpdiag.ReadAndClose(resp.Body)
-		return "", httpdiag.NewResponseError("userinfo", resp.StatusCode, body, readErr, closeErr)
+		return "", httpdiag.NewResponseError("token introspection", resp.StatusCode, body, readErr, closeErr)
 	}
 	defer func() {
 		if closeErr := resp.Body.Close(); closeErr != nil {
-			resultErr = errors.Join(resultErr, httpdiag.WrapCause("userinfo response body close", closeErr))
+			resultErr = errors.Join(resultErr, httpdiag.WrapCause("token introspection response body close", closeErr))
 		}
 	}()
 	var out struct {
-		Username string `json:"username"`
+		Username  string `json:"username"`
+		Active    bool   `json:"active"`
+		ClientID  string `json:"client_id"`
+		TokenType string `json:"token_type"`
 	}
 	if err := jsonbody.Decode(resp.Body, &out); err != nil {
-		return "", fmt.Errorf("userinfo response: %w", err)
+		return "", fmt.Errorf("token introspection response: %w", err)
+	}
+	if !out.Active || out.ClientID != c.clientID || out.TokenType != "refresh_token" {
+		return "", errUnauthorized
 	}
 	if !validOIDCField(out.Username, maxOIDCUsernameBytes) {
-		return "", fmt.Errorf("userinfo: empty username")
+		return "", fmt.Errorf("token introspection: empty username")
 	}
 	return out.Username, nil
 }
@@ -130,4 +135,32 @@ func validOIDCField(value string, maxBytes int) bool {
 
 func rejectRedirects(*http.Request, []*http.Request) error {
 	return errors.New("privileged HTTP redirects are disabled")
+}
+
+func (c *OIDCClient) tokenRequest(ctx context.Context, endpoint, token string) (*http.Request, error) {
+	form := url.Values{"token": {token}, "token_type_hint": {"refresh_token"}}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(form.Encode()))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.SetBasicAuth(c.clientID, c.clientSecret)
+	return req, nil
+}
+
+func (c *OIDCClient) Revoke(ctx context.Context, token string) error {
+	req, err := c.tokenRequest(ctx, c.revokeURL, token)
+	if err != nil {
+		return err
+	}
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return httpdiag.WrapCause("token revocation", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		body, readErr, closeErr := httpdiag.ReadAndClose(resp.Body)
+		return httpdiag.NewResponseError("token revocation", resp.StatusCode, body, readErr, closeErr)
+	}
+	readErr, closeErr := httpdiag.DrainAndClose(resp.Body)
+	return errors.Join(readErr, closeErr)
 }

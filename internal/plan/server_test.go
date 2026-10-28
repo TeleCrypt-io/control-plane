@@ -42,7 +42,7 @@ func (f *fakeCashier) LeaveMember(_ context.Context, p Principal) error {
 	return nil
 }
 func testServer() *Server {
-	return NewServer(Config{
+	srv := NewServer(Config{
 		BillingEnvironment: "test",
 		ServerName:         "stage.telecrypt.io",
 		BackendPublicURL:   "https://backend.stage.telecrypt.io",
@@ -59,6 +59,10 @@ func testServer() *Server {
 		},
 		BillingPortalURL: "https://billing.example/portal",
 	}, nil)
+	srv.oidc.httpClient.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`{"active":true,"username":"alice","client_id":"plan","token_type":"refresh_token"}`)), Header: make(http.Header)}, nil
+	})
+	return srv
 }
 
 func TestServerUsesPlanCallbackOutsideOverviewURL(t *testing.T) {
@@ -168,9 +172,9 @@ func TestValidateLocalpartMatchesMatrixUserLocalpartRules(t *testing.T) {
 func TestCallbackRejectsInvalidProviderUsername(t *testing.T) {
 	srv := testServer()
 	srv.oidc.httpClient.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
-		body := `{"access_token":"token"}`
+		body := `{"refresh_token":"token"}`
 		if req.URL.Path != "/oauth2/token" {
-			body = `{"username":"invalid:username"}`
+			body = `{"active":true,"username":"invalid:username","client_id":"plan","token_type":"refresh_token"}`
 		}
 		return &http.Response{
 			StatusCode: http.StatusOK,
@@ -404,7 +408,7 @@ func TestOIDCClientPreservesResponseCloseFailure(t *testing.T) {
 	client.httpClient.Transport = roundTripFunc(func(*http.Request) (*http.Response, error) {
 		return &http.Response{
 			StatusCode: http.StatusOK,
-			Body:       &cashierResponseBody{reader: strings.NewReader(`{"access_token":"access"}`), closeErr: closeErr},
+			Body:       &cashierResponseBody{reader: strings.NewReader(`{"refresh_token":"refresh"}`), closeErr: closeErr},
 		}, nil
 	})
 	if _, err := client.ExchangeCode(context.Background(), "code", "verifier"); !errors.Is(err, closeErr) {
@@ -587,7 +591,7 @@ func renderAuthenticatedPlan(t *testing.T, state PlanState) string {
 	srv := testServer()
 	srv.cashier = &fakeCashier{state: state}
 	cookieRecorder := httptest.NewRecorder()
-	srv.session.Set(cookieRecorder, "@alice:stage.telecrypt.io")
+	srv.session.Set(cookieRecorder, "refresh-alice")
 	cookie := cookieRecorder.Result().Cookies()[0]
 	req := httptest.NewRequest(http.MethodGet, "/plan/overview", nil)
 	req.AddCookie(cookie)
@@ -622,10 +626,13 @@ func TestPlanCommandsRequireAuthenticatedBrowserSession(t *testing.T) {
 	}
 }
 
-func TestPlanRejectsSessionForForeignHomeserver(t *testing.T) {
+func TestPlanRejectsSessionForAnotherClient(t *testing.T) {
 	srv := testServer()
 	cookieRecorder := httptest.NewRecorder()
-	srv.session.Set(cookieRecorder, "@alice:other.example")
+	srv.session.Set(cookieRecorder, "foreign-refresh")
+	srv.oidc.httpClient.Transport = roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`{"active":true,"username":"alice","client_id":"other-client","token_type":"refresh_token"}`))}, nil
+	})
 	req := httptest.NewRequest(http.MethodPost, "/plan/members/add", nil)
 	req.AddCookie(cookieRecorder.Result().Cookies()[0])
 	req.Header.Set("Origin", "https://backend.stage.telecrypt.io")
@@ -871,7 +878,7 @@ func TestValidateLocalMXIDBoundsMatrixIdentity(t *testing.T) {
 func authenticatedPlanRequest(t *testing.T, srv *Server, method, path, body string) *http.Request {
 	t.Helper()
 	cookieRecorder := httptest.NewRecorder()
-	srv.session.Set(cookieRecorder, "@alice:stage.telecrypt.io")
+	srv.session.Set(cookieRecorder, "refresh-alice")
 	req := httptest.NewRequest(method, path, strings.NewReader(body))
 	req.AddCookie(cookieRecorder.Result().Cookies()[0])
 	req.Header.Set("Origin", "https://backend.stage.telecrypt.io")

@@ -17,7 +17,7 @@
           <span>TeleCrypt<span class="brand-tld">.io</span></span>
           <span class="brand-section">Plan</span>
         </a>
-        {{if .LoggedIn}}<span class="user" title="Signed in as {{.MXID}}">{{.MXID}}</span>{{end}}
+        {{if .LoggedIn}}<span class="user" title="Signed in as {{.MXID}}">{{.MXID}}</span><form method="post" action="/plan/logout"><button class="btn" type="submit">Sign out</button></form>{{end}}
       </header>
 
       {{if .TestMode}}

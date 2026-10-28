@@ -8,7 +8,11 @@ configuration. See [`LICENSE`](./LICENSE) and [`NOTICE`](./NOTICE).
 
 ## Pricing transition boundaries
 
-Plan uses ordinary MAS OIDC and its own bearer credential for the private Cashier contract. It
+Plan uses ordinary MAS OIDC and its own bearer credential for the private Cashier contract. A signed,
+secure HttpOnly cookie holds the MAS refresh token for at most seven days. Every protected request
+introspects that token with Plan's ordinary client credentials; same-origin `POST /plan/logout`
+revokes it before clearing the cookie. MAS outages prevent management actions and allow retries.
+Previous identity-only cookies require a fresh login. Plan
 has no MAS-admin or Synapse-admin credential, and exposes team membership, fixed plan state and
 billing links only. Plan, Janitor, and Synapse receive distinct Cashier credentials; each process
 must receive only its own credential.
@@ -25,7 +29,11 @@ billing owner cannot leave while other members remain.
 Janitor is a scheduled one-shot process. It uses MAS and Synapse admin APIs for account
 lifecycle work, its own bearer credential for Cashier's narrow lifecycle/reporting API, reads
 Dodo once with a read-only key, and emails discrepancy reports without changing provider,
-membership or billing state. It has no HTTP service or Cashier token exchange.
+membership or billing state. It has no HTTP service or Cashier token exchange. Its daily 03:00 UTC run also asks Cashier to
+reconcile stored bytes against complete Synapse media inventories. Cashier owns those ledger repairs
+and quota projections; missed notifications recover on the next successful daily run, normally
+within 24 hours. Account failures do not stop independent maintenance; any unfinished work fails
+the run and retains its diagnostics.
 
 Cashier owns the lifecycle timestamps and exposes only due actions and narrow command functions
 to Janitor. The approved lifecycle rule is suspension after 48 hours for never-paid new accounts,
